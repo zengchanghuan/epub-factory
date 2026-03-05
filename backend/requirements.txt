@@ -1,0 +1,11 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+python-multipart==0.0.20
+opencc-python-reimplemented==0.1.7
+httpx==0.28.1
+pypdf==6.0.0
+ebooklib==0.18
+beautifulsoup4==4.12.3
+cssutils==2.10.2
+lxml==5.1.0
+
