@@ -1,4 +1,9 @@
 import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
+
 from .unpacker import EpubUnpacker
 from .packager import EpubPackager
 from .cleaners.css_sanitizer import CssSanitizer
