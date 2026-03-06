@@ -8,3 +8,5 @@ backend/temp/
 backend/.env
 backend/translation_cache.db
 
+tools/
+frontend/

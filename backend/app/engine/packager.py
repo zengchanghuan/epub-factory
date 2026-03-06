@@ -84,43 +84,100 @@ class EpubPackager:
     def save(self):
         try:
             epub.write_epub(self.output_path, self.book, {})
-            self._post_fix_svg()
+            self._post_fix()
             return True
         except Exception as e:
             print(f"Package Error: {e}")
             return False
 
-    def _post_fix_svg(self):
-        """解压 -> 修复 SVG 属性大小写 -> 重新打包"""
-        temp_dir = Path(tempfile.mkdtemp(prefix="epub_svgfix_"))
+    def _post_fix(self):
+        """解压 -> 修复 ebooklib 引入的各种问题 -> 重新打包"""
+        temp_dir = Path(tempfile.mkdtemp(prefix="epub_postfix_"))
         try:
             with zipfile.ZipFile(self.output_path, "r") as zf:
                 zf.extractall(temp_dir)
 
-            fixed_count = 0
+            fixes_applied = []
+
+            # Fix 1: SVG 大小写敏感属性
             for xhtml_path in temp_dir.rglob("*.xhtml"):
                 content = xhtml_path.read_text(encoding="utf-8", errors="ignore")
-                if '<svg' in content.lower() or '<image' in content.lower():
-                    fixed = _fix_svg_attributes(content)
-                    if fixed != content:
-                        xhtml_path.write_text(fixed, encoding="utf-8")
-                        fixed_count += 1
+                original = content
 
-            if fixed_count > 0:
-                print(f"🔧 [SVG Fix] Repaired case-sensitive attributes in {fixed_count} file(s)")
-                output = Path(self.output_path)
-                if output.exists():
-                    output.unlink()
-                with zipfile.ZipFile(output, "w") as out:
-                    mimetype = temp_dir / "mimetype"
-                    if mimetype.exists():
-                        out.write(mimetype, "mimetype", compress_type=zipfile.ZIP_STORED)
-                    for file_path in temp_dir.rglob("*"):
-                        if file_path.is_file() and file_path.name != "mimetype":
-                            out.write(
-                                file_path,
-                                file_path.relative_to(temp_dir).as_posix(),
-                                compress_type=zipfile.ZIP_DEFLATED,
-                            )
+                if '<svg' in content.lower() or '<image' in content.lower():
+                    content = _fix_svg_attributes(content)
+
+                # Fix 2: ebooklib 清空了 <head>，补回 <title>
+                if '<head/>' in content:
+                    fname = xhtml_path.stem.replace('_', ' ')
+                    content = content.replace(
+                        '<head/>',
+                        f'<head><title>{fname}</title></head>'
+                    )
+
+                if content != original:
+                    xhtml_path.write_text(content, encoding="utf-8")
+                    fixes_applied.append(xhtml_path.name)
+
+            # Fix 3: OPF - 修复 ibooks 前缀和 SVG 属性声明
+            for opf_path in temp_dir.rglob("*.opf"):
+                content = opf_path.read_text(encoding="utf-8", errors="ignore")
+                original = content
+
+                # 3a: 在 package 的 prefix 属性中注册 ibooks 前缀
+                if 'ibooks:' in content and 'ibooks:' not in (
+                    re.search(r'prefix="([^"]*)"', content) or type('', (), {'group': lambda s, x: ''})()
+                ).group(1):
+                    content = re.sub(
+                        r'(prefix=")',
+                        r'\1ibooks: http://vocabulary.itunes.apple.com/rdf/ibooks/vocabulary-extensions-1.0/ ',
+                        content
+                    )
+
+                # 3b: 在含有 SVG 的 item 上声明 properties="svg"
+                svg_files = set()
+                for xhtml_path in temp_dir.rglob("*.xhtml"):
+                    xhtml_content = xhtml_path.read_text(encoding="utf-8", errors="ignore")
+                    if '<svg' in xhtml_content.lower():
+                        svg_files.add(xhtml_path.name)
+
+                for svg_file in svg_files:
+                    def add_svg_property(match):
+                        tag = match.group(0)
+                        if 'properties=' in tag:
+                            return tag
+                        # 在 /> 或 > 之前插入 properties="svg"
+                        return re.sub(r'\s*/>', ' properties="svg"/>', tag)
+                    content = re.sub(
+                        rf'<item\b[^>]*href="[^"]*{re.escape(svg_file)}"[^>]*/?>',
+                        add_svg_property,
+                        content
+                    )
+
+                if content != original:
+                    opf_path.write_text(content, encoding="utf-8")
+                    fixes_applied.append(opf_path.name)
+
+            if fixes_applied:
+                print(f"🔧 [PostFix] Repaired {len(fixes_applied)} file(s): "
+                      f"{', '.join(fixes_applied[:5])}{'...' if len(fixes_applied) > 5 else ''}")
+                self._repack(temp_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _repack(self, temp_dir: Path):
+        """将修复后的目录重新打包为 EPUB"""
+        output = Path(self.output_path)
+        if output.exists():
+            output.unlink()
+        with zipfile.ZipFile(output, "w") as out:
+            mimetype = temp_dir / "mimetype"
+            if mimetype.exists():
+                out.write(mimetype, "mimetype", compress_type=zipfile.ZIP_STORED)
+            for file_path in temp_dir.rglob("*"):
+                if file_path.is_file() and file_path.name != "mimetype":
+                    out.write(
+                        file_path,
+                        file_path.relative_to(temp_dir).as_posix(),
+                        compress_type=zipfile.ZIP_DEFLATED,
+                    )
