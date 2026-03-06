@@ -1,10 +1,10 @@
 .venv/
 __pycache__/
 .DS_Store
+*.epub
 backend/uploads/
 backend/outputs/
 backend/temp/
 backend/.env
-backend/*.epub
 backend/translation_cache.db
 
