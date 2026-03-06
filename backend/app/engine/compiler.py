@@ -63,5 +63,11 @@ class ExtremeCompiler:
             print(f"✅ [Success] Output saved to: {self.output_path}")
         else:
             print("❌ [Error] Failed to save EPUB.")
+
+        # 4. 输出翻译统计（如果启用了翻译）
+        if self.enable_translation:
+            for cleaner in self.cleaners:
+                if hasattr(cleaner, 'stats'):
+                    print(cleaner.stats.summary(cleaner.model))
             
         return success

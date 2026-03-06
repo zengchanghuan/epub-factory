@@ -23,6 +23,8 @@ class Job:
     output_mode: OutputMode
     trace_id: str
     input_path: str
+    enable_translation: bool = False
+    target_lang: str = "zh-CN"
     output_path: Optional[str] = None
     status: JobStatus = JobStatus.pending
     message: str = ""

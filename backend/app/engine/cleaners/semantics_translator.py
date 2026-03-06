@@ -1,10 +1,65 @@
 import asyncio
 import re
 import os
+import time
+from dataclasses import dataclass, field
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 from ..translation_cache import TranslationCache
+
+
+# DeepSeek 定价 (每百万 token)
+PRICING = {
+    "deepseek-chat": {"input": 0.27, "output": 1.10},
+    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4o": {"input": 2.50, "output": 10.00},
+}
+
+
+@dataclass
+class TranslationStats:
+    total_chunks: int = 0
+    cached_chunks: int = 0
+    api_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    start_time: float = field(default_factory=time.time)
+    errors: int = 0
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return time.time() - self.start_time
+
+    def estimate_cost(self, model: str) -> float:
+        prices = PRICING.get(model, {"input": 0.0, "output": 0.0})
+        input_cost = (self.prompt_tokens / 1_000_000) * prices["input"]
+        output_cost = (self.completion_tokens / 1_000_000) * prices["output"]
+        return input_cost + output_cost
+
+    def summary(self, model: str) -> str:
+        cost = self.estimate_cost(model)
+        return (
+            f"\n{'=' * 50}\n"
+            f"📊 翻译统计报告\n"
+            f"{'=' * 50}\n"
+            f"  模型: {model}\n"
+            f"  总段落数: {self.total_chunks}\n"
+            f"  命中缓存: {self.cached_chunks}\n"
+            f"  API 调用: {self.api_calls}\n"
+            f"  失败次数: {self.errors}\n"
+            f"  ─────────────────────\n"
+            f"  Prompt Tokens:     {self.prompt_tokens:,}\n"
+            f"  Completion Tokens: {self.completion_tokens:,}\n"
+            f"  Total Tokens:      {self.total_tokens:,}\n"
+            f"  ─────────────────────\n"
+            f"  预估费用: ${cost:.4f} USD\n"
+            f"  耗时: {self.elapsed_seconds:.1f}s\n"
+            f"{'=' * 50}"
+        )
+
 
 class SemanticsTranslator:
     def __init__(self, target_lang="zh-CN", concurrency=5):
@@ -17,6 +72,7 @@ class SemanticsTranslator:
         )
         self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         self.semaphore = asyncio.Semaphore(concurrency)
+        self.stats = TranslationStats()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def _call_llm(self, html_chunk: str) -> str:
@@ -35,14 +91,24 @@ class SemanticsTranslator:
             ],
             temperature=0.3
         )
+
+        usage = response.usage
+        if usage:
+            self.stats.prompt_tokens += usage.prompt_tokens
+            self.stats.completion_tokens += usage.completion_tokens
+            self.stats.total_tokens += usage.total_tokens
+        self.stats.api_calls += 1
+
         result = response.choices[0].message.content.strip()
         result = re.sub(r"^```html\s*", "", result)
         result = re.sub(r"\s*```$", "", result)
         return result
 
     async def _translate_html_chunk(self, html_chunk: str) -> str:
+        self.stats.total_chunks += 1
         cached = self.cache.get(html_chunk, self.target_lang)
         if cached:
+            self.stats.cached_chunks += 1
             return cached
         async with self.semaphore:
             print(f"🔄 Translating chunk... (Model: {self.model})")
@@ -108,6 +174,7 @@ class SemanticsTranslator:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for block, translated_html in zip(block_refs, results):
                     if isinstance(translated_html, Exception):
+                        self.stats.errors += 1
                         print(f"❌ Translation error: {translated_html}")
                         continue
                     try:

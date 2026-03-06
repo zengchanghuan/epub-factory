@@ -56,8 +56,16 @@ def process_job(job: Job) -> None:
     try:
         source_name = Path(job.source_filename).stem
         suffix = "横排繁体" if job.output_mode == OutputMode.traditional else "横排简体"
+        if job.enable_translation:
+            suffix += f"-翻译_{job.target_lang}"
         output_path = OUTPUT_DIR / f"{source_name}-{suffix}.epub"
-        converter.convert_file_to_horizontal(Path(job.input_path), output_path, job.output_mode)
+        converter.convert_file_to_horizontal(
+            Path(job.input_path),
+            output_path,
+            job.output_mode,
+            enable_translation=job.enable_translation,
+            target_lang=job.target_lang,
+        )
         job_store.update_status(
             job.id,
             JobStatus.success,
@@ -83,6 +91,8 @@ async def create_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     output_mode: OutputMode = Form(OutputMode.traditional),
+    enable_translation: bool = Form(False),
+    target_lang: str = Form("zh-CN"),
 ):
     if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
@@ -99,6 +109,8 @@ async def create_job(
         output_mode=output_mode,
         trace_id=trace_id,
         input_path=str(input_path),
+        enable_translation=enable_translation,
+        target_lang=target_lang,
     )
     job_store.add(job)
     background_tasks.add_task(process_job, job)
@@ -106,6 +118,8 @@ async def create_job(
         "job_id": job.id,
         "trace_id": job.trace_id,
         "status": job.status,
+        "enable_translation": job.enable_translation,
+        "target_lang": job.target_lang,
         "message": "任务已创建",
     }
 
@@ -120,6 +134,8 @@ def get_job(job_id: str):
         "trace_id": job.trace_id,
         "source_filename": job.source_filename,
         "output_mode": job.output_mode,
+        "enable_translation": job.enable_translation,
+        "target_lang": job.target_lang,
         "status": job.status,
         "message": job.message,
         "error_code": job.error_code,
