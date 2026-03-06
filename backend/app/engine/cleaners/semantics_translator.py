@@ -71,40 +71,27 @@ class SemanticsTranslator:
         if item_type == 9: # HTML 文件
             soup = BeautifulSoup(content, 'xml') # 用 xml 解析器防止自动补全 html/body
             
-            # 策略：遇到 SVG 需要非常小心，不应把它当成普通的包裹文本的块级标签来翻译。
-            # 大多数排版引擎在 <svg> 里用 <text> 或者 <image>。我们直接在顶层把 SVG 跳过。
-            # （也可以用 BeautifulSoup 的 extract 或 decompose 暂时移除，但在我们的流式处理中跳过最稳妥）
-            for svg_tag in soup.find_all('svg'):
-                # 给一个特殊的标记，防止后面被搜到
-                svg_tag['data-no-translate'] = "true"
+            # 【终极图片/SVG 保护方案：使用占位符】
+            # 将所有的 svg, img, image 从文档树中提取出来存到字典里，并用一个带固定 ID 的空 span 占位。
+            # 这样 LLM 既不会受到海量代码干扰，也不会因为不知如何处理图片而导致丢失。
+            placeholders = {}
+            for i, tag in enumerate(soup.find_all(['svg', 'img', 'image'])):
+                pid = f"__IMG_PLACEHOLDER_{i}__"
+                placeholder_tag = soup.new_tag("span", attrs={"id": pid, "data-placeholder": "true"})
+                # placeholder_tag.string = pid  # 不填文本，防止被翻译成中文，只用 id 追踪
+                tag.insert_before(placeholder_tag)
+                placeholders[pid] = tag.extract()
 
-            # 【修复图片被破坏的核心问题】
-            # 有些电子书把 <img> 标签直接丢在 <div> 里，没有 <p> 包裹。为了安全起见，
-            # 给所有的 <img>, <image> 父级元素也打上不翻译的标签。
-            for img_tag in soup.find_all(['img', 'image']):
-                parent = img_tag.find_parent()
-                if parent:
-                    parent['data-no-translate'] = "true"
-
-            # 获取所有可能包含文本的块级标签
-            # 同样跳过带有 data-no-translate 的节点
-            blocks = soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
+            # 获取所有可能包含文本的块级标签（把 div 加回来，因为有的电子书文本就在直接在 div 里）
+            blocks = soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
             
             tasks = []
             block_refs = []
             
             for block in blocks:
-                # 检查自身或父级是否被标记为不翻译
-                if block.get('data-no-translate') or block.find_parent(attrs={"data-no-translate": "true"}):
-                    continue
-
                 # 避免重复翻译：只翻译内部没有块级子元素的“叶子”块级标签
-                has_block_child = block.find(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
+                has_block_child = block.find(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
                 if has_block_child:
-                    continue
-                    
-                # 【优化：保护图片】如果块内包含 <img> 或 <svg> 或 <image>，跳过翻译
-                if block.find(['img', 'svg', 'image']):
                     continue
                     
                 original_html = str(block)
@@ -133,9 +120,11 @@ class SemanticsTranslator:
                     except Exception as e:
                         print(f"❌ Error replacing tag: {e}")
 
-            # 清理我们打上去的临时标记
-            for tag in soup.find_all(attrs={"data-no-translate": "true"}):
-                del tag['data-no-translate']
+            # 翻译完成后，把保存的图片和 SVG 原样放回占位符的位置
+            for pid, original_tag in placeholders.items():
+                ph = soup.find("span", attrs={"id": pid})
+                if ph:
+                    ph.replace_with(original_tag)
                         
             return str(soup).encode('utf-8')
             
