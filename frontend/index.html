@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EPUB Factory</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f8f9fb;
+      --card: #ffffff;
+      --border: #e2e5ea;
+      --text: #1a1d23;
+      --muted: #6b7280;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #059669;
+      --error: #dc2626;
+      --radius: 12px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 40px 20px 80px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .card h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card h2 .icon { font-size: 18px; }
+
+    /* Dropzone */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fafbfc;
+      margin-bottom: 20px;
+    }
+
+    .dropzone:hover, .dropzone.active {
+      border-color: var(--primary);
+      background: #eff6ff;
+    }
+
+    .dropzone .icon { font-size: 36px; margin-bottom: 8px; display: block; }
+    .dropzone .main-text { font-size: 15px; font-weight: 500; }
+    .dropzone .sub-text { font-size: 13px; color: var(--muted); margin-top: 4px; }
+    .dropzone .file-name { font-size: 14px; color: var(--primary); font-weight: 600; margin-top: 8px; }
+
+    input[type="file"] { display: none; }
+
+    /* Form controls */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 520px) { .form-row { grid-template-columns: 1fr; } }
+
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: white;
+      color: var(--text);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L1 3h10z' fill='%236b7280'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      cursor: pointer;
+    }
+
+    select:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: var(--primary); }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-top: 1px solid var(--border);
+      margin-top: 8px;
+    }
+
+    .toggle-row span { font-size: 14px; }
+    .toggle-row .hint { font-size: 12px; color: var(--muted); }
+
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toggle input { opacity: 0; width: 0; height: 0; }
+
+    .toggle .slider {
+      position: absolute;
+      inset: 0;
+      background: #d1d5db;
+      border-radius: 24px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      bottom: 3px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+
+    .toggle input:checked + .slider { background: var(--primary); }
+    .toggle input:checked + .slider::before { transform: translateX(20px); }
+
+    /* Submit button */
+    .submit-btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      background: var(--primary);
+      color: white;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 8px;
+    }
+
+    .submit-btn:hover { background: var(--primary-hover); }
+    .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Status card */
+    .status-card { display: none; }
+    .status-card.visible { display: block; }
+
+    .status-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .status-badge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .status-badge.pending { background: #fef3c7; color: #92400e; }
+    .status-badge.running { background: #dbeafe; color: #1e40af; }
+    .status-badge.success { background: #d1fae5; color: #065f46; }
+    .status-badge.failed { background: #fee2e2; color: #991b1b; }
+
+    .progress-bar-wrapper {
+      height: 6px;
+      background: #e5e7eb;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .progress-bar {
+      height: 100%;
+      border-radius: 6px;
+      transition: width 0.5s ease;
+    }
+
+    .progress-bar.pending { width: 10%; background: #fbbf24; }
+    .progress-bar.running { width: 60%; background: var(--primary); animation: pulse 1.5s ease-in-out infinite; }
+    .progress-bar.success { width: 100%; background: var(--success); }
+    .progress-bar.failed { width: 100%; background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 16px;
+      font-size: 13px;
+    }
+
+    .meta-grid dt { color: var(--muted); }
+    .meta-grid dd { font-weight: 500; word-break: break-all; }
+
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 16px;
+      padding: 12px 24px;
+      background: var(--success);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .download-btn:hover { background: #047857; }
+
+    .error-msg {
+      margin-top: 12px;
+      padding: 12px;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      color: var(--error);
+      font-size: 13px;
+    }
+
+    footer {
+      text-align: center;
+      padding: 24px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>EPUB Factory</h1>
+      <p>上传 EPUB 或 PDF，智能转换为横排繁体/简体，支持 Kindle/Apple Books 优化</p>
+    </header>
+
+    <!-- Upload Card -->
+    <div class="card" id="uploadCard">
+      <h2><span class="icon">📤</span> 上传文件</h2>
+
+      <div id="dropzone" class="dropzone">
+        <span class="icon">📁</span>
+        <div class="main-text">拖拽文件到这里，或点击选择</div>
+        <div class="sub-text">支持 .epub / .pdf 格式</div>
+        <div class="file-name" id="fileName" style="display:none;"></div>
+      </div>
+      <input id="fileInput" type="file" accept=".epub,.pdf" />
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>输出模式</label>
+          <select id="outputMode">
+            <option value="simplified">横排简体</option>
+            <option value="traditional">横排繁体</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>目标设备</label>
+          <select id="device">
+            <option value="generic">通用</option>
+            <option value="kindle">Kindle (墨水屏优化)</option>
+            <option value="apple">Apple Books</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <div>
+          <span>AI 翻译</span><br/>
+          <span class="hint">英文书籍自动翻译为中文（消耗 API Token）</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="enableTranslation" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="form-group" id="langGroup" style="display:none; margin-top: 12px;">
+        <label>目标语言</label>
+        <select id="targetLang">
+          <option value="zh-CN">简体中文</option>
+          <option value="zh-TW">繁体中文</option>
+          <option value="ja">日语</option>
+          <option value="ko">韩语</option>
+        </select>
+      </div>
+
+      <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
+    </div>
+
+    <!-- Status Card -->
+    <div class="card status-card" id="statusCard">
+      <h2><span class="icon">⚡</span> 转换进度</h2>
+
+      <div class="status-header">
+        <span class="status-badge" id="statusBadge">等待中</span>
+        <span id="statusMessage" style="font-size: 14px; color: var(--muted);"></span>
+      </div>
+
+      <div class="progress-bar-wrapper">
+        <div class="progress-bar pending" id="progressBar"></div>
+      </div>
+
+      <dl class="meta-grid">
+        <dt>Job ID</dt>
+        <dd id="metaJobId">-</dd>
+        <dt>Trace ID</dt>
+        <dd id="metaTraceId">-</dd>
+        <dt>文件名</dt>
+        <dd id="metaFilename">-</dd>
+        <dt>输出模式</dt>
+        <dd id="metaMode">-</dd>
+      </dl>
+
+      <a class="download-btn" id="downloadBtn" href="#" style="display:none;">
+        📥 下载转换结果
+      </a>
+
+      <div class="error-msg" id="errorMsg" style="display:none;"></div>
+    </div>
+
+    <footer>
+      EPUB Factory &mdash; ExtremeCompiler Engine v2.0 &middot; EpubCheck 5.1.0
+    </footer>
+  </div>
+
+  <script>
+    const API = window.EPUB_FACTORY_API || "http://127.0.0.1:8000";
+
+    const $ = (id) => document.getElementById(id);
+    const dropzone = $("dropzone");
+    const fileInput = $("fileInput");
+    const fileNameEl = $("fileName");
+    const submitBtn = $("submitBtn");
+    const enableTranslation = $("enableTranslation");
+    const langGroup = $("langGroup");
+    const statusCard = $("statusCard");
+    const statusBadge = $("statusBadge");
+    const statusMessage = $("statusMessage");
+    const progressBar = $("progressBar");
+    const downloadBtn = $("downloadBtn");
+    const errorMsg = $("errorMsg");
+
+    let selectedFile = null;
+    let pollTimer = null;
+
+    function selectFile(file) {
+      if (!file) return;
+      const name = file.name.toLowerCase();
+      if (!(name.endsWith(".epub") || name.endsWith(".pdf"))) {
+        alert("仅支持 .epub 或 .pdf 文件");
+        return;
+      }
+      selectedFile = file;
+      fileNameEl.textContent = `✅ ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+      fileNameEl.style.display = "block";
+      submitBtn.disabled = false;
+    }
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => { if (fileInput.files.length) selectFile(fileInput.files[0]); });
+
+    ["dragenter", "dragover"].forEach(e => dropzone.addEventListener(e, (ev) => { ev.preventDefault(); dropzone.classList.add("active"); }));
+    ["dragleave", "drop"].forEach(e => dropzone.addEventListener(e, (ev) => { ev.preventDefault(); dropzone.classList.remove("active"); }));
+    dropzone.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]); });
+
+    enableTranslation.addEventListener("change", () => {
+      langGroup.style.display = enableTranslation.checked ? "block" : "none";
+    });
+
+    function setStatus(status, message) {
+      statusCard.classList.add("visible");
+      statusBadge.textContent = { pending: "等待中", running: "转换中...", success: "完成", failed: "失败" }[status] || status;
+      statusBadge.className = "status-badge " + status;
+      progressBar.className = "progress-bar " + status;
+      statusMessage.textContent = message || "";
+      errorMsg.style.display = "none";
+      downloadBtn.style.display = "none";
+    }
+
+    async function pollJob(jobId) {
+      try {
+        const res = await fetch(`${API}/api/v1/jobs/${jobId}`);
+        if (!res.ok) throw new Error("查询失败");
+        const data = await res.json();
+
+        setStatus(data.status, data.message);
+        $("metaFilename").textContent = data.source_filename;
+        $("metaMode").textContent = data.output_mode + " / " + (data.device || "generic");
+
+        if (data.status === "success" && data.download_url) {
+          downloadBtn.href = `${API}${data.download_url}`;
+          downloadBtn.style.display = "inline-flex";
+          clearInterval(pollTimer);
+          submitBtn.disabled = false;
+        }
+
+        if (data.status === "failed") {
+          errorMsg.textContent = data.message || "转换失败";
+          errorMsg.style.display = "block";
+          clearInterval(pollTimer);
+          submitBtn.disabled = false;
+        }
+      } catch (err) {
+        setStatus("failed", err.message);
+        errorMsg.textContent = err.message;
+        errorMsg.style.display = "block";
+        clearInterval(pollTimer);
+        submitBtn.disabled = false;
+      }
+    }
+
+    submitBtn.addEventListener("click", async () => {
+      if (!selectedFile) return;
+
+      submitBtn.disabled = true;
+      setStatus("pending", "正在上传...");
+
+      const form = new FormData();
+      form.append("file", selectedFile);
+      form.append("output_mode", $("outputMode").value);
+      form.append("device", $("device").value);
+      form.append("enable_translation", enableTranslation.checked);
+      if (enableTranslation.checked) {
+        form.append("target_lang", $("targetLang").value);
+      }
+
+      try {
+        const res = await fetch(`${API}/api/v1/jobs`, { method: "POST", body: form });
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          throw new Error(detail.detail || "创建任务失败");
+        }
+        const data = await res.json();
+
+        $("metaJobId").textContent = data.job_id;
+        $("metaTraceId").textContent = data.trace_id;
+        setStatus("running", "任务已提交，正在处理...");
+
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(() => pollJob(data.job_id), 2000);
+      } catch (err) {
+        setStatus("failed", err.message);
+        errorMsg.textContent = err.message;
+        errorMsg.style.display = "block";
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

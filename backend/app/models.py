@@ -16,6 +16,12 @@ class OutputMode(str, Enum):
     simplified = "simplified"
 
 
+class DeviceProfile(str, Enum):
+    generic = "generic"
+    kindle = "kindle"
+    apple = "apple"
+
+
 @dataclass
 class Job:
     id: str
@@ -25,6 +31,7 @@ class Job:
     input_path: str
     enable_translation: bool = False
     target_lang: str = "zh-CN"
+    device: DeviceProfile = DeviceProfile.generic
     output_path: Optional[str] = None
     status: JobStatus = JobStatus.pending
     message: str = ""

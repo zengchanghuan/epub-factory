@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .converter import converter
-from .models import Job, JobStatus, OutputMode
+from .models import DeviceProfile, Job, JobStatus, OutputMode
 from .storage import job_store
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -65,6 +65,7 @@ def process_job(job: Job) -> None:
             job.output_mode,
             enable_translation=job.enable_translation,
             target_lang=job.target_lang,
+            device=job.device.value,
         )
         job_store.update_status(
             job.id,
@@ -93,6 +94,7 @@ async def create_job(
     output_mode: OutputMode = Form(OutputMode.traditional),
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
+    device: DeviceProfile = Form(DeviceProfile.generic),
 ):
     if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
@@ -111,6 +113,7 @@ async def create_job(
         input_path=str(input_path),
         enable_translation=enable_translation,
         target_lang=target_lang,
+        device=device,
     )
     job_store.add(job)
     background_tasks.add_task(process_job, job)
@@ -120,6 +123,7 @@ async def create_job(
         "status": job.status,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
+        "device": job.device,
         "message": "任务已创建",
     }
 
@@ -136,6 +140,7 @@ def get_job(job_id: str):
         "output_mode": job.output_mode,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
+        "device": job.device,
         "status": job.status,
         "message": job.message,
         "error_code": job.error_code,
