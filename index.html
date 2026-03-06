@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EPUB Factory — Smart EPUB Converter & Fixer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg: #0a0a0b; --card: #141416; --border: #27272a; --text: #fafafa; --muted: #a1a1aa; --accent: #3b82f6; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; line-height: 1.7; }
+    .container { max-width: 800px; margin: 0 auto; padding: 60px 24px 80px; }
+
+    header { text-align: center; margin-bottom: 64px; }
+    header h1 { font-size: 42px; font-weight: 800; letter-spacing: -1px; margin-bottom: 16px; background: linear-gradient(135deg, #fff 0%, #3b82f6 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    header p { color: var(--muted); font-size: 18px; max-width: 560px; margin: 0 auto; }
+
+    .badge { display: inline-block; padding: 4px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(59,130,246,0.15); color: var(--accent); margin-bottom: 20px; letter-spacing: 0.5px; }
+
+    .features { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 48px; }
+    @media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
+
+    .feature { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+    .feature h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .feature p { font-size: 14px; color: var(--muted); }
+
+    .cta { text-align: center; margin-bottom: 48px; }
+    .cta a { display: inline-block; padding: 14px 32px; background: var(--accent); color: #fff; border-radius: 10px; font-size: 16px; font-weight: 600; text-decoration: none; transition: opacity 0.2s; }
+    .cta a:hover { opacity: 0.85; }
+
+    .tech { text-align: center; margin-bottom: 48px; }
+    .tech h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; }
+    .tech-grid { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+    .tech-tag { padding: 6px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--muted); }
+
+    .pricing { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 32px; text-align: center; margin-bottom: 48px; }
+    .pricing h2 { font-size: 20px; margin-bottom: 8px; }
+    .pricing .price { font-size: 36px; font-weight: 800; margin: 12px 0; }
+    .pricing .price span { font-size: 16px; font-weight: 400; color: var(--muted); }
+    .pricing ul { list-style: none; text-align: left; max-width: 360px; margin: 16px auto; }
+    .pricing ul li { padding: 6px 0; font-size: 14px; color: var(--muted); }
+    .pricing ul li::before { content: "✓ "; color: #22c55e; font-weight: 700; }
+
+    footer { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0; border-top: 1px solid var(--border); }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">POWERED BY EXTREMECOMPILER ENGINE</div>
+      <h1>EPUB Factory</h1>
+      <p>Upload any EPUB or PDF — get a perfectly formatted, device-optimized ebook. Supports CJK typography, AI translation, and W3C EpubCheck validation.</p>
+    </header>
+
+    <div class="features">
+      <div class="feature">
+        <h3>📖 Smart Formatting</h3>
+        <p>Automatically converts vertical CJK layout to horizontal. Simplified/Traditional Chinese conversion built-in.</p>
+      </div>
+      <div class="feature">
+        <h3>🔧 EpubCheck Certified</h3>
+        <p>Every output passes W3C EpubCheck 5.1.0 with 0 errors, 0 warnings. Production-grade quality.</p>
+      </div>
+      <div class="feature">
+        <h3>📱 Device Optimized</h3>
+        <p>Kindle e-ink optimization, Apple Books compatibility, or generic mode. One file, perfect on every device.</p>
+      </div>
+      <div class="feature">
+        <h3>🌐 AI Translation</h3>
+        <p>Translate entire English books to Chinese while preserving formatting, images, and SVG covers.</p>
+      </div>
+      <div class="feature">
+        <h3>📑 TOC Rebuild</h3>
+        <p>Heuristic chapter detection rebuilds broken or missing table of contents automatically.</p>
+      </div>
+      <div class="feature">
+        <h3>⚡ CSS Sanitization</h3>
+        <p>Strips hardcoded fonts, absolute units, and background colors for clean, readable output.</p>
+      </div>
+    </div>
+
+    <div class="cta">
+      <a href="https://github.com/zengchanghuan/epub-factory">View on GitHub →</a>
+    </div>
+
+    <div class="pricing">
+      <h2>Pricing</h2>
+      <div class="price">Free <span>/ basic conversion</span></div>
+      <ul>
+        <li>EPUB & PDF upload</li>
+        <li>Simplified / Traditional conversion</li>
+        <li>EpubCheck validation</li>
+        <li>TOC rebuild</li>
+        <li>Device optimization (Kindle / Apple)</li>
+      </ul>
+      <div class="price" style="margin-top: 24px;">$9.99 <span>/ with AI translation</span></div>
+      <ul>
+        <li>Everything in Free</li>
+        <li>Full-book AI translation (EN → ZH/JA/KO)</li>
+        <li>Image & SVG preservation</li>
+        <li>Translation quality report</li>
+        <li>Token usage tracking</li>
+      </ul>
+    </div>
+
+    <div class="tech">
+      <h2>Built With</h2>
+      <div class="tech-grid">
+        <span class="tech-tag">Python</span>
+        <span class="tech-tag">FastAPI</span>
+        <span class="tech-tag">ebooklib</span>
+        <span class="tech-tag">BeautifulSoup</span>
+        <span class="tech-tag">DeepSeek API</span>
+        <span class="tech-tag">EpubCheck 5.1.0</span>
+        <span class="tech-tag">OpenCC</span>
+      </div>
+    </div>
+
+    <footer>
+      &copy; 2026 EPUB Factory &middot; <a href="https://github.com/zengchanghuan/epub-factory">GitHub</a>
+    </footer>
+  </div>
+</body>
+</html>
