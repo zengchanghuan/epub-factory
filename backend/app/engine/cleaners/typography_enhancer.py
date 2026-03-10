@@ -25,6 +25,7 @@ p, li, dd, dt, blockquote {{
 class TypographyEnhancer:
     def __init__(self):
         self._css_injected = False
+        self.stats = {"typography_fixed": 0}
 
     def process(self, content: bytes, item_type: int) -> bytes:
         if item_type == 2:  # CSS
@@ -53,10 +54,15 @@ class TypographyEnhancer:
         # 用正则只处理 > 和 < 之间的文本节点
         def fix_text_node(match):
             text = match.group(1)
+            original = text
             # 三个及以上的点 → 省略号（保留已是省略号的情况）
             text = re.sub(r"\.{3,}", "…", text)
             # 连续两个短横（不在 URL 或属性边界） → 破折号
             text = re.sub(r"(?<![:/\-])\-{2}(?![\-/>])", "—", text)
+            
+            if text != original:
+                self.stats["typography_fixed"] += 1
+                
             return f">{text}<"
 
         return re.sub(r">([^<]+)<", fix_text_node, html)

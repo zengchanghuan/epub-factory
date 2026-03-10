@@ -323,6 +323,46 @@
     .metrics-row.warn .stage-name { color: #92400e; }
     .metrics-row.error .stage-name { color: var(--error); }
 
+    <!-- 质量统计卡片 -->
+    .quality-card {
+      margin-top: 16px;
+      padding: 16px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      display: none;
+    }
+    .quality-card.visible { display: block; }
+    .quality-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1e3a8a;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .quality-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .quality-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .quality-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #2563eb;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    .quality-label {
+      font-size: 12px;
+      color: #4b5563;
+    }
+
     /* 历史记录 */
     .history-card { display: none; }
     .history-card.visible { display: block; }
@@ -451,7 +491,9 @@
         </div>
       </div>
 
+      <!-- 支付与提交按钮区 -->
       <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
+      <div id="paypal-button-container" style="display:none; margin-top:12px;"></div>
     </div>
 
     <!-- Status Card -->
@@ -493,6 +535,29 @@
       <div id="errorCodeMsg" style="display:none; margin-top:6px;
            font-size:12px; color:#6b7280; font-family: monospace;"></div>
 
+      <!-- 质量统计卡片 -->
+      <div class="quality-card" id="qualityCard">
+        <div class="quality-title">✨ 转换质量报告</div>
+        <div class="quality-grid">
+          <div class="quality-item">
+            <span class="quality-value" id="qCss">0</span>
+            <span class="quality-label">清理冗余样式</span>
+          </div>
+          <div class="quality-item">
+            <span class="quality-value" id="qTypo">0</span>
+            <span class="quality-label">修复排版断层</span>
+          </div>
+          <div class="quality-item">
+            <span class="quality-value" id="qToc">0</span>
+            <span class="quality-label">重建目录节点</span>
+          </div>
+          <div class="quality-item">
+            <span class="quality-value" id="qStem">0</span>
+            <span class="quality-label">防溢出保护对象</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 翻译费用摘要 -->
       <div id="costSummary" style="display:none; margin-top:12px; padding:10px 14px;
            background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;
@@ -525,6 +590,7 @@
   </div>
 
   <script src="lib.js"></script>
+  <script src="https://www.paypal.com/sdk/js?client-id=ATpeFr3DombSdiVk3SwEp3rKg89vb9JkyAmoEt6UcyqFcbOxQJpRhAVJOrRraJpzuiuH8QsoWnTsC3yf&currency=USD"></script>
   <script>
     const API = window.EPUB_FACTORY_API || "http://127.0.0.1:8000";
 
@@ -541,8 +607,11 @@
     const downloadBtn = $("downloadBtn");
     const errorMsg = $("errorMsg");
 
+    const paypalContainer = $("paypal-button-container");
+
     let selectedFile = null;
     let pollTimer = null;
+    let paymentOrderId = null; // 记录支付成功的订单ID
 
     // ─── 历史记录 ────────────────────────────────────────────────────────────
     function renderHistory() {
@@ -590,6 +659,26 @@
       $("metricsPanel").classList.add("visible");
     }
 
+    function updateSubmitButton() {
+      if (!selectedFile) {
+        submitBtn.disabled = true;
+        submitBtn.style.display = "block";
+        paypalContainer.style.display = "none";
+        return;
+      }
+      
+      if (enableTranslation.checked) {
+        // AI 翻译收费模式
+        submitBtn.style.display = "none";
+        paypalContainer.style.display = "block";
+      } else {
+        // 免费模式
+        submitBtn.disabled = false;
+        submitBtn.style.display = "block";
+        paypalContainer.style.display = "none";
+      }
+    }
+
     function selectFile(file) {
       if (!file) return;
       const name = file.name.toLowerCase();
@@ -600,7 +689,7 @@
       selectedFile = file;
       fileNameEl.textContent = `✅ ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
       fileNameEl.style.display = "block";
-      submitBtn.disabled = false;
+      updateSubmitButton();
     }
 
     dropzone.addEventListener("click", () => fileInput.click());
@@ -612,6 +701,7 @@
 
     enableTranslation.addEventListener("change", () => {
       $("translationOptions").style.display = enableTranslation.checked ? "block" : "none";
+      updateSubmitButton();
     });
 
     function setStatus(status, message) {
@@ -642,6 +732,15 @@
           renderHistory();
 
           if (data.metrics_summary) renderMetrics(data.metrics_summary);
+          if (data.quality_stats) {
+            $("qCss").textContent = data.quality_stats.css_cleaned || 0;
+            $("qTypo").textContent = data.quality_stats.typography_fixed || 0;
+            $("qToc").textContent = data.quality_stats.toc_generated || 0;
+            $("qStem").textContent = data.quality_stats.stem_protected || 0;
+            $("qualityCard").classList.add("visible");
+          } else {
+            $("qualityCard").classList.remove("visible");
+          }
           if (data.translation_stats) {
             $("costText").textContent = formatTranslationCost({
               totalTokens: data.translation_stats.total_tokens,
@@ -677,7 +776,8 @@
       }
     }
 
-    submitBtn.addEventListener("click", async () => {
+    // ─── 核心提交逻辑（被免费按钮和 PayPal 共同调用） ─────────────────────────
+    async function submitJob() {
       if (!selectedFile) return;
 
       submitBtn.disabled = true;
@@ -706,6 +806,11 @@
           if (gjson) form.append("glossary_json", gjson);
         }
       }
+      
+      // 如果有支付订单号，一并提交
+      if (paymentOrderId) {
+        form.append("paypal_order_id", paymentOrderId);
+      }
 
       try {
         const res = await fetch(`${API}/api/v1/jobs`, { method: "POST", body: form });
@@ -727,7 +832,36 @@
         errorMsg.style.display = "block";
         submitBtn.disabled = false;
       }
-    });
+    }
+
+    submitBtn.addEventListener("click", submitJob);
+
+    // ─── PayPal 集成 ─────────────────────────────────────────────────────────
+    paypal.Buttons({
+      style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal' },
+      createOrder: function(data, actions) {
+        // 设置收费金额，例如统一价 $1.99
+        return actions.order.create({
+          purchase_units: [{
+            amount: { value: '1.99' },
+            description: `EPUB AI Translation: ${selectedFile.name}`
+          }]
+        });
+      },
+      onApprove: function(data, actions) {
+        return actions.order.capture().then(function(details) {
+          // 支付成功
+          paymentOrderId = data.orderID;
+          // 隐藏 PayPal 按钮，显示加载中的状态
+          paypalContainer.style.display = "none";
+          submitJob();
+        });
+      },
+      onError: function(err) {
+        console.error("PayPal Error:", err);
+        alert("支付遇到问题，请重试或检查网络");
+      }
+    }).render('#paypal-button-container');
   </script>
 </body>
 </html>

@@ -42,6 +42,7 @@ class JobRecord(Base):
     status = Column(String(16), nullable=False, default="pending")
     message = Column(Text, nullable=False, default="")
     error_code = Column(String(64), nullable=True)
+    quality_stats_json = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
@@ -69,6 +70,15 @@ def _make_engine():
 # ─── 类型转换工具 ──────────────────────────────────────────────────────────────
 
 def _record_to_job(r: JobRecord) -> Job:
+    import json
+    stats = QualityStats()
+    if r.quality_stats_json:
+        try:
+            d = json.loads(r.quality_stats_json)
+            stats = QualityStats(**d)
+        except Exception:
+            pass
+
     return Job(
         id=r.id,
         trace_id=r.trace_id,
@@ -83,12 +93,13 @@ def _record_to_job(r: JobRecord) -> Job:
         status=JobStatus(r.status),
         message=r.message or "",
         error_code=r.error_code,
+        quality_stats=stats,
         created_at=r.created_at,
         updated_at=r.updated_at,
     )
 
-
 def _job_to_record(job: Job) -> JobRecord:
+    import json
     return JobRecord(
         id=job.id,
         trace_id=job.trace_id,
@@ -103,6 +114,7 @@ def _job_to_record(job: Job) -> JobRecord:
         status=job.status.value,
         message=job.message,
         error_code=job.error_code,
+        quality_stats_json=json.dumps(job.quality_stats.to_dict()) if job.quality_stats else "{}",
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
@@ -134,6 +146,7 @@ class PersistentJobStore:
         message: str = "",
         error_code: Optional[str] = None,
         output_path: Optional[str] = None,
+        quality_stats=None,
     ) -> Optional[Job]:
         with self._Session() as session:
             r = session.get(JobRecord, job_id)
@@ -144,6 +157,9 @@ class PersistentJobStore:
             r.error_code = error_code
             if output_path:
                 r.output_path = output_path
+            if quality_stats:
+                import json
+                r.quality_stats_json = json.dumps(quality_stats.to_dict())
             r.updated_at = datetime.now(timezone.utc)
             session.commit()
             session.refresh(r)

@@ -63,6 +63,10 @@ class ExtremeCompiler:
         self.bilingual = bilingual
         self.glossary: dict = glossary or {}
         
+        # 依赖 models.QualityStats，我们先局部引入避免循环依赖
+        from app.models import QualityStats
+        self.job_stats = QualityStats()
+        
         self.cleaners = [
             CjkNormalizer(output_mode=self.output_mode),
             CssSanitizer(),
@@ -135,12 +139,21 @@ class ExtremeCompiler:
                     )
                 item.set_content(content)
 
+        # 聚合质量统计
+        for cleaner in self.cleaners:
+            if hasattr(cleaner, "stats"):
+                for k, v in cleaner.stats.items():
+                    if hasattr(self.job_stats, k):
+                        setattr(self.job_stats, k, getattr(self.job_stats, k) + v)
+
         for name, ms in cleaner_totals.items():
             self.metrics.record(f"  Cleaner:{name}", ms)
 
         t = time.monotonic()
         rebuilder = TocRebuilder()
         self.book = rebuilder.rebuild(self.book)
+        if hasattr(rebuilder, "stats"):
+            self.job_stats.toc_generated += rebuilder.stats.get("toc_generated", 0)
         self.metrics.record("TocRebuilder", (time.monotonic() - t) * 1000)
 
         t = time.monotonic()

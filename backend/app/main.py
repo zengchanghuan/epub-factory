@@ -62,7 +62,7 @@ def process_job(job: Job) -> None:
             if job.bilingual:
                 suffix += "-双语"
         output_path = OUTPUT_DIR / f"{source_name}-{suffix}.epub"
-        converter.convert_file_to_horizontal(
+        stats = converter.convert_file_to_horizontal(
             Path(job.input_path),
             output_path,
             job.output_mode,
@@ -77,6 +77,7 @@ def process_job(job: Job) -> None:
             JobStatus.success,
             "转换成功",
             output_path=str(output_path),
+            quality_stats=stats,
         )
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
     except Exception as exc:
@@ -102,7 +103,14 @@ async def create_job(
     bilingual: bool = Form(False),
     glossary_json: Optional[str] = Form(None),  # JSON 字符串: '{"Harry": "哈利"}'
     device: DeviceProfile = Form(DeviceProfile.generic),
+    paypal_order_id: Optional[str] = Form(None),
 ):
+    if enable_translation:
+        if not paypal_order_id:
+            raise HTTPException(status_code=402, detail="AI 翻译为收费功能，请先完成支付")
+        # TODO: 这里应该加一个向 PayPal 服务器验证 order_id 是否真实的逻辑
+        # 验证是否 COMPLETED 且金额是对的。为了不阻塞流程，暂以订单号存在为准。
+        logger.info("Payment accepted", extra={"paypal_order_id": paypal_order_id})
     if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
@@ -163,6 +171,7 @@ def get_job(job_id: str):
         "status": job.status,
         "message": job.message,
         "error_code": job.error_code,
+        "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "download_url": f"/api/v1/jobs/{job.id}/download" if job.output_path else None,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),

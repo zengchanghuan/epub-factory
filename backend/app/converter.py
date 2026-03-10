@@ -22,14 +22,12 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
-    ) -> None:
+    ) -> QualityStats:
         suffix = input_path.suffix.lower()
         if suffix == ".epub":
-            self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
-            return
+            return self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
         if suffix == ".pdf":
-            self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
-            return
+            return self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
         raise RuntimeError("Unsupported file type, only .epub or .pdf is allowed")
 
     def _convert_epub_to_horizontal(
@@ -42,7 +40,7 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
-    ) -> None:
+    ) -> QualityStats:
         compiler = ExtremeCompiler(
             input_path=str(input_path),
             output_path=str(output_path),
@@ -56,6 +54,7 @@ class EpubConverter:
         success = compiler.run()
         if not success:
             raise RuntimeError("ExtremeCompiler failed to convert EPUB")
+        return compiler.job_stats
 
     def _convert_pdf_to_horizontal_epub(
         self,
@@ -67,11 +66,11 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
-    ) -> None:
+    ) -> QualityStats:
         temp_epub = Path(tempfile.mkdtemp(prefix="epub_factory_pdf_")) / "source.epub"
         try:
             self._pdf_to_epub(input_path, temp_epub)
-            self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
+            return self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
         finally:
             shutil.rmtree(temp_epub.parent, ignore_errors=True)
 

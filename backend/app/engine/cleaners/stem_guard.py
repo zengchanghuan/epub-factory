@@ -38,6 +38,7 @@ math, .MathJax, .math {{
 class StemGuard:
     def __init__(self):
         self._css_injected = False
+        self.stats = {"stem_protected": 0}
 
     def process(self, content: bytes, item_type: int) -> bytes:
         if item_type == 2:  # CSS
@@ -78,6 +79,7 @@ class StemGuard:
             before = text[: match.start()]
             if before.rstrip().endswith('class="epub-table-wrap">'):
                 return full_table
+            self.stats["stem_protected"] += 1
             return f'<div class="epub-table-wrap">{full_table}</div>'
 
         return re.sub(
@@ -93,6 +95,7 @@ class StemGuard:
             tag = match.group(0)
             if "display=" in tag.lower():
                 return tag
+            self.stats["stem_protected"] += 1
             # 在 > 前插入 display="inline"
             return re.sub(r"\s*/?>$", ' display="inline">', tag)
 
@@ -104,6 +107,7 @@ class StemGuard:
             tag = match.group(0)
             if "overflow=" in tag.lower():
                 return tag
+            self.stats["stem_protected"] += 1
             return re.sub(r"\s*/?>$", ' overflow="visible">', tag)
 
         return re.sub(r"<svg\b[^>]*>", add_overflow, text, flags=re.IGNORECASE)

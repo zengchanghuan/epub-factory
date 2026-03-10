@@ -29,6 +29,8 @@ class TocRebuilder:
 
     def rebuild(self, book: epub.EpubBook) -> epub.EpubBook:
         entries = self._extract_entries(book)
+        self.stats = {"toc_generated": len(entries)}
+        
         if not entries:
             print("⚠️ [TOC] No heading elements found, skipping rebuild")
             return book

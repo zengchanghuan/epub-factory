@@ -28,6 +28,7 @@ class JobStore:
         message: str = "",
         error_code: Optional[str] = None,
         output_path: Optional[str] = None,
+        quality_stats: Optional[QualityStats] = None,
     ) -> Optional[Job]:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -38,6 +39,8 @@ class JobStore:
             job.error_code = error_code
             if output_path:
                 job.output_path = output_path
+            if quality_stats:
+                job.quality_stats = quality_stats
             job.updated_at = datetime.now(timezone.utc)
             return job
 

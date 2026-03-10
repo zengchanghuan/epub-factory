@@ -14,6 +14,9 @@ class CssSanitizer:
         re.compile(r'background-color\s*:[^;]+;?', re.IGNORECASE),
     ]
 
+    def __init__(self):
+        self.stats = {"css_cleaned": 0}
+
     def process(self, content: bytes, item_type: int) -> bytes:
         if item_type == 9:  # HTML 文件
             text = content.decode('utf-8', errors='ignore')
@@ -21,9 +24,14 @@ class CssSanitizer:
             # 用正则直接在 style="..." 属性值内部做替换
             def clean_style_attr(match):
                 style_value = match.group(1)
+                original_value = style_value
                 for pattern in self.INLINE_PATTERNS:
                     style_value = pattern.sub('', style_value)
+                
                 style_value = style_value.strip()
+                if style_value != original_value.strip():
+                    self.stats["css_cleaned"] += 1
+
                 # 如果 style 被洗空了，直接删除整个 style 属性
                 if not style_value or style_value == ';':
                     return ''

@@ -23,6 +23,21 @@ class DeviceProfile(str, Enum):
 
 
 @dataclass
+class QualityStats:
+    css_cleaned: int = 0
+    typography_fixed: int = 0
+    toc_generated: int = 0
+    stem_protected: int = 0
+
+    def to_dict(self):
+        return {
+            "css_cleaned": self.css_cleaned,
+            "typography_fixed": self.typography_fixed,
+            "toc_generated": self.toc_generated,
+            "stem_protected": self.stem_protected,
+        }
+
+@dataclass
 class Job:
     id: str
     source_filename: str
@@ -38,6 +53,7 @@ class Job:
     status: JobStatus = JobStatus.pending
     message: str = ""
     error_code: Optional[str] = None
+    quality_stats: QualityStats = field(default_factory=QualityStats)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
