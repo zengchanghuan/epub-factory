@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Dict, Optional
 
 
 class JobStatus(str, Enum):
@@ -31,6 +31,8 @@ class Job:
     input_path: str
     enable_translation: bool = False
     target_lang: str = "zh-CN"
+    bilingual: bool = False
+    glossary: Dict[str, str] = field(default_factory=dict)
     device: DeviceProfile = DeviceProfile.generic
     output_path: Optional[str] = None
     status: JobStatus = JobStatus.pending

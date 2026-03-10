@@ -285,6 +285,83 @@
       font-size: 13px;
     }
 
+    /* Pipeline 耗时折叠面板 */
+    .metrics-panel {
+      margin-top: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: none;
+    }
+    .metrics-panel.visible { display: block; }
+    .metrics-toggle {
+      width: 100%;
+      padding: 10px 14px;
+      background: #f9fafb;
+      border: none;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--muted);
+    }
+    .metrics-toggle:hover { background: #f3f4f6; }
+    .metrics-body { display: none; padding: 8px 0; }
+    .metrics-body.open { display: block; }
+    .metrics-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 14px;
+      font-size: 12px;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+    .metrics-row .stage-name { color: var(--text); }
+    .metrics-row .stage-ms { color: var(--muted); }
+    .metrics-row.warn .stage-name { color: #92400e; }
+    .metrics-row.error .stage-name { color: var(--error); }
+
+    /* 历史记录 */
+    .history-card { display: none; }
+    .history-card.visible { display: block; }
+    .history-list { list-style: none; }
+    .history-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      font-size: 13px;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-info { flex: 1; min-width: 0; }
+    .history-filename { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .history-dl {
+      padding: 5px 12px;
+      background: var(--success);
+      color: white;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 12px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .history-dl.disabled { background: #d1d5db; pointer-events: none; }
+    .history-clear {
+      font-size: 12px;
+      color: var(--muted);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+    }
+    .history-clear:hover { color: var(--error); }
+
     footer {
       text-align: center;
       padding: 24px 0;
@@ -341,14 +418,27 @@
         </label>
       </div>
 
-      <div class="form-group" id="langGroup" style="display:none; margin-top: 12px;">
-        <label>目标语言</label>
-        <select id="targetLang">
-          <option value="zh-CN">简体中文</option>
-          <option value="zh-TW">繁体中文</option>
-          <option value="ja">日语</option>
-          <option value="ko">韩语</option>
-        </select>
+      <div id="translationOptions" style="display:none;">
+        <div class="form-group" style="margin-top: 12px;">
+          <label>目标语言</label>
+          <select id="targetLang">
+            <option value="zh-CN">简体中文</option>
+            <option value="zh-TW">繁体中文</option>
+            <option value="ja">日语</option>
+            <option value="ko">韩语</option>
+          </select>
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <span>双语并排</span><br/>
+            <span class="hint">原文 + 译文上下对照，便于校对</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="enableBilingual" />
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
 
       <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
@@ -382,7 +472,41 @@
         📥 下载转换结果
       </a>
 
+      <!-- SafeMode 降级提示 -->
+      <div id="safeModeNotice" style="display:none; margin-top:12px; padding:10px 14px;
+           background:#fffbeb; border:1px solid #fde68a; border-radius:8px;
+           font-size:13px; color:#92400e;">
+        ⚠️ 引擎已降级为安全模式（仅保留排版方向转换），完整功能可尝试重新提交。
+      </div>
+
       <div class="error-msg" id="errorMsg" style="display:none;"></div>
+      <div id="errorCodeMsg" style="display:none; margin-top:6px;
+           font-size:12px; color:#6b7280; font-family: monospace;"></div>
+
+      <!-- 翻译费用摘要 -->
+      <div id="costSummary" style="display:none; margin-top:12px; padding:10px 14px;
+           background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;
+           font-size:13px; color:#065f46;">
+        🤖 翻译消耗：<span id="costText"></span>
+      </div>
+
+      <!-- Pipeline 耗时折叠面板 -->
+      <div class="metrics-panel" id="metricsPanel">
+        <button class="metrics-toggle" id="metricsToggle">
+          <span>⏱ Pipeline 耗时</span>
+          <span id="metricsTotalMs" style="font-weight:400;"></span>
+        </button>
+        <div class="metrics-body" id="metricsBody"></div>
+      </div>
+    </div>
+
+    <!-- 历史记录卡片 -->
+    <div class="card history-card" id="historyCard">
+      <h2 style="justify-content: space-between;">
+        <span><span class="icon">🕐</span> 最近转换</span>
+        <button class="history-clear" id="historyClearBtn">清除记录</button>
+      </h2>
+      <ul class="history-list" id="historyList"></ul>
     </div>
 
     <footer>
@@ -390,6 +514,7 @@
     </footer>
   </div>
 
+  <script src="lib.js"></script>
   <script>
     const API = window.EPUB_FACTORY_API || "http://127.0.0.1:8000";
 
@@ -399,7 +524,6 @@
     const fileNameEl = $("fileName");
     const submitBtn = $("submitBtn");
     const enableTranslation = $("enableTranslation");
-    const langGroup = $("langGroup");
     const statusCard = $("statusCard");
     const statusBadge = $("statusBadge");
     const statusMessage = $("statusMessage");
@@ -409,6 +533,52 @@
 
     let selectedFile = null;
     let pollTimer = null;
+
+    // ─── 历史记录 ────────────────────────────────────────────────────────────
+    function renderHistory() {
+      const list = loadHistory(localStorage);
+      const card = $("historyCard");
+      const ul = $("historyList");
+      if (!list.length) { card.classList.remove("visible"); return; }
+      card.classList.add("visible");
+      ul.innerHTML = list.map(e => `
+        <li class="history-item">
+          <div class="history-info">
+            <div class="history-filename" title="${e.filename}">${e.filename}</div>
+            <div class="history-meta">${e.meta} · ${new Date(e.savedAt).toLocaleString()}</div>
+          </div>
+          ${e.downloadUrl
+            ? `<a class="history-dl" href="${e.downloadUrl}" download>📥 下载</a>`
+            : `<span class="history-dl disabled">已过期</span>`}
+        </li>`).join("");
+    }
+
+    $("historyClearBtn").addEventListener("click", () => {
+      clearHistory(localStorage);
+      renderHistory();
+    });
+
+    renderHistory(); // 页面加载时恢复历史
+
+    // Pipeline 耗时面板
+    $("metricsToggle").addEventListener("click", () => {
+      $("metricsBody").classList.toggle("open");
+    });
+
+    function renderMetrics(summaryText) {
+      if (!summaryText) return;
+      const stages = parseMetricsSummary(summaryText);
+      const total = parseTotalMs(summaryText);
+      if (!stages.length) return;
+
+      $("metricsTotalMs").textContent = total ? formatDuration(total) : "";
+      $("metricsBody").innerHTML = stages.map(s => `
+        <div class="metrics-row ${s.status === "ok" ? "" : s.status}">
+          <span class="stage-name">${s.status === "ok" ? "✅" : s.status === "warn" ? "⚠️" : "❌"} ${s.name}</span>
+          <span class="stage-ms">${formatDuration(s.ms)}</span>
+        </div>`).join("");
+      $("metricsPanel").classList.add("visible");
+    }
 
     function selectFile(file) {
       if (!file) return;
@@ -431,7 +601,7 @@
     dropzone.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]); });
 
     enableTranslation.addEventListener("change", () => {
-      langGroup.style.display = enableTranslation.checked ? "block" : "none";
+      $("translationOptions").style.display = enableTranslation.checked ? "block" : "none";
     });
 
     function setStatus(status, message) {
@@ -452,11 +622,23 @@
 
         setStatus(data.status, data.message);
         $("metaFilename").textContent = data.source_filename;
-        $("metaMode").textContent = data.output_mode + " / " + (data.device || "generic");
+        $("metaMode").textContent = formatJobMeta(data);
 
         if (data.status === "success" && data.download_url) {
           downloadBtn.href = `${API}${data.download_url}`;
           downloadBtn.style.display = "inline-flex";
+          // 保存到历史
+          saveHistory(localStorage, buildHistoryEntry(data, API));
+          renderHistory();
+
+          if (data.metrics_summary) renderMetrics(data.metrics_summary);
+          if (data.translation_stats) {
+            $("costText").textContent = formatTranslationCost({
+              totalTokens: data.translation_stats.total_tokens,
+              costUsd: data.translation_stats.cost_usd,
+            });
+            $("costSummary").style.display = "block";
+          }
           clearInterval(pollTimer);
           submitBtn.disabled = false;
         }
@@ -464,8 +646,17 @@
         if (data.status === "failed") {
           errorMsg.textContent = data.message || "转换失败";
           errorMsg.style.display = "block";
+          const codeText = formatErrorCode(data.error_code);
+          if (codeText) {
+            $("errorCodeMsg").textContent = codeText;
+            $("errorCodeMsg").style.display = "block";
+          }
           clearInterval(pollTimer);
           submitBtn.disabled = false;
+        }
+
+        if (data.status === "success" && data.metrics_summary && isSafeMode(data.metrics_summary)) {
+          $("safeModeNotice").style.display = "block";
         }
       } catch (err) {
         setStatus("failed", err.message);
@@ -489,6 +680,7 @@
       form.append("enable_translation", enableTranslation.checked);
       if (enableTranslation.checked) {
         form.append("target_lang", $("targetLang").value);
+        form.append("bilingual", $("enableBilingual").checked);
       }
 
       try {

@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 from .models import DeviceProfile, OutputMode
-from .engine.compiler import ExtremeCompiler
+from .engine import ExtremeCompiler
 
 
 class EpubConverter:
@@ -20,13 +20,15 @@ class EpubConverter:
         enable_translation: bool = False,
         target_lang: str = "zh-CN",
         device: str = "generic",
+        bilingual: bool = False,
+        glossary: dict | None = None,
     ) -> None:
         suffix = input_path.suffix.lower()
         if suffix == ".epub":
-            self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device)
+            self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
             return
         if suffix == ".pdf":
-            self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device)
+            self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
             return
         raise RuntimeError("Unsupported file type, only .epub or .pdf is allowed")
 
@@ -38,6 +40,8 @@ class EpubConverter:
         enable_translation: bool = False,
         target_lang: str = "zh-CN",
         device: str = "generic",
+        bilingual: bool = False,
+        glossary: dict | None = None,
     ) -> None:
         compiler = ExtremeCompiler(
             input_path=str(input_path),
@@ -46,6 +50,8 @@ class EpubConverter:
             enable_translation=enable_translation,
             target_lang=target_lang,
             device=device,
+            bilingual=bilingual,
+            glossary=glossary,
         )
         success = compiler.run()
         if not success:
@@ -59,11 +65,13 @@ class EpubConverter:
         enable_translation: bool = False,
         target_lang: str = "zh-CN",
         device: str = "generic",
+        bilingual: bool = False,
+        glossary: dict | None = None,
     ) -> None:
         temp_epub = Path(tempfile.mkdtemp(prefix="epub_factory_pdf_")) / "source.epub"
         try:
             self._pdf_to_epub(input_path, temp_epub)
-            self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device)
+            self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
         finally:
             shutil.rmtree(temp_epub.parent, ignore_errors=True)
 

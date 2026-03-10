@@ -3,6 +3,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,6 +59,8 @@ def process_job(job: Job) -> None:
         suffix = "横排繁体" if job.output_mode == OutputMode.traditional else "横排简体"
         if job.enable_translation:
             suffix += f"-翻译_{job.target_lang}"
+            if job.bilingual:
+                suffix += "-双语"
         output_path = OUTPUT_DIR / f"{source_name}-{suffix}.epub"
         converter.convert_file_to_horizontal(
             Path(job.input_path),
@@ -66,6 +69,8 @@ def process_job(job: Job) -> None:
             enable_translation=job.enable_translation,
             target_lang=job.target_lang,
             device=job.device.value,
+            bilingual=job.bilingual,
+            glossary=job.glossary or None,
         )
         job_store.update_status(
             job.id,
@@ -94,10 +99,21 @@ async def create_job(
     output_mode: OutputMode = Form(OutputMode.traditional),
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
+    bilingual: bool = Form(False),
+    glossary_json: Optional[str] = Form(None),  # JSON 字符串: '{"Harry": "哈利"}'
     device: DeviceProfile = Form(DeviceProfile.generic),
 ):
     if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
+
+    glossary: dict = {}
+    if glossary_json:
+        try:
+            parsed = json.loads(glossary_json)
+            if isinstance(parsed, dict):
+                glossary = {str(k): str(v) for k, v in parsed.items()}
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="glossary_json 格式错误，应为 JSON 对象字符串")
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
@@ -113,6 +129,8 @@ async def create_job(
         input_path=str(input_path),
         enable_translation=enable_translation,
         target_lang=target_lang,
+        bilingual=bilingual,
+        glossary=glossary,
         device=device,
     )
     job_store.add(job)
@@ -123,6 +141,7 @@ async def create_job(
         "status": job.status,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
+        "bilingual": job.bilingual,
         "device": job.device,
         "message": "任务已创建",
     }

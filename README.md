@@ -1,17 +1,69 @@
 # EPUB Factory
 
-一个可产品化演进的转换 MVP：提供后端 API 与网页前端，支持把竖排 EPUB 或 PDF 转成横排 EPUB（繁体或简体）。
+一个可产品化演进的 EPUB 转换引擎：支持竖排转横排、繁简互转、AI 全书翻译、双语对照输出，以及 Kindle/Apple Books 设备特化编译。
+
+## 功能一览
+
+### 引擎（ExtremeCompiler Pipeline）
+
+| 模块 | 功能 |
+|---|---|
+| `CjkNormalizer` | 竖排 → 横排 CSS 清洗，繁体 → 简体（OpenCC） |
+| `CssSanitizer` | 移除硬编码字体、行高、背景色 |
+| `TypographyEnhancer` | 注入 orphans/widows，修复省略号和破折号 |
+| `StemGuard` | 表格防溢出，MathML/SVG 公式保护 |
+| `DeviceProfileCompiler` | Kindle 墨水屏去色 / Apple Books WebKit 前缀 |
+| `SemanticsTranslator` | 异步 LLM 全书翻译（SQLite 缓存 + 术语表 RAG） |
+| `TocRebuilder` | 启发式重建 TOC 目录 + 锚点注入 |
+| `EpubPackager` | 重打包 + SVG 大小写修复 + OPF 修复 |
+
+### 可靠性
+
+- **两级降级策略**：Full Pipeline 失败 → Safe Mode（仅转换方向）
+- **清洗器异常隔离**：单个 Cleaner 失败不影响整体任务
+- **Pipeline 阶段耗时埋点**：每次转换输出详细耗时摘要
+
+### AI 翻译
+
+- 异步并发（`asyncio` + `Semaphore`），`tenacity` 指数退避重试
+- SQLite 缓存去重（断点续传，零重复 Token 消耗）
+- **术语表注入（RAG）**：传入 `{"原文术语": "目标术语"}` 强制统一翻译
+- **双语对照模式**：原文 + 译文并排，含 `epub-original`/`epub-translated` class
+
+### 存储
+
+- 默认：内存 `JobStore`（零依赖，重启后数据丢失）
+- 设置 `DATABASE_URL` 或 `EPUB_PERSISTENT_STORE=1`：自动切换为 SQLAlchemy 持久化（支持 SQLite / PostgreSQL）
 
 ## 目录结构
 
-- `backend/`：FastAPI 后端（任务 API + 转换引擎）
-- `frontend/`：网页控制台（拖拽上传、查询状态、下载结果）
-
-## 工程边界（先保证可靠性）
-
-- 失败处理：每个任务独立状态（`pending/running/success/failed`），异常不会中断全局服务。
-- 可观测性：每个任务都生成 `trace_id`，后端输出结构化日志。
-- 可替换性：转换逻辑已独立在 `backend/app/converter.py`，后续可替换为 C# 或 Go 引擎。
+```
+epub-factory/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI 路由层
+│   │   ├── converter.py         # EpubConverter 入口
+│   │   ├── models.py            # Job / OutputMode / DeviceProfile
+│   │   ├── storage.py           # 自动切换内存/持久化存储
+│   │   ├── storage_db.py        # SQLAlchemy 持久化实现
+│   │   └── engine/
+│   │       ├── compiler.py      # ExtremeCompiler（Pipeline 调度）
+│   │       ├── unpacker.py
+│   │       ├── packager.py
+│   │       ├── toc_rebuilder.py
+│   │       ├── translation_cache.py
+│   │       └── cleaners/        # 各清洗器模块
+│   ├── test_c1_*.py             # 测试套件（C1-C6）
+│   └── requirements.txt
+├── frontend/
+│   ├── index.html               # 单页应用
+│   ├── lib.js                   # 纯逻辑函数（可单元测试）
+│   └── tests/                   # Node.js 前端测试（F1-F6）
+└── docs/                        # 设计文档
+    ├── PRODUCT-STRATEGY.md
+    ├── ENGINE-DESIGN.md
+    └── AI-TRANSLATION-DESIGN.md
+```
 
 ## 快速启动
 
@@ -24,9 +76,16 @@ python3 -m venv .venv
 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
-### 2) 启动前端页面
+可选环境变量（`.env` 文件）：
 
-新开终端：
+```env
+OPENAI_API_KEY=sk-xxx
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_MODEL=deepseek-chat
+DATABASE_URL=postgresql://user:pass@localhost/epub_factory  # 留空使用内存存储
+```
+
+### 2) 启动前端页面
 
 ```bash
 cd frontend
@@ -37,19 +96,52 @@ python3 -m http.server 5173
 
 ## API 概览
 
-- `GET /healthz`：健康检查
-- `POST /api/v1/jobs`：创建转换任务（`multipart/form-data`）
-  - `file`：EPUB 或 PDF 文件
-  - `output_mode`：`traditional` 或 `simplified`
-- `GET /api/v1/jobs/{job_id}`：查询任务状态
-- `GET /api/v1/jobs/{job_id}/download`：下载转换结果
+| 接口 | 说明 |
+|---|---|
+| `GET /healthz` | 健康检查 |
+| `POST /api/v1/jobs` | 创建转换任务（multipart/form-data） |
+| `GET /api/v1/jobs/{job_id}` | 查询任务状态 |
+| `GET /api/v1/jobs/{job_id}/download` | 下载转换结果 |
 
-## 后续 TODO（按你要求暂不实现）
+### POST /api/v1/jobs 参数
 
-- [ ] 鉴权（登录、Token、权限模型）
-- [ ] PostgreSQL 持久化（任务、审计、用户）
-- [ ] Redis 队列（异步消费 + 任务重试）
-- [ ] 任务重试策略（指数退避、最大重试次数）
-- [ ] Nginx 部署（静态前端 + API 反向代理）
-- [ ] Docker Compose 一键启动（frontend + backend + postgres + redis + nginx）
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `file` | File | — | .epub 或 .pdf 文件 |
+| `output_mode` | string | `simplified` | `simplified` \| `traditional` |
+| `device` | string | `generic` | `generic` \| `kindle` \| `apple` |
+| `enable_translation` | bool | `false` | 是否开启 AI 翻译 |
+| `target_lang` | string | `zh-CN` | 翻译目标语言 |
+| `bilingual` | bool | `false` | 双语对照模式 |
+| `glossary_json` | string | `null` | 术语表 JSON，如 `{"Harry": "哈利"}` |
 
+## 运行测试
+
+```bash
+# 后端测试（C1-C6，共 65 个用例）
+cd backend
+.venv/bin/python test_c1_typography_and_fallback.py
+.venv/bin/python test_c2_pipeline_metrics.py
+.venv/bin/python test_c3_stem_guard.py
+.venv/bin/python test_c4_bilingual.py
+.venv/bin/python test_c5_persistent_store.py
+.venv/bin/python test_c6_glossary_rag.py
+
+# 前端测试（F1-F6，共 53 个用例，零依赖）
+cd frontend/tests
+node runner.js test_f1_bilingual.js
+node runner.js test_f2_metrics.js
+node runner.js test_f3_cost.js
+node runner.js test_f4_f5_safemode_errorcode.js
+node runner.js test_f6_history.js
+```
+
+## 待实现（Roadmap）
+
+- [ ] 幽灵目录 AI 语义提取（LLM 推断无标签章节）
+- [ ] AI 生成图片 Alt 文本（ADA/A11y 合规）
+- [ ] Redis + Celery 任务队列（支持并发、重试）
+- [ ] 用户鉴权（Supabase Auth）
+- [ ] 配额控制 + Paddle 计费
+- [ ] 域名上线 + SEO 内容发布
+- [ ] ProductHunt 发布

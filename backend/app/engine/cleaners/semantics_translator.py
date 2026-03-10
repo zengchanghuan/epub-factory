@@ -62,8 +62,11 @@ class TranslationStats:
 
 
 class SemanticsTranslator:
-    def __init__(self, target_lang="zh-CN", concurrency=5):
+    def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
+                 glossary: dict | None = None):
         self.target_lang = target_lang
+        self.bilingual = bilingual  # True = 原文 + 译文并排
+        self.glossary: dict[str, str] = glossary or {}  # {原文术语: 目标语言术语}
         self.cache = TranslationCache()
         
         self.client = AsyncOpenAI(
@@ -74,15 +77,25 @@ class SemanticsTranslator:
         self.semaphore = asyncio.Semaphore(concurrency)
         self.stats = TranslationStats()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def _call_llm(self, html_chunk: str) -> str:
-        system_prompt = f"""你是一位顶级的书籍翻译专家。目标语言是：{self.target_lang}。
+    def _build_system_prompt(self) -> str:
+        """构建 System Prompt，若有术语表则注入为上下文（RAG）"""
+        prompt = f"""你是一位顶级的书籍翻译专家。目标语言是：{self.target_lang}。
 用户将给你一段包含 HTML 标签的文本。
 规则：
 1. 翻译文本内容，使其符合目标语言的母语表达习惯，信达雅。
 2. 绝对不能修改、增加或删除任何 HTML 标签及属性（如 id, class, href）。
 3. 保持标签与对应文字的包裹关系完全一致。
 4. 只输出翻译后的 HTML 字符串，不要输出任何解释，不要包含 markdown 代码块外壳。"""
+
+        if self.glossary:
+            lines = "\n".join(f"  {src} → {dst}" for src, dst in self.glossary.items())
+            prompt += f"\n\n术语对照表（必须严格遵守，遇到以下原文术语时使用指定译文）：\n{lines}"
+
+        return prompt
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def _call_llm(self, html_chunk: str) -> str:
+        system_prompt = self._build_system_prompt()
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -180,10 +193,18 @@ class SemanticsTranslator:
                     try:
                         new_soup = BeautifulSoup(translated_html, 'html.parser')
                         new_tag = new_soup.find()
-                        if new_tag:
-                            block.replace_with(new_tag)
-                        else:
+                        if not new_tag:
                             block.string = translated_html
+                            continue
+
+                        if self.bilingual:
+                            # 双语模式：原文保留，译文插在原文之后
+                            # 为原文添加标记 class，方便读者区分
+                            block["class"] = block.get("class", []) + ["epub-original"]
+                            new_tag["class"] = new_tag.get("class", []) + ["epub-translated"]
+                            block.insert_after(new_tag)
+                        else:
+                            block.replace_with(new_tag)
                     except Exception as e:
                         print(f"❌ Error replacing tag: {e}")
 
