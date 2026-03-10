@@ -42,6 +42,9 @@ function buildFormFields(config) {
   if (config.enableTranslation) {
     fields.target_lang = config.targetLang || "zh-CN";
     fields.bilingual = String(Boolean(config.bilingual));
+    if (config.glossaryJson) {
+      fields.glossary_json = config.glossaryJson;
+    }
   }
 
   return fields;
@@ -183,6 +186,65 @@ function formatErrorCode(errorCode) {
   return hint ? `[${errorCode}] ${hint}` : `[${errorCode}]`;
 }
 
+// ─── 术语表解析 ────────────────────────────────────────────────────────────
+
+/**
+ * 把用户输入的术语表文本解析为 {原文: 译文} 对象
+ *
+ * 支持格式（每行一条）：
+ *   Harry Potter = 哈利·波特
+ *   Voldemort: 伏地魔
+ *   空行、纯空白行自动跳过
+ *
+ * @param {string} text
+ * @returns {{ glossary: object, errors: string[] }}
+ */
+function parseGlossaryInput(text) {
+  const glossary = {};
+  const errors = [];
+
+  const lines = (text || "").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;  // 跳过空行
+
+    // 支持 = 和 : 两种分隔符，取第一个出现的
+    const eqIdx = line.indexOf("=");
+    const colonIdx = line.indexOf(":");
+    let sepIdx = -1;
+    if (eqIdx >= 0 && colonIdx >= 0) sepIdx = Math.min(eqIdx, colonIdx);
+    else if (eqIdx >= 0) sepIdx = eqIdx;
+    else if (colonIdx >= 0) sepIdx = colonIdx;
+
+    if (sepIdx < 0) {
+      errors.push(`第 ${i + 1} 行格式错误（缺少 = 或 :）：${line}`);
+      continue;
+    }
+
+    const src = line.slice(0, sepIdx).trim();
+    const dst = line.slice(sepIdx + 1).trim();
+
+    if (!src) { errors.push(`第 ${i + 1} 行原文为空`); continue; }
+    if (!dst) { errors.push(`第 ${i + 1} 行译文为空`); continue; }
+
+    glossary[src] = dst;
+  }
+
+  return { glossary, errors };
+}
+
+/**
+ * 将 parseGlossaryInput 的结果序列化为 API 所需的 JSON 字符串
+ * 若术语表为空返回 null
+ * @param {string} text
+ * @returns {string|null}
+ */
+function glossaryToJson(text) {
+  const { glossary } = parseGlossaryInput(text);
+  if (Object.keys(glossary).length === 0) return null;
+  return JSON.stringify(glossary);
+}
+
 // ─── LocalStorage 历史记录 ────────────────────────────────────────────────
 
 const HISTORY_KEY = "epub_factory_history";
@@ -248,6 +310,8 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     validateFile,
     buildFormFields,
+    parseGlossaryInput,
+    glossaryToJson,
     mapStatusText,
     formatDevice,
     formatJobMeta,

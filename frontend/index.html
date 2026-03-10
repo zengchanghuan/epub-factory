@@ -439,6 +439,16 @@
             <span class="slider"></span>
           </label>
         </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label>术语对照表 <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">（可选，每行一条）</span></label>
+          <textarea id="glossaryInput" placeholder="Harry Potter = 哈利·波特&#10;Voldemort = 伏地魔&#10;Hogwarts: 霍格沃茨"
+            style="width:100%; height:80px; padding:8px 12px; border:1px solid var(--border);
+                   border-radius:8px; font-size:13px; font-family:inherit; resize:vertical;
+                   line-height:1.6; color:var(--text);"
+          ></textarea>
+          <div id="glossaryError" style="display:none; margin-top:4px; font-size:12px; color:var(--error);"></div>
+        </div>
       </div>
 
       <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
@@ -681,6 +691,20 @@
       if (enableTranslation.checked) {
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
+
+        const rawGlossary = $("glossaryInput").value;
+        if (rawGlossary.trim()) {
+          const { glossary, errors } = parseGlossaryInput(rawGlossary);
+          if (errors.length > 0) {
+            $("glossaryError").textContent = errors.join("；");
+            $("glossaryError").style.display = "block";
+            submitBtn.disabled = false;
+            return;
+          }
+          $("glossaryError").style.display = "none";
+          const gjson = glossaryToJson(rawGlossary);
+          if (gjson) form.append("glossary_json", gjson);
+        }
       }
 
       try {
