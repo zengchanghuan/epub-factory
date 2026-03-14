@@ -5,15 +5,25 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+import os as _os
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .converter import converter
 from .job_runner import run_job
-from .models import DeviceProfile, Job, JobStatus, OutputMode
+from .models import DeviceProfile, Job, JobStatus, OutputMode, TraditionalVariant
 from .storage import job_store
+
+# Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
+_sentry_dsn = _os.environ.get("SENTRY_DSN")
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=_sentry_dsn)
+    except Exception:
+        pass
 
 
 def _use_celery() -> bool:
@@ -99,6 +109,10 @@ class JsonFormatter(logging.Formatter):
             payload["trace_id"] = record.trace_id
         if hasattr(record, "job_id"):
             payload["job_id"] = record.job_id
+        if hasattr(record, "error_code"):
+            payload["error_code"] = record.error_code
+        if hasattr(record, "error_message"):
+            payload["error_message"] = record.error_message
         return json.dumps(payload, ensure_ascii=False)
 
 
@@ -133,6 +147,7 @@ async def create_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     output_mode: OutputMode = Form(OutputMode.traditional),
+    traditional_variant: TraditionalVariant = Form(TraditionalVariant.auto),
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
     bilingual: bool = Form(False),
@@ -175,6 +190,7 @@ async def create_job(
         bilingual=bilingual,
         glossary=glossary,
         device=device,
+        traditional_variant=traditional_variant.value,
     )
     job_store.add(job)
     if _use_celery():
@@ -190,6 +206,7 @@ async def create_job(
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "device": job.device,
+        "traditional_variant": job.traditional_variant,
         "message": "任务已创建",
     }
 
@@ -239,14 +256,16 @@ async def create_job_v2(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     output_mode: OutputMode = Form(OutputMode.traditional),
+    traditional_variant: TraditionalVariant = Form(TraditionalVariant.auto),
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
     bilingual: bool = Form(False),
     glossary_json: Optional[str] = Form(None),
     device: DeviceProfile = Form(DeviceProfile.generic),
     paypal_order_id: Optional[str] = Form(None),
+    temperature: Optional[float] = Form(None),
 ):
-    """上传文件并创建后台任务，创建后立即返回（v2 契约）。"""
+    """上传文件并创建后台任务，创建后立即返回（v2 契约）。temperature 不传时：翻译任务默认 1.3，纯格式转换不调用 LLM。"""
     import os as _os
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
     if enable_translation and not paypal_order_id and not _skip_payment:
@@ -262,6 +281,11 @@ async def create_job_v2(
                 glossary = {str(k): str(v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError):
             raise HTTPException(status_code=400, detail="glossary_json 格式错误，应为 JSON 对象字符串")
+
+    if temperature is None and enable_translation:
+        temperature = 1.3
+    elif not enable_translation:
+        temperature = None
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
@@ -280,6 +304,8 @@ async def create_job_v2(
         bilingual=bilingual,
         glossary=glossary,
         device=device,
+        temperature=temperature,
+        traditional_variant=traditional_variant.value,
     )
     job_store.add(job)
     if _use_celery():
@@ -298,6 +324,7 @@ async def create_job_v2(
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "device": job.device.value,
+        "traditional_variant": job.traditional_variant,
         "created_at": job.created_at.isoformat(),
     }
 
@@ -458,6 +485,120 @@ def list_notifications_v2(job_id: Optional[str] = None):
             "created_at": n.created_at.isoformat() if hasattr(n.created_at, "isoformat") else str(n.created_at),
         })
     return {"items": items}
+
+
+@app.get("/api/v2/admin/translation-stats", include_in_schema=False)
+def get_admin_translation_stats(
+    request: Request,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """
+    后台用：汇总所有任务的 Token 用量与预估费用（供自己查看成本）。
+    若设置环境变量 ADMIN_SECRET，则请求头需带 X-Admin-Key: <ADMIN_SECRET> 或 ?admin_key=<ADMIN_SECRET>。
+    """
+    secret = _os.environ.get("ADMIN_SECRET")
+    if secret:
+        key = x_admin_key or request.query_params.get("admin_key")
+        if key != secret:
+            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+    list_fn = getattr(job_store, "list_jobs", None)
+    if not list_fn:
+        return {"total_prompt_tokens": 0, "total_completion_tokens": 0, "total_tokens": 0, "total_cost_usd": 0.0, "jobs_count": 0, "by_job": []}
+    jobs = list_fn(limit=500)
+    total_prompt = 0
+    total_completion = 0
+    total_cost = 0.0
+    by_job = []
+    for job in jobs:
+        st = getattr(job, "translation_stats", None) or {}
+        if not st:
+            continue
+        pt = int(st.get("prompt_tokens") or 0)
+        ct = int(st.get("completion_tokens") or 0)
+        cost = float(st.get("cost_usd") or 0)
+        total_prompt += pt
+        total_completion += ct
+        total_cost += cost
+        by_job.append({
+            "job_id": job.id,
+            "source_filename": job.source_filename,
+            "created_at": job.created_at.isoformat() if hasattr(job.created_at, "isoformat") else str(job.created_at),
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "total_tokens": pt + ct,
+            "cost_usd": round(cost, 4),
+        })
+    return {
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_tokens": total_prompt + total_completion,
+        "total_cost_usd": round(total_cost, 4),
+        "jobs_count": len(by_job),
+        "by_job": by_job,
+    }
+
+
+@app.get("/api/v2/admin/error-stats", include_in_schema=False)
+def get_admin_error_stats(
+    request: Request,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    since: Optional[str] = None,
+    limit: int = 50,
+):
+    """
+    后台用：汇总失败任务的错误码分布与最近明细。
+    若设置环境变量 ADMIN_SECRET，则请求头需带 X-Admin-Key。
+    可选参数 ?since=2024-01-01（ISO 日期）过滤时间范围，?limit=N 控制明细数量。
+    """
+    secret = _os.environ.get("ADMIN_SECRET")
+    if secret:
+        key = x_admin_key or request.query_params.get("admin_key")
+        if key != secret:
+            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+
+    list_fn = getattr(job_store, "list_jobs", None)
+    if not list_fn:
+        return {"total_failed": 0, "by_error_code": {}, "recent": []}
+
+    all_jobs = list_fn(limit=2000)
+
+    # 可选时间过滤
+    since_dt = None
+    if since:
+        try:
+            from datetime import datetime as _dt
+            since_dt = _dt.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+    failed_jobs = [
+        j for j in all_jobs
+        if j.status.value == "failed"
+        and (since_dt is None or j.created_at >= since_dt)
+    ]
+
+    by_error_code: dict = {}
+    for j in failed_jobs:
+        code = j.error_code or "UNKNOWN"
+        by_error_code[code] = by_error_code.get(code, 0) + 1
+
+    recent = []
+    for j in failed_jobs[:limit]:
+        recent.append({
+            "job_id": j.id,
+            "source_filename": j.source_filename,
+            "error_code": j.error_code or "UNKNOWN",
+            "message": j.message or "",
+            "output_mode": j.output_mode.value if hasattr(j.output_mode, "value") else str(j.output_mode),
+            "enable_translation": j.enable_translation,
+            "created_at": j.created_at.isoformat() if hasattr(j.created_at, "isoformat") else str(j.created_at),
+        })
+
+    return {
+        "total_failed": len(failed_jobs),
+        "by_error_code": by_error_code,
+        "recent": recent,
+    }
 
 
 # ---------- 前端静态资源（与 API 同域，避免跨域） ----------

@@ -9,5 +9,8 @@ backend/temp/
 backend/.env
 backend/translation_cache.db
 backend/epub_jobs.db
+backend/epub_jobs.db-shm
+backend/epub_jobs.db-wal
+*.pem
 
 tools/

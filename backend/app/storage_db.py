@@ -60,6 +60,7 @@ class JobRecord(Base):
     quality_stats_json = Column(Text, nullable=True)
     translation_stats_json = Column(Text, nullable=True)
     metrics_summary = Column(Text, nullable=True)
+    traditional_variant = Column(String(16), nullable=True)  # auto | tw | hk
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
@@ -157,10 +158,14 @@ def _ensure_compatible_schema(engine) -> None:
     inspector = inspect(engine)
     columns = {col["name"] for col in inspector.get_columns("epub_jobs")}
     migrations = []
+    if "quality_stats_json" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN quality_stats_json TEXT")
     if "translation_stats_json" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_stats_json TEXT")
     if "metrics_summary" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN metrics_summary TEXT")
+    if "traditional_variant" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN traditional_variant VARCHAR(16)")
     if not migrations:
         return
     with engine.begin() as conn:
@@ -197,6 +202,8 @@ def _record_to_job(r: JobRecord) -> Job:
         target_lang=r.target_lang,
         bilingual=r.bilingual,
         device=DeviceProfile(r.device),
+        temperature=None,
+        traditional_variant=getattr(r, "traditional_variant", None) or "auto",
         status=JobStatus(r.status),
         message=r.message or "",
         error_code=r.error_code,
@@ -376,6 +383,7 @@ def _job_to_record(job: Job) -> JobRecord:
         quality_stats_json=json.dumps(job.quality_stats.to_dict()) if job.quality_stats else "{}",
         translation_stats_json=json.dumps(job.translation_stats or {}),
         metrics_summary=job.metrics_summary or "",
+        traditional_variant=getattr(job, "traditional_variant", None) or "auto",
         created_at=job.created_at,
         updated_at=job.updated_at,
     )

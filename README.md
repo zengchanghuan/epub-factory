@@ -1,6 +1,6 @@
 # EPUB Factory
 
-一个可产品化演进的 EPUB 转换引擎：支持竖排转横排、繁简互转、AI 全书翻译、双语对照输出，以及 Kindle/Apple Books 设备特化编译。
+一个可产品化演进的 EPUB 转换引擎：支持竖排转横排、繁简互转、AI 全书翻译、双语对照输出，以及 Kindle/Apple Books 设备特化编译。生产主站域名：**fixepub.com**（腾讯云）。
 
 ## 功能一览
 
@@ -8,7 +8,7 @@
 
 | 模块 | 功能 |
 |---|---|
-| `CjkNormalizer` | 竖排 → 横排 CSS 清洗，繁体 → 简体（OpenCC） |
+| `CjkNormalizer` | 竖排 → 横排 CSS 清洗，繁体 → 简体（OpenCC，可选台湾/香港变体）；解码层支持编码探测+回退（UTF-8/Big5/GBK 等） |
 | `CssSanitizer` | 移除硬编码字体、行高、背景色 |
 | `TypographyEnhancer` | 注入 orphans/widows，修复省略号和破折号 |
 | `StemGuard` | 表格防溢出，MathML/SVG 公式保护 |
@@ -32,8 +32,10 @@
 
 ### 存储
 
-- 默认：内存 `JobStore`（零依赖，重启后数据丢失）
-- 设置 `DATABASE_URL` 或 `EPUB_PERSISTENT_STORE=1`：自动切换为 SQLAlchemy 持久化（支持 SQLite / PostgreSQL）
+- **默认**：内存 `JobStore`（零依赖，重启后任务列表清空）
+- **持久化任务列表**：在 `backend/.env` 中设置 `DATABASE_URL` 或 `EPUB_PERSISTENT_STORE=1`，自动切换为 SQLAlchemy 持久化（SQLite / PostgreSQL），任务中心与任务状态重启后保留。
+  - 本地示例：`DATABASE_URL=sqlite:///./epub_jobs.db`
+  - 生产示例：`DATABASE_URL=postgresql://user:password@host:5432/epub_factory`
 
 ## 目录结构
 
@@ -88,7 +90,9 @@ CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
 ```
 
-当设置 `REDIS_URL` 或 `CELERY_BROKER_URL` 时，新建任务会入队到 Celery，由 Worker 执行整本转换（任务名 `jobs.run_conversion`）。使用 Celery 时请同时配置 `DATABASE_URL`（或 `EPUB_PERSISTENT_STORE=1`），否则 Worker 无法通过 `job_id` 加载任务。
+当设置 `REDIS_URL` 或 `CELERY_BROKER_URL` 时，新建任务会入队到 Celery，由 Worker 执行整本转换（任务名 `jobs.run_conversion`）。使用 Celery 时请同时配置 `DATABASE_URL`，否则 Worker 无法通过 `job_id` 加载任务。
+
+**生产部署（如 AWS）**：见 [docs/DEPLOY-AWS.md](docs/DEPLOY-AWS.md)，含 RDS 持久化、ElastiCache、密钥与安全组建议。
 
 ### 1.1) 启动后台任务 Worker（Phase 1 基础设施）
 

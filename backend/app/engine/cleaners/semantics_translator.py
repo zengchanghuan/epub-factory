@@ -10,9 +10,11 @@ import httpx
 from ..translation_cache import TranslationCache
 
 
-# DeepSeek 定价 (每百万 token)
+# 定价：每百万 token 美元（来源：DeepSeek / OpenAI 公开价格，可随官网更新）
+# DeepSeek: https://api-docs.deepseek.com/zh-cn/quick_start/parameter_settings 等
 PRICING = {
     "deepseek-chat": {"input": 0.27, "output": 1.10},
+    "deepseek-v3": {"input": 0.27, "output": 1.10},
     "deepseek-reasoner": {"input": 0.55, "output": 2.19},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4o": {"input": 2.50, "output": 10.00},
@@ -101,7 +103,7 @@ class SingleChunkResult:
 
 class SemanticsTranslator:
     def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
-                 glossary: dict | None = None):
+                 glossary: dict | None = None, temperature: float | None = None):
         self.target_lang = target_lang
         self.bilingual = bilingual  # True = 原文 + 译文并排
         self.glossary: dict[str, str] = glossary or {}  # {原文术语: 目标语言术语}
@@ -117,6 +119,10 @@ class SemanticsTranslator:
         self.semaphore = asyncio.Semaphore(max(1, env_concurrency))
         self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "2")))
         self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "25"))
+        if temperature is not None:
+            self.temperature = float(temperature)
+        else:
+            self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", "1.3"))
         self._clients: dict[str, AsyncOpenAI] = {}
         self.stats = TranslationStats()
 
@@ -204,7 +210,7 @@ class SemanticsTranslator:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": html_chunk}
                     ],
-                    temperature=0.3,
+                    temperature=self.temperature,
                     timeout=self.request_timeout,
                 )
                 raw = (response.choices[0].message.content or "").strip()

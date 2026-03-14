@@ -60,11 +60,14 @@ class ExtremeCompiler:
     def __init__(self, input_path: str, output_path: str, output_mode: str = "simplified",
                  enable_translation: bool = False, target_lang: str = "zh-CN",
                  device: str = "generic", bilingual: bool = False,
-                 glossary: dict | None = None, progress_callback=None, stage_callback=None):
+                 glossary: dict | None = None, temperature: float | None = None,
+                 traditional_variant: str = "auto",
+                 progress_callback=None, stage_callback=None):
         self.input_path = input_path
         self.output_path = output_path
         self.book = None
         self.output_mode = output_mode
+        self.traditional_variant = traditional_variant or "auto"
         self.enable_translation = enable_translation
         self.bilingual = bilingual
         self.glossary: dict = glossary or {}
@@ -75,11 +78,12 @@ class ExtremeCompiler:
         self.validation_passed = True  # EpubCheck 通过则为 True，否则为 False，用于杜绝假成功
         
         # 依赖 models.QualityStats，我们先局部引入避免循环依赖
-        from app.models import QualityStats
+        from app.models import QualityStats, ErrorCode  # noqa: F401 – ErrorCode 供下方使用
         self.job_stats = QualityStats()
+        self._ErrorCode = ErrorCode
         
         self.cleaners = [
-            CjkNormalizer(output_mode=self.output_mode),
+            CjkNormalizer(output_mode=self.output_mode, traditional_variant=self.traditional_variant),
             CssSanitizer(),
             TypographyEnhancer(),
             StemGuard(),
@@ -91,6 +95,7 @@ class ExtremeCompiler:
                 target_lang=target_lang,
                 bilingual=bilingual,
                 glossary=glossary,
+                temperature=temperature,
             )
             self.cleaners.append(t)
 
@@ -120,7 +125,7 @@ class ExtremeCompiler:
         except TranslationPipelineError as exc:
             self.metrics.total_ms = (time.monotonic() - t0) * 1000
             self.final_message = str(exc)
-            self.error_code = "TRANSLATION_FAILED"
+            self.error_code = self._ErrorCode.TRANSLATION_FAILED
             print(f"❌ [Translation] {exc}")
             print(self.metrics.summary())
             return False
@@ -133,13 +138,13 @@ class ExtremeCompiler:
             except Exception as exc2:
                 print(f"❌ [Fallback] Safe mode also failed: {exc2}")
                 self.final_message = str(exc2)
-                self.error_code = "CONVERT_FAILED"
+                self.error_code = self._ErrorCode.CONVERT_FAILED
                 return False
             if result and self.enable_translation:
                 self.final_message = (
                     "翻译流程未完成，仅做了版式转换；请检查网络与 API 配置后重试。"
                 )
-                self.error_code = "TRANSLATION_FAILED"
+                self.error_code = self._ErrorCode.TRANSLATION_FAILED
                 print("❌ [SafeMode] 用户请求了翻译，但仅完成安全模式，不视为成功")
                 return False
         self.metrics.total_ms = (time.monotonic() - t0) * 1000
@@ -187,6 +192,9 @@ class ExtremeCompiler:
             self.progress_callback(f"正在处理 {file_name} ({i+1}/{total_docs})")
             
             content = item.get_content()
+            if content is None:
+                # ebooklib 某些 item（如空白占位资源）内容为 None，跳过处理避免 set_content 崩溃
+                continue
             for cleaner in self.cleaners:
                 if isinstance(cleaner, SemanticsTranslator):
                     if self._should_skip_translation_for_file(file_name):
@@ -199,7 +207,9 @@ class ExtremeCompiler:
                 
                 ct = time.monotonic()
                 try:
-                    content = cleaner.process(content, item_type)
+                    result_content = cleaner.process(content, item_type)
+                    if result_content is not None:
+                        content = result_content
                 except Exception as exc:
                     print(f"⚠️ [{cleaner.__class__.__name__}] skipped on "
                           f"{file_name!r}: {exc}")
@@ -228,7 +238,7 @@ class ExtremeCompiler:
                 f"AI 翻译失败：未成功写入任何译文。请检查模型服务连接。最后错误：{last_error}"
             )
         if self.enable_translation and translation_stats.get("failed_chunks"):
-            self.error_code = "PARTIAL_TRANSLATION"
+            self.error_code = self._ErrorCode.PARTIAL_TRANSLATION
             failed = translation_stats["failed_chunks"]
             done = translation_stats["translated_chunks"] + translation_stats["cached_chunks"]
             self.final_message = f"转换成功，但有 {failed} 个段落翻译失败，成功写入 {done} 个段落。"
@@ -264,7 +274,7 @@ class ExtremeCompiler:
             self.metrics.record("EpubCheck", check_ms)
             self.stage_callback("validating", "校验完成", int(check_ms))
             if not self.validation_passed:
-                self.error_code = "EPUB_VALIDATION_FAILED"
+                self.error_code = self._ErrorCode.EPUB_VALIDATION_FAILED
                 self.final_message = "打包成功但 EPUB 校验未通过，结果不可交付"
         else:
             print("❌ [Error] Failed to save EPUB.")
@@ -291,12 +301,16 @@ class ExtremeCompiler:
                 raise RuntimeError(msg)
 
         t = time.monotonic()
-        safe_cleaner = CjkNormalizer(output_mode=self.output_mode)
+        safe_cleaner = CjkNormalizer(output_mode=self.output_mode, traditional_variant=getattr(self, "traditional_variant", "auto"))
         for item in book.get_items():
             item_type = item.get_type()
             if item_type == 9 or item_type == 2:
-                content = safe_cleaner.process(item.get_content(), item_type)
-                item.set_content(content)
+                raw = item.get_content()
+                if raw is None:
+                    continue
+                result_content = safe_cleaner.process(raw, item_type)
+                if result_content is not None:
+                    item.set_content(result_content)
         self.metrics.record("SafeMode:CjkNormalizer", (time.monotonic() - t) * 1000)
 
         t = time.monotonic()

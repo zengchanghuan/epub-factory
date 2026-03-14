@@ -83,12 +83,36 @@ class EpubPackager:
 
     def save(self):
         try:
+            self._fix_toc_uids(self.book)
             epub.write_epub(self.output_path, self.book, {})
             self._post_fix()
             return True
         except Exception as e:
             print(f"Package Error: {e}")
             return False
+
+    @staticmethod
+    def _fix_toc_uids(book) -> None:
+        """ebooklib 在解析部分 EPUB 的 NCX 时不填 uid，写入时 lxml 会崩溃。
+        遍历 toc，为所有 uid=None 的 Link/Section 自动补全 uid。"""
+        counter = [0]
+
+        def _fix(items):
+            for item in items:
+                if isinstance(item, tuple):
+                    sec, children = item
+                    if getattr(sec, "uid", None) is None:
+                        counter[0] += 1
+                        sec.uid = f"uid-sec-{counter[0]}"
+                    _fix(children)
+                else:
+                    if getattr(item, "uid", None) is None:
+                        counter[0] += 1
+                        item.uid = f"uid-{counter[0]}"
+
+        _fix(book.toc)
+        if counter[0]:
+            print(f"🔧 [PackageFix] Patched {counter[0]} TOC uid(s) (ebooklib NCX parse bug)")
 
     def _post_fix(self):
         """解压 -> 修复 ebooklib 引入的各种问题 -> 重新打包"""

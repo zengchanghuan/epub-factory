@@ -544,7 +544,7 @@
   <div class="container">
     <header>
       <h1>EPUB Factory</h1>
-      <p>上传 EPUB 或 PDF，智能转换为横排繁体/简体，支持 Kindle/Apple Books 优化</p>
+      <p>上传 EPUB 或 PDF，智能转换为横排繁体/简体（选简体时一律横排，繁→简采用 OpenCC，非 LLM），支持 Kindle/Apple Books 优化</p>
       <nav class="nav-tabs">
         <a href="#" id="navUpload" class="active">上传转换</a>
         <a href="#" id="navTasks">任务中心</a>
@@ -569,6 +569,14 @@
           <select id="outputMode">
             <option value="simplified">横排简体</option>
             <option value="traditional">横排繁体</option>
+          </select>
+        </div>
+        <div class="form-group" id="traditionalVariantGroup" style="display:none;">
+          <label>繁体来源 <span class="hint">（选简体时生效，用于繁→简转换）</span></label>
+          <select id="traditionalVariant">
+            <option value="auto">自动 / 通用</option>
+            <option value="tw">台湾繁体</option>
+            <option value="hk">香港繁体</option>
           </select>
         </div>
         <div class="form-group">
@@ -606,6 +614,11 @@
             <option value="ja">日语</option>
             <option value="ko">韩语</option>
           </select>
+        </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label>Temperature <span class="hint">（可选，翻译建议 1.3，纯格式/抽取可调低）</span></label>
+          <input type="number" id="temperature" min="0" max="2" step="0.1" value="1.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
         </div>
 
         <div class="toggle-row">
@@ -740,6 +753,7 @@
 
     <footer>
       EPUB Factory &mdash; ExtremeCompiler Engine v2.0 &middot; EpubCheck 5.1.0
+      &middot; <a href="/admin.html" target="_blank" rel="noopener" style="color:var(--muted);">后台 Token/费用统计</a>
     </footer>
   </div>
 
@@ -843,9 +857,22 @@
         .then(data => {
           const s = data.status || "";
           const legacy = s === "completed" || s === "partial_completed" ? "success" : (s === "failed" || s === "cancelled" ? "failed" : "running");
-          setStatus(legacy, data.message || "");
+          // 失败时禁止用「转换成功」等成功类文案，避免前后端不一致导致误导
+          const isFailed = s === "failed" || s === "cancelled";
+          let statusLineMessage = data.message || "";
+          if (isFailed && (!statusLineMessage || /转换成功/.test(statusLineMessage))) {
+            statusLineMessage = (data.error_code ? "[" + data.error_code + "] " : "") + "任务失败";
+          } else if (isFailed && data.error_code) {
+            statusLineMessage = "[" + data.error_code + "] " + (statusLineMessage || "任务失败");
+          }
+          setStatus(legacy, statusLineMessage);
           statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s) : s;
-          appendProgressLog(data.message);
+          // 失败时不再把「转换成功」写入进度日志，只记实际错误信息
+          if (!isFailed) {
+            appendProgressLog(data.message);
+          } else if (data.message && !/转换成功/.test(data.message)) {
+            appendProgressLog((data.error_code ? "[" + data.error_code + "] " : "") + data.message);
+          }
           $("metaFilename").textContent = data.source_filename || "-";
           $("metaMode").textContent = data.output_mode ? (data.output_mode === "simplified" ? "横排简体" : "横排繁体") + " / " + (data.device || "generic") : "-";
           const codeText = typeof formatErrorCode === "function" ? formatErrorCode(data.error_code) : "";
@@ -876,7 +903,7 @@
             submitBtn.disabled = false;
           }
           if (data.status === "failed" || data.status === "cancelled") {
-            errorMsg.textContent = data.message || "任务失败";
+            errorMsg.textContent = (data.error_code ? "[" + data.error_code + "] " : "") + (data.message && !/转换成功/.test(data.message) ? data.message : "任务失败");
             errorMsg.style.display = "block";
             clearInterval(pollTimer);
             stopJobTimer();
@@ -1003,6 +1030,12 @@
       $("translationOptions").style.display = enableTranslation.checked ? "block" : "none";
       updateSubmitButton();
     });
+
+    function syncTraditionalVariantVisibility() {
+      $("traditionalVariantGroup").style.display = $("outputMode").value === "simplified" ? "block" : "none";
+    }
+    $("outputMode").addEventListener("change", syncTraditionalVariantVisibility);
+    syncTraditionalVariantVisibility();
 
     function setStatus(status, message) {
       statusCard.classList.add("visible");
@@ -1136,11 +1169,14 @@
       const form = new FormData();
       form.append("file", selectedFile);
       form.append("output_mode", $("outputMode").value);
+      form.append("traditional_variant", $("traditionalVariant").value || "auto");
       form.append("device", $("device").value);
       form.append("enable_translation", enableTranslation.checked);
       if (enableTranslation.checked) {
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
+        const tempVal = parseFloat($("temperature").value);
+        if (!isNaN(tempVal) && tempVal >= 0 && tempVal <= 2) form.append("temperature", tempVal);
 
         const rawGlossary = $("glossaryInput").value;
         if (rawGlossary.trim()) {

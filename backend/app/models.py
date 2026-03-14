@@ -23,6 +23,21 @@ class DeviceProfile(str, Enum):
     apple = "apple"
 
 
+class TraditionalVariant(str, Enum):
+    """繁体来源，仅当 output_mode=simplified 时用于 OpenCC 繁→简配置。"""
+    auto = "auto"   # 通用 t2s
+    tw = "tw"      # 台湾 tw2s
+    hk = "hk"      # 香港 hk2s
+
+
+class ErrorCode(str, Enum):
+    """所有已定义的错误码，集中管理避免魔法字符串。"""
+    CONVERT_FAILED = "CONVERT_FAILED"
+    TRANSLATION_FAILED = "TRANSLATION_FAILED"
+    PARTIAL_TRANSLATION = "PARTIAL_TRANSLATION"
+    EPUB_VALIDATION_FAILED = "EPUB_VALIDATION_FAILED"
+
+
 class ChapterKind(str, Enum):
     body = "body"
     nav = "nav"
@@ -100,6 +115,8 @@ class Job:
     glossary: Dict[str, str] = field(default_factory=dict)
     device: DeviceProfile = DeviceProfile.generic
     output_path: Optional[str] = None
+    temperature: Optional[float] = None
+    traditional_variant: str = "auto"  # auto | tw | hk，仅简体输出时生效
     status: JobStatus = JobStatus.pending
     message: str = ""
     error_code: Optional[str] = None

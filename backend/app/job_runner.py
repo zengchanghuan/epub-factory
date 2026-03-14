@@ -13,7 +13,8 @@ from typing import Optional
 from .converter import converter
 from .domain.notification_service import notify_job_completed
 from .domain.status_resolver import resolve_after_conversion
-from .models import JobStage, JobStatus, OutputMode, StageStatus
+from .error_reporter import report_error
+from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
 from .storage import job_store
 
 logger = logging.getLogger("epub_factory")
@@ -68,12 +69,21 @@ def run_job(job_id: str) -> None:
             device=job.device.value,
             bilingual=job.bilingual,
             glossary=job.glossary or None,
+            temperature=getattr(job, "temperature", None),
+            traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
             progress_callback=on_progress,
             stage_callback=on_stage,
         )
         status, message, error_code = resolve_after_conversion(result)
         if status == JobStatus.failed:
             job_store.update_status(job.id, status, message, error_code=error_code)
+            report_error(
+                error_code=error_code or ErrorCode.CONVERT_FAILED,
+                message=message,
+                job_id=job.id,
+                trace_id=job.trace_id,
+                context={"source_filename": job.source_filename},
+            )
             notify_job_completed(
                 job.id, status, message,
                 error_code=error_code,
@@ -103,10 +113,17 @@ def run_job(job_id: str) -> None:
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
     except Exception as exc:
         message = str(exc)
-        error_code = "CONVERT_FAILED"
+        error_code = ErrorCode.CONVERT_FAILED
         if "AI 翻译失败" in message or "翻译流程未完成" in message:
-            error_code = "TRANSLATION_FAILED"
+            error_code = ErrorCode.TRANSLATION_FAILED
         job_store.update_status(job.id, JobStatus.failed, message, error_code=error_code)
+        report_error(
+            error_code=error_code,
+            message=message,
+            job_id=job.id,
+            trace_id=job.trace_id,
+            context={"source_filename": job.source_filename},
+        )
         notify_job_completed(
             job.id, JobStatus.failed, message,
             error_code=error_code,

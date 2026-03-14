@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>后台统计 · EPUB Factory</title>
+  <style>
+    :root { --bg:#1a1a1a; --card:#252525; --text:#e0e0e0; --muted:#888; --accent:#4a9eff; --border:#333; --error:#e57373; --warn:#ffb74d; --ok:#81c784; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px; line-height: 1.5; }
+    h1 { font-size: 1.25rem; margin: 0 0 16px; color: var(--text); }
+    h2 { font-size: 1rem; margin: 0 0 12px; color: var(--text); }
+    .card { background: var(--card); border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 1px solid var(--border); }
+    .row { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; }
+    .stat { min-width: 140px; }
+    .stat label { font-size: 12px; color: var(--muted); display: block; }
+    .stat span { font-size: 1.1rem; font-weight: 600; color: var(--accent); }
+    .stat span.error { color: var(--error); }
+    .row-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    input[type="password"], input[type="text"], input[type="date"] { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; width: 200px; }
+    input[type="date"] { width: 160px; }
+    button { background: var(--accent); color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    button:hover { opacity: 0.9; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .err { color: var(--error); margin-top: 8px; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    /* 错误码分布色块 */
+    .code-bars { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+    .code-bar { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .code-bar .label { min-width: 200px; font-family: monospace; color: var(--error); }
+    .code-bar .bar-wrap { flex: 1; background: #333; border-radius: 4px; height: 16px; overflow: hidden; }
+    .code-bar .bar-fill { height: 100%; border-radius: 4px; background: var(--error); opacity: 0.75; transition: width 0.4s; }
+    .code-bar .count { min-width: 36px; text-align: right; color: var(--text); font-weight: 600; }
+    /* 错误码 badge */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: monospace; font-weight: 600; background: rgba(229,115,115,0.15); color: var(--error); }
+    .badge.PARTIAL_TRANSLATION { background: rgba(255,183,77,0.15); color: var(--warn); }
+    .badge.EPUB_VALIDATION_FAILED { background: rgba(255,183,77,0.15); color: var(--warn); }
+    .msg-cell { max-width: 280px; word-break: break-word; font-size: 12px; color: var(--muted); }
+    /* tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+    .tab { padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; background: var(--card); border: 1px solid var(--border); color: var(--muted); }
+    .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+  </style>
+</head>
+<body>
+  <!-- 管理员密钥 + 操作区 -->
+  <div class="card">
+    <h1>EPUB Factory · 后台统计</h1>
+    <div class="row-actions">
+      <input type="password" id="adminKey" placeholder="管理员密钥（若已配置）" autocomplete="off" />
+      <button id="loadBtn">刷新数据</button>
+    </div>
+    <div id="globalError" class="err" style="display:none;"></div>
+  </div>
+
+  <!-- Tab 导航 -->
+  <div class="tabs">
+    <div class="tab active" data-tab="token">Token / 费用</div>
+    <div class="tab" data-tab="error">错误统计</div>
+  </div>
+
+  <!-- ─── Tab: Token 费用 ─── -->
+  <div class="tab-panel active" id="panel-token">
+    <div class="card">
+      <div class="row" id="tokenSummary" style="display:none;">
+        <div class="stat"><label>总 Prompt Tokens</label><span id="totalPrompt">0</span></div>
+        <div class="stat"><label>总 Completion Tokens</label><span id="totalCompletion">0</span></div>
+        <div class="stat"><label>总 Tokens</label><span id="totalTokens">0</span></div>
+        <div class="stat"><label>预估费用 (USD)</label><span id="totalCost">0</span></div>
+        <div class="stat"><label>任务数</label><span id="jobsCount">0</span></div>
+      </div>
+      <p class="hint">数据来自 /api/v2/admin/translation-stats，仅统计含翻译结果的任务。</p>
+    </div>
+    <div class="card" id="tokenTableCard" style="display:none;">
+      <h2>按任务明细</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>任务 ID</th><th>文件名</th><th>创建时间</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th><th class="num">费用 (USD)</th>
+            </tr>
+          </thead>
+          <tbody id="tokenTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Tab: 错误统计 ─── -->
+  <div class="tab-panel" id="panel-error">
+    <div class="card">
+      <div class="row" id="errorSummary" style="display:none;">
+        <div class="stat"><label>失败任务总数</label><span class="error" id="totalFailed">0</span></div>
+      </div>
+      <div id="errorCodeBars" style="display:none;">
+        <h2>错误码分布</h2>
+        <div class="code-bars" id="codeBarsContainer"></div>
+      </div>
+      <div class="row-actions" style="margin-top:16px;">
+        <label style="font-size:13px; color:var(--muted);">起始时间（可选）</label>
+        <input type="date" id="sinceDate" />
+        <button id="filterBtn">筛选</button>
+      </div>
+      <p class="hint">数据来自 /api/v2/admin/error-stats，显示所有 status=failed 的任务。</p>
+    </div>
+    <div class="card" id="errorTableCard" style="display:none;">
+      <h2>最近失败明细</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>任务 ID</th><th>文件名</th><th>错误码</th><th>错误信息</th><th>模式</th><th>创建时间</th>
+            </tr>
+          </thead>
+          <tbody id="errorTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    const API = (typeof window !== "undefined" && window.location && window.location.origin)
+      ? window.location.origin : "http://127.0.0.1:8000";
+
+    // ─── Tab 切换 ───────────────────────────────────────────
+    document.querySelectorAll(".tab").forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+        tab.classList.add("active");
+        document.getElementById("panel-" + tab.dataset.tab).classList.add("active");
+      });
+    });
+
+    function showGlobalErr(msg) {
+      const el = document.getElementById("globalError");
+      el.textContent = msg;
+      el.style.display = msg ? "block" : "none";
+    }
+
+    function getKey() { return document.getElementById("adminKey").value.trim(); }
+    function fetchOpts(key) { return key ? { headers: { "X-Admin-Key": key } } : {}; }
+
+    // ─── Token 统计 ─────────────────────────────────────────
+    async function loadTokenStats() {
+      const key = getKey();
+      const url = `${API}/api/v2/admin/translation-stats` + (key ? `?admin_key=${encodeURIComponent(key)}` : "");
+      try {
+        const res = await fetch(url, fetchOpts(key));
+        if (!res.ok) throw new Error(res.status === 403 ? "需要有效的管理员密钥" : await res.text());
+        const data = await res.json();
+        document.getElementById("totalPrompt").textContent = data.total_prompt_tokens.toLocaleString();
+        document.getElementById("totalCompletion").textContent = data.total_completion_tokens.toLocaleString();
+        document.getElementById("totalTokens").textContent = data.total_tokens.toLocaleString();
+        document.getElementById("totalCost").textContent = data.total_cost_usd.toFixed(4);
+        document.getElementById("jobsCount").textContent = data.jobs_count;
+        document.getElementById("tokenSummary").style.display = "flex";
+
+        const tbody = document.getElementById("tokenTableBody");
+        tbody.innerHTML = "";
+        if (data.by_job && data.by_job.length) {
+          document.getElementById("tokenTableCard").style.display = "block";
+          data.by_job.forEach(function (row) {
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+              "<td>" + (row.job_id || "") + "</td>" +
+              "<td title=\"" + (row.source_filename || "") + "\">" + trunc(row.source_filename, 36) + "</td>" +
+              "<td>" + fmtDate(row.created_at) + "</td>" +
+              "<td class=\"num\">" + (row.prompt_tokens || 0).toLocaleString() + "</td>" +
+              "<td class=\"num\">" + (row.completion_tokens || 0).toLocaleString() + "</td>" +
+              "<td class=\"num\">" + (row.total_tokens || 0).toLocaleString() + "</td>" +
+              "<td class=\"num\">" + (row.cost_usd != null ? row.cost_usd.toFixed(4) : "") + "</td>";
+            tbody.appendChild(tr);
+          });
+        } else {
+          document.getElementById("tokenTableCard").style.display = "none";
+        }
+      } catch (e) {
+        showGlobalErr("Token 统计加载失败：" + (e.message || e));
+      }
+    }
+
+    // ─── 错误统计 ─────────────────────────────────────────
+    async function loadErrorStats() {
+      const key = getKey();
+      const since = document.getElementById("sinceDate").value;
+      let url = `${API}/api/v2/admin/error-stats?limit=100`;
+      if (key) url += `&admin_key=${encodeURIComponent(key)}`;
+      if (since) url += `&since=${encodeURIComponent(since)}`;
+      try {
+        const res = await fetch(url, fetchOpts(key));
+        if (!res.ok) throw new Error(res.status === 403 ? "需要有效的管理员密钥" : await res.text());
+        const data = await res.json();
+
+        document.getElementById("totalFailed").textContent = data.total_failed;
+        document.getElementById("errorSummary").style.display = "flex";
+
+        // 错误码分布色块
+        const bars = document.getElementById("codeBarsContainer");
+        bars.innerHTML = "";
+        const byCode = data.by_error_code || {};
+        const codes = Object.keys(byCode).sort((a, b) => byCode[b] - byCode[a]);
+        const maxCount = codes.length ? Math.max(...codes.map(c => byCode[c])) : 1;
+        if (codes.length) {
+          document.getElementById("errorCodeBars").style.display = "block";
+          codes.forEach(function (code) {
+            const cnt = byCode[code];
+            const pct = Math.max(4, Math.round((cnt / maxCount) * 100));
+            const div = document.createElement("div");
+            div.className = "code-bar";
+            div.innerHTML =
+              "<span class=\"label\">" + code + "</span>" +
+              "<div class=\"bar-wrap\"><div class=\"bar-fill\" style=\"width:" + pct + "%\"></div></div>" +
+              "<span class=\"count\">" + cnt + "</span>";
+            bars.appendChild(div);
+          });
+        } else {
+          document.getElementById("errorCodeBars").style.display = "none";
+        }
+
+        // 明细表格
+        const tbody = document.getElementById("errorTableBody");
+        tbody.innerHTML = "";
+        if (data.recent && data.recent.length) {
+          document.getElementById("errorTableCard").style.display = "block";
+          data.recent.forEach(function (row) {
+            const tr = document.createElement("tr");
+            const code = row.error_code || "UNKNOWN";
+            const badgeClass = "badge " + code;
+            tr.innerHTML =
+              "<td style=\"font-family:monospace;font-size:12px;\">" + (row.job_id || "") + "</td>" +
+              "<td title=\"" + (row.source_filename || "") + "\">" + trunc(row.source_filename, 32) + "</td>" +
+              "<td><span class=\"" + badgeClass + "\">" + code + "</span></td>" +
+              "<td class=\"msg-cell\">" + esc(row.message) + "</td>" +
+              "<td style=\"font-size:12px;\">" + (row.output_mode || "") + (row.enable_translation ? " + AI翻译" : "") + "</td>" +
+              "<td style=\"font-size:12px;white-space:nowrap;\">" + fmtDate(row.created_at) + "</td>";
+            tbody.appendChild(tr);
+          });
+        } else {
+          document.getElementById("errorTableCard").style.display = "none";
+        }
+      } catch (e) {
+        showGlobalErr("错误统计加载失败：" + (e.message || e));
+      }
+    }
+
+    // ─── 工具函数 ────────────────────────────────────────
+    function trunc(s, n) {
+      if (!s) return "";
+      return s.length > n ? s.slice(0, n) + "…" : s;
+    }
+    function esc(s) {
+      if (!s) return "";
+      return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+    function fmtDate(s) {
+      if (!s) return "";
+      try { return new Date(s).toLocaleString("zh-CN", { hour12: false }); } catch { return s; }
+    }
+
+    // ─── 事件绑定 ────────────────────────────────────────
+    document.getElementById("loadBtn").addEventListener("click", function () {
+      showGlobalErr("");
+      loadTokenStats();
+      loadErrorStats();
+    });
+    document.getElementById("filterBtn").addEventListener("click", function () {
+      showGlobalErr("");
+      loadErrorStats();
+    });
+
+    // 初始加载
+    loadTokenStats();
+    loadErrorStats();
+  })();
+  </script>
+</body>
+</html>

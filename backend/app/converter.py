@@ -22,14 +22,16 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
+        temperature: float | None = None,
+        traditional_variant: str = "auto",
         progress_callback=None,
         stage_callback=None,
     ) -> ConversionResult:
         suffix = input_path.suffix.lower()
         if suffix == ".epub":
-            return self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, progress_callback, stage_callback)
+            return self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, temperature, traditional_variant, progress_callback, stage_callback)
         if suffix == ".pdf":
-            return self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, progress_callback, stage_callback)
+            return self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, temperature, traditional_variant, progress_callback, stage_callback)
         raise RuntimeError("Unsupported file type, only .epub or .pdf is allowed")
 
     def _convert_epub_to_horizontal(
@@ -42,6 +44,8 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
+        temperature: float | None = None,
+        traditional_variant: str = "auto",
         progress_callback=None,
         stage_callback=None,
     ) -> ConversionResult:
@@ -54,6 +58,8 @@ class EpubConverter:
             device=device,
             bilingual=bilingual,
             glossary=glossary,
+            temperature=temperature,
+            traditional_variant=traditional_variant,
             progress_callback=progress_callback,
             stage_callback=stage_callback,
         )
@@ -79,13 +85,15 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
+        temperature: float | None = None,
+        traditional_variant: str = "auto",
         progress_callback=None,
         stage_callback=None,
     ) -> ConversionResult:
         temp_epub = Path(tempfile.mkdtemp(prefix="epub_factory_pdf_")) / "source.epub"
         try:
             self._pdf_to_epub(input_path, temp_epub)
-            return self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, progress_callback, stage_callback)
+            return self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, temperature, traditional_variant, progress_callback, stage_callback)
         finally:
             shutil.rmtree(temp_epub.parent, ignore_errors=True)
 
