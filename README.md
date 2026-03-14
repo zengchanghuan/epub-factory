@@ -83,6 +83,31 @@ OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-chat
 DATABASE_URL=postgresql://user:pass@localhost/epub_factory  # 留空使用内存存储
+REDIS_URL=redis://127.0.0.1:6379/0
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
+```
+
+当设置 `REDIS_URL` 或 `CELERY_BROKER_URL` 时，新建任务会入队到 Celery，由 Worker 执行整本转换（任务名 `jobs.run_conversion`）。使用 Celery 时请同时配置 `DATABASE_URL`（或 `EPUB_PERSISTENT_STORE=1`），否则 Worker 无法通过 `job_id` 加载任务。
+
+### 1.1) 启动后台任务 Worker（Phase 1 基础设施）
+
+```bash
+cd backend
+.venv/bin/celery -A app.infra.celery_app.celery_app worker --loglevel=info
+```
+
+最小健康任务名：
+
+```text
+infra.health.ping
+```
+
+可用以下方式快速验证 Celery 基础设施：
+
+```bash
+cd backend
+.venv/bin/python test_d1_celery_bootstrap.py
 ```
 
 ### 2) 启动前端页面
@@ -92,7 +117,7 @@ cd frontend
 python3 -m http.server 5173
 ```
 
-浏览器打开 `http://127.0.0.1:5173`
+浏览器打开 `http://127.0.0.1:5173`。页内提供「上传转换」与「任务中心」：上传后任务进入后台队列，可关闭页面稍后在任务中心查看结果；支持通过 `?job_id=xxx` 直链打开指定任务详情。
 
 ## API 概览
 
@@ -118,8 +143,25 @@ python3 -m http.server 5173
 ## 运行测试
 
 ```bash
-# 后端测试（C1-C6，共 65 个用例）
 cd backend
+
+# 一键回归（D1–D13 + C1–C6，推荐）
+.venv/bin/python run_regression.py
+
+# 或按文件单独运行
+.venv/bin/python test_d1_celery_bootstrap.py
+.venv/bin/python test_d2_task_data_models.py
+.venv/bin/python test_d3_api_v2_skeleton.py
+.venv/bin/python test_d4_celery_job_pipeline.py
+.venv/bin/python test_d5_stage_events.py
+.venv/bin/python test_d6_manifest.py
+.venv/bin/python test_d7_translate_chapter.py
+.venv/bin/python test_d8_reduce.py
+.venv/bin/python test_d9_book_reduce.py
+.venv/bin/python test_d10_status_resolver.py
+.venv/bin/python test_d11_notifications.py
+.venv/bin/python test_d12_translation_enhancement.py
+.venv/bin/python test_d13_regression.py
 .venv/bin/python test_c1_typography_and_fallback.py
 .venv/bin/python test_c2_pipeline_metrics.py
 .venv/bin/python test_c3_stem_guard.py

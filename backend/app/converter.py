@@ -4,7 +4,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from .models import DeviceProfile, OutputMode
+from .models import ConversionResult, DeviceProfile, OutputMode
 from .engine import ExtremeCompiler
 
 
@@ -22,12 +22,14 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
-    ) -> QualityStats:
+        progress_callback=None,
+        stage_callback=None,
+    ) -> ConversionResult:
         suffix = input_path.suffix.lower()
         if suffix == ".epub":
-            return self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
+            return self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, progress_callback, stage_callback)
         if suffix == ".pdf":
-            return self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
+            return self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, progress_callback, stage_callback)
         raise RuntimeError("Unsupported file type, only .epub or .pdf is allowed")
 
     def _convert_epub_to_horizontal(
@@ -40,7 +42,9 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
-    ) -> QualityStats:
+        progress_callback=None,
+        stage_callback=None,
+    ) -> ConversionResult:
         compiler = ExtremeCompiler(
             input_path=str(input_path),
             output_path=str(output_path),
@@ -50,11 +54,20 @@ class EpubConverter:
             device=device,
             bilingual=bilingual,
             glossary=glossary,
+            progress_callback=progress_callback,
+            stage_callback=stage_callback,
         )
         success = compiler.run()
         if not success:
-            raise RuntimeError("ExtremeCompiler failed to convert EPUB")
-        return compiler.job_stats
+            raise RuntimeError(compiler.final_message or "ExtremeCompiler failed to convert EPUB")
+        return ConversionResult(
+            quality_stats=compiler.job_stats,
+            translation_stats=compiler.get_translation_stats(),
+            metrics_summary=compiler.metrics.summary(),
+            message=compiler.final_message or "转换成功",
+            error_code=compiler.error_code,
+            validation_passed=getattr(compiler, "validation_passed", True),
+        )
 
     def _convert_pdf_to_horizontal_epub(
         self,
@@ -66,11 +79,13 @@ class EpubConverter:
         device: str = "generic",
         bilingual: bool = False,
         glossary: dict | None = None,
-    ) -> QualityStats:
+        progress_callback=None,
+        stage_callback=None,
+    ) -> ConversionResult:
         temp_epub = Path(tempfile.mkdtemp(prefix="epub_factory_pdf_")) / "source.epub"
         try:
             self._pdf_to_epub(input_path, temp_epub)
-            return self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary)
+            return self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, progress_callback, stage_callback)
         finally:
             shutil.rmtree(temp_epub.parent, ignore_errors=True)
 

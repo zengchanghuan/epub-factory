@@ -67,6 +67,25 @@ function mapStatusText(status) {
   return STATUS_TEXT[status] || status;
 }
 
+/** API v2 状态 → 前端展示文案 */
+const V2_STATUS_TEXT = {
+  queued: "排队中",
+  preprocessing: "预处理中",
+  mapping: "映射中",
+  translating: "翻译中",
+  reducing: "汇总中",
+  packaging: "打包中",
+  validating: "校验中",
+  completed: "完成",
+  partial_completed: "部分完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+function mapV2StatusText(v2Status) {
+  return V2_STATUS_TEXT[v2Status] || v2Status || "未知";
+}
+
 // ─── Job 元信息格式化 ──────────────────────────────────────────────────────
 
 /**
@@ -172,6 +191,9 @@ function isSafeMode(summaryText) {
 
 const ERROR_CODE_HINTS = {
   CONVERT_FAILED: "引擎转换失败，可能是文件格式不兼容",
+  TRANSLATION_FAILED: "AI 翻译未成功写入任何译文，请检查模型服务连接或稍后重试",
+  PARTIAL_TRANSLATION: "部分段落翻译失败，结果可能不完整",
+  EPUB_VALIDATION_FAILED: "EPUB 校验未通过，结果不可交付，请重试或联系支持",
   UPLOAD_TOO_LARGE: "文件超过大小限制",
   UNSUPPORTED_TYPE: "仅支持 .epub 或 .pdf 文件",
 };
@@ -313,6 +335,7 @@ if (typeof module !== "undefined" && module.exports) {
     parseGlossaryInput,
     glossaryToJson,
     mapStatusText,
+    mapV2StatusText,
     formatDevice,
     formatJobMeta,
     formatDuration,

@@ -148,6 +148,17 @@
     .toggle-row span { font-size: 14px; }
     .toggle-row .hint { font-size: 12px; color: var(--muted); }
 
+    .pricing-notice {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid #fde68a;
+      background: #fffbeb;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #92400e;
+      line-height: 1.7;
+    }
+
     .toggle {
       position: relative;
       width: 44px;
@@ -221,6 +232,12 @@
     .status-badge.running { background: #dbeafe; color: #1e40af; }
     .status-badge.success { background: #d1fae5; color: #065f46; }
     .status-badge.failed { background: #fee2e2; color: #991b1b; }
+    .job-timer {
+      margin-left: auto;
+      font-size: 13px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
 
     .progress-bar-wrapper {
       height: 6px;
@@ -323,7 +340,7 @@
     .metrics-row.warn .stage-name { color: #92400e; }
     .metrics-row.error .stage-name { color: var(--error); }
 
-    <!-- 质量统计卡片 -->
+    /* 质量统计卡片 */
     .quality-card {
       margin-top: 16px;
       padding: 16px;
@@ -402,6 +419,119 @@
     }
     .history-clear:hover { color: var(--error); }
 
+    .progress-log {
+      margin-top: 12px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fafafa;
+      max-height: 160px;
+      overflow: auto;
+      font-size: 12px;
+      display: none;
+    }
+    .progress-log.visible { display: block; }
+    .progress-log-item {
+      padding: 4px 0;
+      border-bottom: 1px dashed #e5e7eb;
+      color: #374151;
+      word-break: break-word;
+    }
+    .progress-log-item:last-child { border-bottom: none; }
+    .progress-log-time {
+      color: var(--muted);
+      margin-right: 8px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 任务中心 */
+    .nav-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-tabs a {
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .nav-tabs a:hover { color: var(--text); }
+    .nav-tabs a.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .tasks-card { display: none; }
+    .tasks-card.visible { display: block; }
+    .tasks-empty {
+      padding: 32px 20px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .tasks-list { list-style: none; }
+    .tasks-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      font-size: 13px;
+    }
+    .tasks-item:last-child { border-bottom: none; }
+    .tasks-info { flex: 1; min-width: 0; }
+    .tasks-filename { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tasks-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .tasks-status {
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .tasks-status.queued { background: #fef3c7; color: #92400e; }
+    .tasks-status.running { background: #dbeafe; color: #1e40af; }
+    .tasks-status.completed { background: #d1fae5; color: #065f46; }
+    .tasks-status.partial_completed { background: #fef3c7; color: #92400e; }
+    .tasks-status.failed { background: #fee2e2; color: #991b1b; }
+    .tasks-status.cancelled { background: #e5e7eb; color: #4b5563; }
+    .tasks-view-btn {
+      padding: 6px 14px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .tasks-view-btn:hover { background: var(--primary-hover); }
+    .queue-notice {
+      margin-top: 16px;
+      padding: 14px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      font-size: 13px;
+      color: #1e40af;
+      display: none;
+    }
+    .queue-notice.visible { display: block; }
+    .queue-notice .btn-link {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 8px 16px;
+      background: var(--primary);
+      color: white;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .queue-notice .btn-link:hover { background: var(--primary-hover); color: white; }
+
     footer {
       text-align: center;
       padding: 24px 0;
@@ -415,6 +545,10 @@
     <header>
       <h1>EPUB Factory</h1>
       <p>上传 EPUB 或 PDF，智能转换为横排繁体/简体，支持 Kindle/Apple Books 优化</p>
+      <nav class="nav-tabs">
+        <a href="#" id="navUpload" class="active">上传转换</a>
+        <a href="#" id="navTasks">任务中心</a>
+      </nav>
     </header>
 
     <!-- Upload Card -->
@@ -459,6 +593,11 @@
       </div>
 
       <div id="translationOptions" style="display:none;">
+        <div class="pricing-notice">
+          付费说明：AI 翻译为预付费服务，当前价格为 $1.99/次。仅在支付成功后才会创建并执行转换任务。<br/>
+          页面展示的 Token 消耗与费用估算仅用于信息披露和透明化，不构成额外扣费依据，本次任务不会二次扣费。
+        </div>
+
         <div class="form-group" style="margin-top: 12px;">
           <label>目标语言</label>
           <select id="targetLang">
@@ -496,6 +635,14 @@
       <div id="paypal-button-container" style="display:none; margin-top:12px;"></div>
     </div>
 
+    <!-- 任务中心卡片 -->
+    <div class="card tasks-card" id="tasksCard">
+      <h2><span class="icon">📋</span> 任务中心</h2>
+      <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">关闭页面后任务继续执行，稍后在此查看结果与下载。</p>
+      <div class="tasks-empty" id="tasksEmpty">暂无任务，请先上传文件开始转换。</div>
+      <ul class="tasks-list" id="tasksList" style="display:none;"></ul>
+    </div>
+
     <!-- Status Card -->
     <div class="card status-card" id="statusCard">
       <h2><span class="icon">⚡</span> 转换进度</h2>
@@ -503,10 +650,16 @@
       <div class="status-header">
         <span class="status-badge" id="statusBadge">等待中</span>
         <span id="statusMessage" style="font-size: 14px; color: var(--muted);"></span>
+        <span class="job-timer" id="jobTimer">已耗时 00:00</span>
       </div>
 
       <div class="progress-bar-wrapper">
         <div class="progress-bar pending" id="progressBar"></div>
+      </div>
+
+      <div class="queue-notice" id="queueNotice">
+        任务已进入后台队列。您可以关闭本页，稍后在「任务中心」查看结果与下载。
+        <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
       </div>
 
       <dl class="meta-grid">
@@ -534,6 +687,7 @@
       <div class="error-msg" id="errorMsg" style="display:none;"></div>
       <div id="errorCodeMsg" style="display:none; margin-top:6px;
            font-size:12px; color:#6b7280; font-family: monospace;"></div>
+      <div class="progress-log" id="progressLog"></div>
 
       <!-- 质量统计卡片 -->
       <div class="quality-card" id="qualityCard">
@@ -606,12 +760,158 @@
     const progressBar = $("progressBar");
     const downloadBtn = $("downloadBtn");
     const errorMsg = $("errorMsg");
+    const jobTimerEl = $("jobTimer");
+    const progressLogEl = $("progressLog");
 
     const paypalContainer = $("paypal-button-container");
 
     let selectedFile = null;
     let pollTimer = null;
-    let paymentOrderId = null; // 记录支付成功的订单ID
+    let elapsedTimer = null;
+    let jobStartMs = null;
+    let lastProgressMessage = "";
+    let paymentOrderId = null;
+    let currentJobId = null;
+
+    // ─── 视图切换：上传 / 任务中心 ────────────────────────────────────────────
+    const uploadCard = $("uploadCard");
+    const tasksCard = $("tasksCard");
+    const navUpload = $("navUpload");
+    const navTasks = $("navTasks");
+
+    function showView(view) {
+      const isTasks = view === "tasks";
+      navUpload.classList.toggle("active", !isTasks);
+      navTasks.classList.toggle("active", isTasks);
+      uploadCard.style.display = isTasks ? "none" : "block";
+      tasksCard.classList.toggle("visible", isTasks);
+      if (isTasks) loadTaskList();
+    }
+
+    function loadTaskList() {
+      const emptyEl = $("tasksEmpty");
+      const listEl = $("tasksList");
+      fetch(`${API}/api/v2/jobs`)
+        .then(r => r.json())
+        .then(data => {
+          const items = (data.items || []);
+          if (!items.length) {
+            emptyEl.style.display = "block";
+            listEl.style.display = "none";
+            return;
+          }
+          emptyEl.style.display = "none";
+          listEl.style.display = "block";
+          listEl.innerHTML = items.map(j => {
+            const statusClass = (j.status || "").replace(".", "_");
+            const statusText = typeof mapV2StatusText === "function" ? mapV2StatusText(j.status) : j.status;
+            const time = j.created_at ? new Date(j.created_at).toLocaleString() : "";
+            return `<li class="tasks-item" data-job-id="${j.job_id}">
+              <div class="tasks-info">
+                <div class="tasks-filename" title="${(j.source_filename || "").replace(/"/g, "&quot;")}">${(j.source_filename || "-")}</div>
+                <div class="tasks-meta">${time} · ${j.message || ""}</div>
+              </div>
+              <span class="tasks-status ${statusClass}">${statusText}</span>
+              <button type="button" class="tasks-view-btn" data-job-id="${j.job_id}">查看</button>
+            </li>`;
+          }).join("");
+          listEl.querySelectorAll(".tasks-view-btn").forEach(btn => {
+            btn.addEventListener("click", () => openJobDetail(btn.getAttribute("data-job-id")));
+          });
+        })
+        .catch(() => {
+          emptyEl.textContent = "加载任务列表失败，请稍后重试。";
+          emptyEl.style.display = "block";
+          listEl.style.display = "none";
+        });
+    }
+
+    function openJobDetail(jobId) {
+      currentJobId = jobId;
+      statusCard.classList.add("visible");
+      $("metaJobId").textContent = jobId;
+      $("metaTraceId").textContent = "-";
+      startJobTimer();
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(() => pollJobV2(jobId), 2000);
+      pollJobV2(jobId);
+    }
+
+    function pollJobV2(jobId) {
+      fetch(`${API}/api/v2/jobs/${jobId}`)
+        .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
+        .then(data => {
+          const s = data.status || "";
+          const legacy = s === "completed" || s === "partial_completed" ? "success" : (s === "failed" || s === "cancelled" ? "failed" : "running");
+          setStatus(legacy, data.message || "");
+          statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s) : s;
+          appendProgressLog(data.message);
+          $("metaFilename").textContent = data.source_filename || "-";
+          $("metaMode").textContent = data.output_mode ? (data.output_mode === "simplified" ? "横排简体" : "横排繁体") + " / " + (data.device || "generic") : "-";
+          const codeText = typeof formatErrorCode === "function" ? formatErrorCode(data.error_code) : "";
+          if (codeText) {
+            $("errorCodeMsg").textContent = codeText;
+            $("errorCodeMsg").style.display = "block";
+          }
+          if ((data.status === "completed" || data.status === "partial_completed") && data.download_url) {
+            downloadBtn.href = `${API}${data.download_url}`;
+            downloadBtn.style.display = "inline-flex";
+            saveHistory(localStorage, buildHistoryEntry({ ...data, status: "success", download_url: data.download_url }, API));
+            renderHistory();
+            if (data.metrics_summary) renderMetrics(data.metrics_summary);
+            if (data.quality_stats) {
+              $("qCss").textContent = data.quality_stats.css_cleaned || 0;
+              $("qTypo").textContent = data.quality_stats.typography_fixed || 0;
+              $("qToc").textContent = data.quality_stats.toc_generated || 0;
+              $("qStem").textContent = data.quality_stats.stem_protected || 0;
+              $("qualityCard").classList.add("visible");
+            }
+            if (data.translation_stats) {
+              $("costText").textContent = formatTranslationCost({ totalTokens: data.translation_stats.total_tokens, costUsd: data.translation_stats.cost_usd });
+              $("costSummary").style.display = "block";
+            }
+            clearInterval(pollTimer);
+            stopJobTimer();
+            $("queueNotice").classList.remove("visible");
+            submitBtn.disabled = false;
+          }
+          if (data.status === "failed" || data.status === "cancelled") {
+            errorMsg.textContent = data.message || "任务失败";
+            errorMsg.style.display = "block";
+            clearInterval(pollTimer);
+            stopJobTimer();
+            $("queueNotice").classList.remove("visible");
+            submitBtn.disabled = false;
+          }
+        })
+        .catch(err => {
+          setStatus("failed", err.message);
+          errorMsg.textContent = err.message;
+          errorMsg.style.display = "block";
+          clearInterval(pollTimer);
+          stopJobTimer();
+          $("queueNotice").classList.remove("visible");
+          submitBtn.disabled = false;
+        });
+    }
+
+    navUpload.addEventListener("click", (e) => { e.preventDefault(); showView("upload"); });
+    navTasks.addEventListener("click", (e) => { e.preventDefault(); showView("tasks"); });
+    $("goToTasksBtn").addEventListener("click", (e) => {
+      e.preventDefault();
+      showView("tasks");
+      if (currentJobId) openJobDetail(currentJobId);
+    });
+
+    // 支持 ?job_id=xxx 直接打开任务详情
+    (function initFromQuery() {
+      const params = new URLSearchParams(location.search);
+      const jobId = params.get("job_id");
+      if (jobId) {
+        showView("tasks");
+        openJobDetail(jobId);
+      }
+    })();
 
     // ─── 历史记录 ────────────────────────────────────────────────────────────
     function renderHistory() {
@@ -659,6 +959,8 @@
       $("metricsPanel").classList.add("visible");
     }
 
+    const DEV_MODE = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+
     function updateSubmitButton() {
       if (!selectedFile) {
         submitBtn.disabled = true;
@@ -667,15 +969,13 @@
         return;
       }
       
-      if (enableTranslation.checked) {
-        // AI 翻译收费模式
+      if (enableTranslation.checked && !DEV_MODE) {
         submitBtn.style.display = "none";
         paypalContainer.style.display = "block";
       } else {
-        // 免费模式
         submitBtn.disabled = false;
         submitBtn.style.display = "block";
-        paypalContainer.style.display = "none";
+        paypalContainer.style.display = enableTranslation.checked ? "none" : "none";
       }
     }
 
@@ -711,7 +1011,50 @@
       progressBar.className = "progress-bar " + status;
       statusMessage.textContent = message || "";
       errorMsg.style.display = "none";
+      $("errorCodeMsg").style.display = "none";
       downloadBtn.style.display = "none";
+    }
+
+    function formatElapsed(ms) {
+      const totalSec = Math.max(0, Math.floor(ms / 1000));
+      const min = String(Math.floor(totalSec / 60)).padStart(2, "0");
+      const sec = String(totalSec % 60).padStart(2, "0");
+      return `${min}:${sec}`;
+    }
+
+    function startJobTimer() {
+      jobStartMs = Date.now();
+      if (elapsedTimer) clearInterval(elapsedTimer);
+      jobTimerEl.textContent = "已耗时 00:00";
+      elapsedTimer = setInterval(() => {
+        if (!jobStartMs) return;
+        jobTimerEl.textContent = `已耗时 ${formatElapsed(Date.now() - jobStartMs)}`;
+      }, 1000);
+    }
+
+    function stopJobTimer() {
+      if (elapsedTimer) clearInterval(elapsedTimer);
+      elapsedTimer = null;
+      if (jobStartMs) {
+        jobTimerEl.textContent = `总耗时 ${formatElapsed(Date.now() - jobStartMs)}`;
+      }
+      jobStartMs = null;
+    }
+
+    function appendProgressLog(message) {
+      if (!message || message === lastProgressMessage) return;
+      lastProgressMessage = message;
+      const now = new Date();
+      const line = document.createElement("div");
+      line.className = "progress-log-item";
+      const time = document.createElement("span");
+      time.className = "progress-log-time";
+      time.textContent = now.toLocaleTimeString();
+      line.appendChild(time);
+      line.appendChild(document.createTextNode(message));
+      progressLogEl.appendChild(line);
+      progressLogEl.classList.add("visible");
+      progressLogEl.scrollTop = progressLogEl.scrollHeight;
     }
 
     async function pollJob(jobId) {
@@ -721,8 +1064,14 @@
         const data = await res.json();
 
         setStatus(data.status, data.message);
+        appendProgressLog(data.message);
         $("metaFilename").textContent = data.source_filename;
         $("metaMode").textContent = formatJobMeta(data);
+        const codeText = formatErrorCode(data.error_code);
+        if (codeText) {
+          $("errorCodeMsg").textContent = codeText;
+          $("errorCodeMsg").style.display = "block";
+        }
 
         if (data.status === "success" && data.download_url) {
           downloadBtn.href = `${API}${data.download_url}`;
@@ -749,18 +1098,15 @@
             $("costSummary").style.display = "block";
           }
           clearInterval(pollTimer);
+          stopJobTimer();
           submitBtn.disabled = false;
         }
 
         if (data.status === "failed") {
           errorMsg.textContent = data.message || "转换失败";
           errorMsg.style.display = "block";
-          const codeText = formatErrorCode(data.error_code);
-          if (codeText) {
-            $("errorCodeMsg").textContent = codeText;
-            $("errorCodeMsg").style.display = "block";
-          }
           clearInterval(pollTimer);
+          stopJobTimer();
           submitBtn.disabled = false;
         }
 
@@ -772,6 +1118,7 @@
         errorMsg.textContent = err.message;
         errorMsg.style.display = "block";
         clearInterval(pollTimer);
+        stopJobTimer();
         submitBtn.disabled = false;
       }
     }
@@ -782,6 +1129,9 @@
 
       submitBtn.disabled = true;
       setStatus("pending", "正在上传...");
+      progressLogEl.innerHTML = "";
+      progressLogEl.classList.remove("visible");
+      lastProgressMessage = "";
 
       const form = new FormData();
       form.append("file", selectedFile);
@@ -813,23 +1163,28 @@
       }
 
       try {
-        const res = await fetch(`${API}/api/v1/jobs`, { method: "POST", body: form });
+        startJobTimer();
+        const res = await fetch(`${API}/api/v2/jobs`, { method: "POST", body: form });
         if (!res.ok) {
           const detail = await res.json().catch(() => ({}));
           throw new Error(detail.detail || "创建任务失败");
         }
         const data = await res.json();
 
+        currentJobId = data.job_id;
         $("metaJobId").textContent = data.job_id;
-        $("metaTraceId").textContent = data.trace_id;
-        setStatus("running", "任务已提交，正在处理...");
+        $("metaTraceId").textContent = data.trace_id || "-";
+        setStatus("running", data.message || "任务已进入后台队列");
+        $("queueNotice").classList.add("visible");
 
         if (pollTimer) clearInterval(pollTimer);
-        pollTimer = setInterval(() => pollJob(data.job_id), 2000);
+        pollTimer = setInterval(() => pollJobV2(data.job_id), 2000);
+        pollJobV2(data.job_id);
       } catch (err) {
         setStatus("failed", err.message);
         errorMsg.textContent = err.message;
         errorMsg.style.display = "block";
+        stopJobTimer();
         submitBtn.disabled = false;
       }
     }

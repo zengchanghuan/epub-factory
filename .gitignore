@@ -4,8 +4,10 @@ __pycache__/
 *.epub
 backend/uploads/
 backend/outputs/
+backend/reduce_work/
 backend/temp/
 backend/.env
 backend/translation_cache.db
+backend/epub_jobs.db
 
 tools/
