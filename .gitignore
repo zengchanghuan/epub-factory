@@ -11,6 +11,11 @@ backend/translation_cache.db
 backend/epub_jobs.db
 backend/epub_jobs.db-shm
 backend/epub_jobs.db-wal
+backend/rate_limit.db
+backend/rate_limit.db-shm
+backend/rate_limit.db-wal
+backend/feedback.jsonl
 *.pem
 
 tools/
+epub-factory/
