@@ -64,6 +64,7 @@
     <div class="tab active" data-tab="token">Token / 费用</div>
     <div class="tab" data-tab="error">错误统计</div>
     <div class="tab" data-tab="feedback">用户反馈</div>
+    <div class="tab" data-tab="visits">流量统计</div>
   </div>
 
   <!-- ─── Tab: Token 费用 ─── -->
@@ -142,6 +143,28 @@
             <tr><th>时间</th><th>Job ID</th><th>类型</th><th>内容</th><th>IP</th></tr>
           </thead>
           <tbody id="feedbackTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Tab: 流量统计 ─── -->
+  <div class="tab-panel" id="panel-visits">
+    <div class="card">
+      <div class="row" id="visitsSummary" style="display:none;">
+        <div class="stat"><label>总 PV (7天)</label><span id="totalPV">0</span></div>
+        <div class="stat"><label>总 UV (7天)</label><span id="totalUV">0</span></div>
+      </div>
+      <p class="hint">内部 PV 统计（排除部分爬虫），数据来自 visits.jsonl。</p>
+    </div>
+    <div class="card" id="visitsTableCard" style="display:none;">
+      <h2>每日趋势</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr><th>日期</th><th class="num">PV (访问量)</th><th class="num">UV (独立访客)</th></tr>
+          </thead>
+          <tbody id="visitsTableBody"></tbody>
         </table>
       </div>
     </div>
@@ -330,12 +353,45 @@
       }
     }
 
+    // ─── 流量统计 ─────────────────────────────────────────
+    async function loadVisits() {
+      const key = getKey();
+      let url = API + "/api/v2/admin/visits?days=14";
+      if (key) url += "&admin_key=" + encodeURIComponent(key);
+      try {
+        const res = await fetch(url, fetchOpts(key));
+        if (!res.ok) throw new Error(res.status === 403 ? "需要有效的管理员密钥" : await res.text());
+        const data = await res.json();
+        document.getElementById("totalPV").textContent = data.total_pv.toLocaleString();
+        document.getElementById("totalUV").textContent = data.total_uv.toLocaleString();
+        document.getElementById("visitsSummary").style.display = "flex";
+        const tbody = document.getElementById("visitsTableBody");
+        tbody.innerHTML = "";
+        if (data.daily && data.daily.length) {
+          document.getElementById("visitsTableCard").style.display = "block";
+          data.daily.forEach(function (row) {
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+              "<td>" + row.date + "</td>" +
+              "<td class='num'>" + row.pv.toLocaleString() + "</td>" +
+              "<td class='num'>" + row.uv.toLocaleString() + "</td>";
+            tbody.appendChild(tr);
+          });
+        } else {
+          document.getElementById("visitsTableCard").style.display = "none";
+        }
+      } catch (e) {
+        showGlobalErr("流量统计加载失败：" + (e.message || e));
+      }
+    }
+
     // ─── 事件绑定 ────────────────────────────────────────
     document.getElementById("loadBtn").addEventListener("click", function () {
       showGlobalErr("");
       loadTokenStats();
       loadErrorStats();
       loadFeedback();
+      loadVisits();
     });
     document.getElementById("filterBtn").addEventListener("click", function () {
       showGlobalErr("");
@@ -346,6 +402,7 @@
     loadTokenStats();
     loadErrorStats();
     loadFeedback();
+    loadVisits();
   })();
   </script>
 </body>

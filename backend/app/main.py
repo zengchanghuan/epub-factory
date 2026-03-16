@@ -623,6 +623,81 @@ def get_admin_error_stats(
     }
 
 
+# ---------- 流量统计 ----------
+
+@app.post("/api/v2/track/pv", include_in_schema=False)
+async def track_pv(request: Request):
+    """记录页面访问（PV）。"""
+    import json as _json
+    from datetime import datetime, timezone
+    
+    ip = get_real_ip(request)
+    ua = request.headers.get("user-agent", "")
+    ts = datetime.now(timezone.utc).isoformat()
+    
+    # 存入 visits.jsonl
+    pv_file = BASE_DIR / "visits.jsonl"
+    try:
+        with pv_file.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps({"ts": ts, "ip": ip, "ua": ua}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.get("/api/v2/admin/visits", include_in_schema=False)
+def get_admin_visits(
+    request: Request,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    days: int = 7,
+):
+    """查看访问统计。需要 ADMIN_SECRET 鉴权。"""
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    secret = _os.environ.get("ADMIN_SECRET")
+    if secret:
+        key = x_admin_key or request.query_params.get("admin_key")
+        if key != secret:
+            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+
+    pv_file = BASE_DIR / "visits.jsonl"
+    stats = {"total_pv": 0, "unique_ips": set(), "daily": {}}
+    
+    if pv_file.exists():
+        limit_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        try:
+            with pv_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        v = _json.loads(line)
+                        dt = datetime.fromisoformat(v["ts"])
+                        if dt.date() < limit_date: continue
+                        
+                        date_str = dt.date().isoformat()
+                        stats["total_pv"] += 1
+                        stats["unique_ips"].add(v["ip"])
+                        
+                        if date_str not in stats["daily"]:
+                            stats["daily"][date_str] = {"pv": 0, "uv": set()}
+                        stats["daily"][date_str]["pv"] += 1
+                        stats["daily"][date_str]["uv"].add(v["ip"])
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+            
+    # 转为列表并计算 UV 数量
+    daily_list = []
+    for d, s in sorted(stats["daily"].items(), reverse=True):
+        daily_list.append({"date": d, "pv": s["pv"], "uv": len(s["uv"])})
+        
+    return {
+        "total_pv": stats["total_pv"],
+        "total_uv": len(stats["unique_ips"]),
+        "daily": daily_list
+    }
+
+
 # ---------- 用户反馈 ----------
 
 @app.post("/api/v2/feedback")

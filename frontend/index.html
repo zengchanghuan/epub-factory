@@ -12,6 +12,15 @@
   <meta name="robots" content="index, follow" />
   <link rel="canonical" href="https://fixepub.com/" />
 
+  <!-- Google Analytics (GA4) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-XXXXXXXXXX');
+  </script>
+
   <!-- Open Graph / 社交分享 -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://fixepub.com/" />
@@ -670,6 +679,8 @@
   <nav class="topbar">
     <a class="topbar-logo" href="/">FixEpub</a>
     <span class="topbar-badge">免费</span>
+    <div style="flex:1"></div>
+    <a href="#" id="suggestBtn" style="font-size:12px; color:var(--muted); text-decoration:none; font-weight:500;">功能建议</a>
   </nav>
 
   <div class="container">
@@ -1102,6 +1113,9 @@
 
     renderHistory(); // 页面加载时恢复历史
 
+    // ─── 流量统计 ───
+    fetch(API + "/api/v2/track/pv", { method: "POST" }).catch(() => {});
+
     // Pipeline 耗时面板
     $("metricsToggle").addEventListener("click", () => {
       $("metricsBody").classList.toggle("open");
@@ -1496,6 +1510,44 @@
       }
     });
 
+    // ─── 功能建议 ────────────────────────────────────────────────────────────
+    $("suggestBtn").addEventListener("click", e => {
+      e.preventDefault();
+      $("suggestModal").style.display = "flex";
+      $("suggestText").focus();
+    });
+
+    $("closeSuggest").addEventListener("click", () => {
+      $("suggestModal").style.display = "none";
+    });
+
+    $("submitSuggest").addEventListener("click", async () => {
+      const msg = $("suggestText").value.trim();
+      if (!msg) return;
+      const btn = $("submitSuggest");
+      const msgEl = $("suggestMsg");
+      btn.disabled = true;
+      msgEl.style.color = "var(--muted)";
+      msgEl.textContent = "提交中...";
+      try {
+        const res = await fetch(API + "/api/v2/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_id: "general_suggestion", type: "suggestion", message: msg }),
+        });
+        const data = await res.json();
+        msgEl.style.color = "var(--success)";
+        msgEl.textContent = "感谢您的建议！";
+        $("suggestText").value = "";
+        setTimeout(() => { $("suggestModal").style.display = "none"; msgEl.textContent = ""; }, 1500);
+      } catch(e) {
+        msgEl.style.color = "var(--error)";
+        msgEl.textContent = "提交失败";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // ─── SEO 落地内容展开/收起 ────────────────────────────────────────────────
     document.querySelectorAll(".faq-item summary").forEach(s => {
       s.addEventListener("click", () => {});
@@ -1565,6 +1617,22 @@
           <span id="feedbackMsg" class="feedback-msg"></span>
           <button id="submitFeedback" class="fb-submit">提交反馈</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+
+  <!-- ─── 功能建议 Modal ──────────────────────────────────────────────── -->
+  <div id="suggestModal" class="preview-modal" style="display:none; justify-content:center; align-items:center; background:rgba(0,0,0,0.4); backdrop-filter:blur(4px);">
+    <div class="card" style="width:100%; max-width:400px; margin:20px; position:relative;">
+      <button id="closeSuggest" style="position:absolute; top:12px; right:12px; border:none; background:none; font-size:18px; cursor:pointer; color:var(--subtle);">✕</button>
+      <h2 style="color:var(--text); text-transform:none; font-size:16px;">💡 功能建议</h2>
+      <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">您希望 FixEpub 增加什么功能？或者有什么改进建议？</p>
+      <textarea id="suggestText" placeholder="例如：支持批量上传、支持更详细的排版设置..." rows="4" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:var(--radius-sm); font-family:inherit; font-size:13px; resize:none;"></textarea>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+        <span id="suggestMsg" style="font-size:12px;"></span>
+        <button id="submitSuggest" class="fb-submit">提交建议</button>
       </div>
     </div>
   </div>
