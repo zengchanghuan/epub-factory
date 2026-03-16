@@ -1637,6 +1637,41 @@
     </div>
   </div>
 
+  <!-- SEO 落地内容：功能特性 + 使用指南（增加文本密度，利于搜索排名） -->
+  <section class="features-section">
+    <div class="container">
+      <h2 class="seo-title">专业级在线 EPUB 转换与优化服务</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h3>在线繁简转换</h3>
+          <p>FixEpub 采用先进的 OpenCC 引擎，提供精准的 EPUB 繁体转简体及简体转繁体服务。支持台湾繁体、香港繁体等多种地域化配置，确保电子书用语符合阅读习惯。</p>
+        </div>
+        <div class="feature-card">
+          <h3>Kindle 排版优化</h3>
+          <p>针对 Kindle 墨水屏设备进行深度排版优化。自动调整段落边距、行间距及字体大小，解决电子书在 Kindle 上显示的锯齿、断行等问题，提升沉浸式阅读体验。</p>
+        </div>
+        <div class="feature-card">
+          <h3>AI 智能英译中</h3>
+          <p>集成大语言模型（LLM）实现高质量的英文书籍翻译。不同于传统的机翻，我们的 AI 翻译能够理解语境，提供自然流畅的中文译文，并支持双语对照排版。</p>
+        </div>
+        <div class="feature-card">
+          <h3>PDF 转 EPUB 优化</h3>
+          <p>支持将 PDF 文档转换为适合移动设备阅读的 EPUB 格式。系统会自动识别文本流，优化图像位置，让您的 PDF 资料在 Kindle 或手机上重现新生。</p>
+        </div>
+      </div>
+
+      <div class="guide-block">
+        <h2 class="seo-title">如何转换您的电子书？</h2>
+        <ol class="guide-steps">
+          <li><strong>选择文件：</strong>点击上传区域，选择您的 .epub 或 .pdf 电子书文件（大小限制 20MB 以内）。</li>
+          <li><strong>设置模式：</strong>根据您的阅读器（如 Kindle、Apple Books），选择「输出模式」和「目标设备」。</li>
+          <li><strong>一键转换：</strong>点击「开始转换」，系统将自动在云端完成处理。</li>
+          <li><strong>预览与下载：</strong>转换完成后，您可以在线预览排版效果，确认无误后点击下载。</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
   <!-- SEO 落地内容：FAQ + 功能说明（对用户可见，对搜索引擎友好） -->
   <section class="seo-section" aria-label="常见问题">
     <div class="container">
@@ -1889,6 +1924,65 @@
     .fb-submit:disabled { opacity: 0.4; cursor: not-allowed; }
 
     /* ── SEO section ── */
+    .features-section {
+      padding: 60px 0 20px;
+      border-top: 1px solid var(--border);
+      margin-top: 40px;
+    }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+    @media (max-width: 520px) { .feature-grid { grid-template-columns: 1fr; } }
+    .feature-card h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: var(--text);
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .guide-block {
+      background: var(--surface);
+      padding: 32px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .guide-steps {
+      list-style: none;
+      counter-reset: steps;
+    }
+    .guide-steps li {
+      counter-increment: steps;
+      margin-bottom: 16px;
+      padding-left: 32px;
+      position: relative;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .guide-steps li::before {
+      content: counter(steps);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 20px;
+      height: 20px;
+      background: var(--text);
+      color: #fff;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .guide-steps li strong { color: var(--text); }
+
     .seo-section {
       background: #f0f4f8;
       padding: 48px 0 32px;
