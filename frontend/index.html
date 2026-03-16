@@ -3,7 +3,55 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EPUB Factory</title>
+  <title>EPUB Factory – 免费 EPUB 繁简转换 / Kindle 优化 / AI 翻译</title>
+
+  <!-- SEO Meta -->
+  <meta name="description" content="免费在线 EPUB 转换工具：繁体转简体、简体转繁体、Kindle/Apple Books 排版优化、AI 英文翻译为中文。上传 EPUB 或 PDF，一键转换下载。" />
+  <meta name="keywords" content="EPUB转换,繁简转换,EPUB繁体转简体,EPUB简体转繁体,Kindle优化,Apple Books,PDF转EPUB,EPUB在线工具,AI翻译,英文书翻译中文" />
+  <meta name="author" content="FixEpub" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://fixepub.com/" />
+
+  <!-- Open Graph / 社交分享 -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://fixepub.com/" />
+  <meta property="og:title" content="EPUB Factory – 免费 EPUB 繁简转换 / Kindle 优化 / AI 翻译" />
+  <meta property="og:description" content="免费在线 EPUB 转换工具：繁体转简体、简体转繁体、Kindle/Apple Books 排版优化、AI 英文翻译为中文。" />
+  <meta property="og:image" content="https://fixepub.com/og-image.png" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:site_name" content="FixEpub" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="EPUB Factory – 免费 EPUB 繁简转换 / Kindle 优化" />
+  <meta name="twitter:description" content="免费在线 EPUB 转换：繁简转换、Kindle 优化、AI 翻译，上传即用。" />
+  <meta name="twitter:image" content="https://fixepub.com/og-image.png" />
+
+  <!-- JSON-LD 结构化数据 -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "EPUB Factory",
+    "url": "https://fixepub.com/",
+    "description": "免费在线 EPUB 转换工具，支持繁简转换、Kindle/Apple Books 优化、AI 翻译",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "Web",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "EPUB 繁体转简体",
+      "EPUB 简体转繁体",
+      "Kindle 排版优化",
+      "Apple Books 优化",
+      "PDF 转换",
+      "AI 英文翻译中文"
+    ]
+  }
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1227,6 +1275,11 @@
 
     submitBtn.addEventListener("click", submitJob);
 
+    // ─── SEO 落地内容展开/收起 ────────────────────────────────────────────────
+    document.querySelectorAll(".faq-item summary").forEach(s => {
+      s.addEventListener("click", () => {});
+    });
+
     // ─── PayPal 集成 ─────────────────────────────────────────────────────────
     paypal.Buttons({
       style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal' },
@@ -1254,5 +1307,97 @@
       }
     }).render('#paypal-button-container');
   </script>
+
+  <!-- SEO 落地内容：FAQ + 功能说明（对用户可见，对搜索引擎友好） -->
+  <section class="seo-section" aria-label="常见问题">
+    <div class="container">
+      <h2 class="seo-title">关于 EPUB Factory</h2>
+      <details class="faq-item">
+        <summary>EPUB Factory 是什么？</summary>
+        <p>EPUB Factory 是一款免费在线 EPUB 处理工具，支持繁简体中文互转、Kindle / Apple Books 排版优化，以及 AI 驱动的英文书籍中文翻译。无需安装任何软件，上传文件即可使用。</p>
+      </details>
+      <details class="faq-item">
+        <summary>如何将 EPUB 繁体转换为简体？</summary>
+        <p>上传 EPUB 文件后，在「输出模式」中选择「横排简体」，再点击「开始转换」即可。转换基于 OpenCC，支持台湾繁体（tw）、香港繁体（hk）及通用繁体三种来源。</p>
+      </details>
+      <details class="faq-item">
+        <summary>支持 Kindle 和 Apple Books 优化吗？</summary>
+        <p>支持。在「目标设备」中选择 Kindle 或 Apple Books，系统会自动调整字体、间距、CSS 样式以符合该阅读器的最佳显示效果。</p>
+      </details>
+      <details class="faq-item">
+        <summary>AI 翻译功能如何使用？</summary>
+        <p>开启「AI 翻译」开关，上传英文 EPUB，系统会使用大语言模型将全书翻译为中文。支持双语对照模式。AI 翻译为付费功能（$1.99/本），免费功能（繁简转换、格式优化）不受限制。</p>
+      </details>
+      <details class="faq-item">
+        <summary>免费使用有什么限制？</summary>
+        <p>免费用户每天可转换 3 本书，单文件大小上限 20MB。AI 翻译功能需单独付费。</p>
+      </details>
+      <details class="faq-item">
+        <summary>支持 PDF 文件吗？</summary>
+        <p>支持上传 PDF 文件进行繁简转换和格式处理。</p>
+      </details>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© 2026 <a href="https://fixepub.com">FixEpub.com</a> · 免费 EPUB 转换工具</p>
+    </div>
+  </footer>
+
+  <style>
+    .seo-section {
+      background: #f0f4f8;
+      padding: 48px 0 32px;
+      margin-top: 40px;
+    }
+    .seo-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: var(--text);
+    }
+    .faq-item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+    .faq-item summary {
+      padding: 14px 18px;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+    .faq-item summary::-webkit-details-marker { display: none; }
+    .faq-item summary::after {
+      content: "+";
+      font-size: 18px;
+      color: var(--muted);
+      transition: transform 0.2s;
+    }
+    .faq-item[open] summary::after { content: "−"; }
+    .faq-item p {
+      padding: 0 18px 16px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .site-footer {
+      background: var(--text);
+      color: #9ca3af;
+      text-align: center;
+      padding: 20px 0;
+      font-size: 13px;
+    }
+    .site-footer a { color: #9ca3af; text-decoration: none; }
+    .site-footer a:hover { color: #fff; }
+  </style>
 </body>
 </html>

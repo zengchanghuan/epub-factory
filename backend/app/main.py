@@ -623,6 +623,32 @@ def get_admin_error_stats(
     }
 
 
+# ---------- SEO：robots.txt / sitemap.xml ----------
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    content = "\n".join([
+        "User-agent: *",
+        "Allow: /",
+        "Disallow: /api/",
+        "Sitemap: https://fixepub.com/sitemap.xml",
+    ])
+    return Response(content=content, media_type="text/plain")
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml():
+    content = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://fixepub.com/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>"""
+    return Response(content=content, media_type="application/xml")
+
+
 # ---------- 前端静态资源（与 API 同域，避免跨域） ----------
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
