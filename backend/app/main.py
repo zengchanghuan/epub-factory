@@ -667,12 +667,41 @@ async def submit_feedback(request: Request):
 
 # ---------- SEO：robots.txt / sitemap.xml ----------
 
+@app.get("/api/v2/admin/feedback", include_in_schema=False)
+def get_admin_feedback(
+    request: Request,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    limit: int = 100,
+):
+    """查看用户反馈列表。需要 ADMIN_SECRET 鉴权（若已配置）。"""
+    import json as _json
+    secret = _os.environ.get("ADMIN_SECRET")
+    if secret:
+        key = x_admin_key or request.query_params.get("admin_key")
+        if key != secret:
+            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+    feedback_file = BASE_DIR / "feedback.jsonl"
+    items = []
+    if feedback_file.exists():
+        try:
+            lines = feedback_file.read_text(encoding="utf-8").strip().splitlines()
+            for line in reversed(lines[-limit:]):
+                try:
+                    items.append(_json.loads(line))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return {"items": items, "total": len(items)}
+
+
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
     content = "\n".join([
         "User-agent: *",
         "Allow: /",
         "Disallow: /api/",
+        "Disallow: /admin.html",
         "Sitemap: https://fixepub.com/sitemap.xml",
     ])
     return Response(content=content, media_type="text/plain")

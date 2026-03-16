@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>后台统计 · EPUB Factory</title>
+  <meta name="robots" content="noindex, nofollow" />
   <style>
     :root { --bg:#1a1a1a; --card:#252525; --text:#e0e0e0; --muted:#888; --accent:#4a9eff; --border:#333; --error:#e57373; --warn:#ffb74d; --ok:#81c784; }
     * { box-sizing: border-box; }
@@ -62,6 +63,7 @@
   <div class="tabs">
     <div class="tab active" data-tab="token">Token / 费用</div>
     <div class="tab" data-tab="error">错误统计</div>
+    <div class="tab" data-tab="feedback">用户反馈</div>
   </div>
 
   <!-- ─── Tab: Token 费用 ─── -->
@@ -124,10 +126,40 @@
     </div>
   </div>
 
+  <!-- ─── Tab: 用户反馈 ─── -->
+  <div class="tab-panel" id="panel-feedback">
+    <div class="card">
+      <div class="row" id="feedbackSummary" style="display:none;">
+        <div class="stat"><label>反馈总数</label><span id="totalFeedback">0</span></div>
+      </div>
+      <p class="hint">数据来自 /api/v2/admin/feedback，展示用户通过预览页提交的修复建议。</p>
+    </div>
+    <div class="card" id="feedbackTableCard" style="display:none;">
+      <h2>反馈明细</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr><th>时间</th><th>Job ID</th><th>类型</th><th>内容</th><th>IP</th></tr>
+          </thead>
+          <tbody id="feedbackTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <script>
   (function () {
     const API = (typeof window !== "undefined" && window.location && window.location.origin)
       ? window.location.origin : "http://127.0.0.1:8000";
+
+    // ─── localStorage 持久化密钥 ──────────────────────────────
+    const KEY_STORE = "epub_admin_key";
+    const adminKeyEl = document.getElementById("adminKey");
+    const saved = localStorage.getItem(KEY_STORE);
+    if (saved) adminKeyEl.value = saved;
+    adminKeyEl.addEventListener("change", () => {
+      localStorage.setItem(KEY_STORE, adminKeyEl.value.trim());
+    });
 
     // ─── Tab 切换 ───────────────────────────────────────────
     document.querySelectorAll(".tab").forEach(function (tab) {
@@ -265,11 +297,45 @@
       try { return new Date(s).toLocaleString("zh-CN", { hour12: false }); } catch { return s; }
     }
 
+    // ─── 反馈列表 ─────────────────────────────────────────
+    async function loadFeedback() {
+      const key = getKey();
+      let url = API + "/api/v2/admin/feedback?limit=200";
+      if (key) url += "&admin_key=" + encodeURIComponent(key);
+      try {
+        const res = await fetch(url, fetchOpts(key));
+        if (!res.ok) throw new Error(res.status === 403 ? "需要有效的管理员密钥" : await res.text());
+        const data = await res.json();
+        document.getElementById("totalFeedback").textContent = data.total;
+        document.getElementById("feedbackSummary").style.display = "flex";
+        const tbody = document.getElementById("feedbackTableBody");
+        tbody.innerHTML = "";
+        if (data.items && data.items.length) {
+          document.getElementById("feedbackTableCard").style.display = "block";
+          data.items.forEach(function (row) {
+            const tr = document.createElement("tr");
+            tr.innerHTML =
+              "<td style='font-size:12px;white-space:nowrap;'>" + fmtDate(row.ts) + "</td>" +
+              "<td style='font-family:monospace;font-size:12px;'>" + esc(row.job_id || "-") + "</td>" +
+              "<td><span class='badge'>" + esc(row.type || "other") + "</span></td>" +
+              "<td class='msg-cell'>" + esc(row.message) + "</td>" +
+              "<td style='font-size:12px;color:var(--muted);'>" + esc(row.ip || "") + "</td>";
+            tbody.appendChild(tr);
+          });
+        } else {
+          document.getElementById("feedbackTableCard").style.display = "none";
+        }
+      } catch (e) {
+        showGlobalErr("反馈数据加载失败：" + (e.message || e));
+      }
+    }
+
     // ─── 事件绑定 ────────────────────────────────────────
     document.getElementById("loadBtn").addEventListener("click", function () {
       showGlobalErr("");
       loadTokenStats();
       loadErrorStats();
+      loadFeedback();
     });
     document.getElementById("filterBtn").addEventListener("click", function () {
       showGlobalErr("");
@@ -279,6 +345,7 @@
     // 初始加载
     loadTokenStats();
     loadErrorStats();
+    loadFeedback();
   })();
   </script>
 </body>
