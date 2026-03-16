@@ -623,6 +623,48 @@ def get_admin_error_stats(
     }
 
 
+# ---------- 用户反馈 ----------
+
+@app.post("/api/v2/feedback")
+async def submit_feedback(request: Request):
+    """接收用户对转换结果的反馈，写入结构化日志并持久化到 JSONL 文件。"""
+    import json as _json
+    from datetime import datetime, timezone
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体须为 JSON")
+
+    job_id = str(body.get("job_id") or "").strip()[:32]
+    feedback_type = str(body.get("type") or "other").strip()[:32]
+    message = str(body.get("message") or "").strip()[:2000]
+
+    if not message:
+        raise HTTPException(status_code=400, detail="反馈内容不能为空")
+
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "job_id": job_id,
+        "type": feedback_type,
+        "message": message,
+        "ip": get_real_ip(request),
+    }
+
+    # 结构化日志（可被日志聚合系统收集）
+    logger.info("user_feedback", extra={"job_id": job_id, "feedback_type": feedback_type})
+
+    # 持久化到 JSONL 文件
+    feedback_file = BASE_DIR / "feedback.jsonl"
+    try:
+        with feedback_file.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"feedback write error: {e}")
+
+    return {"ok": True, "message": "感谢您的反馈！"}
+
+
 # ---------- SEO：robots.txt / sitemap.xml ----------
 
 @app.get("/robots.txt", include_in_schema=False)

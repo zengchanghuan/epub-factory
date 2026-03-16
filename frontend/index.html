@@ -817,9 +817,14 @@
         <dd id="metaMode">-</dd>
       </dl>
 
-      <a class="download-btn" id="downloadBtn" href="#" style="display:none;">
-        📥 下载转换结果
-      </a>
+      <div id="resultActions" style="display:none; display:none; gap:10px; flex-wrap:wrap; margin-top:16px;">
+        <a class="download-btn" id="downloadBtn" href="#">
+          ↓ 下载转换结果
+        </a>
+        <button class="preview-btn" id="previewBtn">
+          ◎ 在线预览
+        </button>
+      </div>
 
       <!-- SafeMode 降级提示 -->
       <div id="safeModeNotice" style="display:none; margin-top:12px; padding:10px 14px;
@@ -1013,7 +1018,7 @@
           }
           if ((data.status === "completed" || data.status === "partial_completed") && data.download_url) {
             downloadBtn.href = `${API}${data.download_url}`;
-            downloadBtn.style.display = "inline-flex";
+            showResultActions(data.job_id, `${API}${data.download_url}`);
             saveHistory(localStorage, buildHistoryEntry({ ...data, status: "success", download_url: data.download_url }, API));
             renderHistory();
             if (data.metrics_summary) renderMetrics(data.metrics_summary);
@@ -1177,6 +1182,7 @@
       errorMsg.style.display = "none";
       $("errorCodeMsg").style.display = "none";
       downloadBtn.style.display = "none";
+      $("resultActions").classList.remove("visible");
     }
 
     function formatElapsed(ms) {
@@ -1239,7 +1245,7 @@
 
         if (data.status === "success" && data.download_url) {
           downloadBtn.href = `${API}${data.download_url}`;
-          downloadBtn.style.display = "inline-flex";
+          showResultActions(data.job_id, `${API}${data.download_url}`);
           // 保存到历史
           saveHistory(localStorage, buildHistoryEntry(data, API));
           renderHistory();
@@ -1358,6 +1364,138 @@
 
     submitBtn.addEventListener("click", submitJob);
 
+    // ─── 结果操作区（下载 + 预览）────────────────────────────────────────────
+    let _previewUrl = null;
+    let _previewJobId = null;
+
+    function showResultActions(jobId, downloadUrl) {
+      _previewJobId = jobId;
+      _previewUrl = downloadUrl;
+      downloadBtn.href = downloadUrl;
+      $("resultActions").classList.add("visible");
+    }
+
+    // ─── epub.js 预览 ─────────────────────────────────────────────────────────
+    let _epubBook = null;
+    let _epubRendition = null;
+
+    function loadEpubJs(cb) {
+      if (window.ePub) { cb(); return; }
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js";
+      s.onload = cb;
+      s.onerror = () => alert("epub.js 加载失败，请检查网络");
+      document.head.appendChild(s);
+    }
+
+    async function openPreview() {
+      const modal = $("previewModal");
+      modal.style.display = "flex";
+      $("previewLoading").classList.remove("hidden");
+      $("epubViewer").innerHTML = "";
+      $("pageInfo").textContent = "—";
+
+      if (_epubBook) { try { _epubBook.destroy(); } catch(e){} }
+
+      loadEpubJs(async () => {
+        try {
+          const res = await fetch(_previewUrl);
+          if (!res.ok) throw new Error("下载失败 " + res.status);
+          const blob = await res.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const book = ePub(blobUrl);
+          _epubBook = book;
+
+          const rendition = book.renderTo("epubViewer", {
+            width: "100%",
+            height: "100%",
+            spread: "none",
+          });
+          _epubRendition = rendition;
+
+          await rendition.display();
+          $("previewLoading").classList.add("hidden");
+
+          book.loaded.metadata.then(meta => {
+            $("previewTitle").textContent = meta.title || "预览";
+          });
+
+          rendition.on("relocated", loc => {
+            const cur = loc.start.displayed.page;
+            const total = loc.start.displayed.total;
+            $("pageInfo").textContent = cur + " / " + total;
+          });
+        } catch(err) {
+          $("previewLoading").classList.add("hidden");
+          $("epubViewer").innerHTML = "<div style='padding:40px;color:var(--muted);text-align:center;font-size:14px;'>预览加载失败：" + err.message + "</div>";
+        }
+      });
+    }
+
+    $("previewBtn").addEventListener("click", openPreview);
+
+    $("closePreview").addEventListener("click", () => {
+      $("previewModal").style.display = "none";
+      if (_epubBook) { try { _epubBook.destroy(); } catch(e){} _epubBook = null; }
+    });
+
+    $("prevPage").addEventListener("click", () => { if (_epubRendition) _epubRendition.prev(); });
+    $("nextPage").addEventListener("click", () => { if (_epubRendition) _epubRendition.next(); });
+
+    document.addEventListener("keydown", e => {
+      if ($("previewModal").style.display === "none") return;
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") { if (_epubRendition) _epubRendition.prev(); }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") { if (_epubRendition) _epubRendition.next(); }
+      if (e.key === "Escape") $("closePreview").click();
+    });
+
+    // ─── 反馈表单 ─────────────────────────────────────────────────────────────
+    let _feedbackType = "layout";
+
+    $("feedbackToggle").addEventListener("click", () => {
+      const form = $("feedbackForm");
+      const arrow = $("feedbackArrow");
+      const open = form.classList.toggle("open");
+      arrow.textContent = open ? "∧" : "∨";
+    });
+
+    document.querySelectorAll(".fb-type").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".fb-type").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        _feedbackType = btn.dataset.type;
+      });
+    });
+
+    $("submitFeedback").addEventListener("click", async () => {
+      const msg = $("feedbackText").value.trim();
+      if (!msg) {
+        $("feedbackMsg").style.color = "var(--error)";
+        $("feedbackMsg").textContent = "请填写反馈内容";
+        return;
+      }
+      const btn = $("submitFeedback");
+      btn.disabled = true;
+      $("feedbackMsg").style.color = "var(--muted)";
+      $("feedbackMsg").textContent = "提交中...";
+      try {
+        const res = await fetch(API + "/api/v2/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_id: _previewJobId, type: _feedbackType, message: msg }),
+        });
+        const data = await res.json();
+        $("feedbackMsg").style.color = "var(--success)";
+        $("feedbackMsg").textContent = data.message || "感谢您的反馈！";
+        $("feedbackText").value = "";
+      } catch(e) {
+        $("feedbackMsg").style.color = "var(--error)";
+        $("feedbackMsg").textContent = "提交失败，请重试";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // ─── SEO 落地内容展开/收起 ────────────────────────────────────────────────
     document.querySelectorAll(".faq-item summary").forEach(s => {
       s.addEventListener("click", () => {});
@@ -1390,6 +1528,46 @@
       }
     }).render('#paypal-button-container');
   </script>
+
+  <!-- ── EPUB 预览 Modal ─────────────────────────────────────────────── -->
+  <div id="previewModal" class="preview-modal" role="dialog" aria-modal="true" aria-label="EPUB 预览" style="display:none;">
+    <div class="preview-topbar">
+      <span class="preview-title" id="previewTitle">预览</span>
+      <div class="preview-nav">
+        <button id="prevPage" title="上一页">‹</button>
+        <span id="pageInfo" class="page-info">—</span>
+        <button id="nextPage" title="下一页">›</button>
+      </div>
+      <button class="preview-close" id="closePreview" title="关闭">✕</button>
+    </div>
+    <div class="preview-body">
+      <div id="epubViewer" class="epub-viewer"></div>
+      <div class="preview-loading" id="previewLoading">
+        <div class="spinner"></div>
+        <p>加载中...</p>
+      </div>
+    </div>
+    <div class="feedback-bar" id="feedbackBar">
+      <div class="feedback-header" id="feedbackToggle">
+        <span>发现问题？提交修复建议</span>
+        <span id="feedbackArrow">∨</span>
+      </div>
+      <div class="feedback-form" id="feedbackForm">
+        <div class="feedback-types" id="feedbackTypes">
+          <button class="fb-type active" data-type="layout">排版异常</button>
+          <button class="fb-type" data-type="encoding">乱码</button>
+          <button class="fb-type" data-type="translation">翻译质量</button>
+          <button class="fb-type" data-type="missing">内容缺失</button>
+          <button class="fb-type" data-type="other">其他</button>
+        </div>
+        <textarea id="feedbackText" placeholder="请描述问题，例如：第三章标题字体异常..." rows="3"></textarea>
+        <div class="feedback-actions">
+          <span id="feedbackMsg" class="feedback-msg"></span>
+          <button id="submitFeedback" class="fb-submit">提交反馈</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- SEO 落地内容：FAQ + 功能说明（对用户可见，对搜索引擎友好） -->
   <section class="seo-section" aria-label="常见问题">
@@ -1429,6 +1607,220 @@
   </footer>
 
   <style>
+    /* ── 预览按钮 ── */
+    #resultActions { display: none; }
+    #resultActions.visible { display: flex !important; }
+    .preview-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 20px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .preview-btn:hover { background: #ebebeb; }
+
+    /* ── 预览 Modal ── */
+    .preview-modal {
+      position: fixed;
+      inset: 0;
+      background: #fff;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+    }
+    .preview-topbar {
+      height: 52px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 12px;
+      flex-shrink: 0;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(6px);
+    }
+    .preview-title {
+      font-size: 14px;
+      font-weight: 600;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .preview-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .preview-nav button {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text);
+      transition: background 0.15s;
+    }
+    .preview-nav button:hover { background: #ebebeb; }
+    .page-info {
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 60px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .preview-close {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: none;
+      font-size: 16px;
+      cursor: pointer;
+      color: var(--muted);
+      border-radius: var(--radius-sm);
+      transition: background 0.15s, color 0.15s;
+    }
+    .preview-close:hover { background: #f0f0f0; color: var(--text); }
+
+    .preview-body {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      background: #fafafa;
+    }
+    .epub-viewer {
+      width: 100%;
+      height: 100%;
+    }
+    .epub-viewer iframe {
+      border: none !important;
+    }
+    .preview-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: #fafafa;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .preview-loading.hidden { display: none; }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--border);
+      border-top-color: var(--text);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── 反馈栏 ── */
+    .feedback-bar {
+      border-top: 1px solid var(--border);
+      background: #fff;
+      flex-shrink: 0;
+    }
+    .feedback-header {
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+      transition: background 0.15s;
+    }
+    .feedback-header:hover { background: var(--surface); }
+    .feedback-form {
+      padding: 0 20px 16px;
+      display: none;
+    }
+    .feedback-form.open { display: block; }
+    .feedback-types {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .fb-type {
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--surface);
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    .fb-type.active {
+      background: var(--text);
+      color: #fff;
+      border-color: var(--text);
+    }
+    .feedback-form textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+      line-height: 1.6;
+      color: var(--text);
+      background: var(--bg);
+      transition: border-color 0.15s;
+    }
+    .feedback-form textarea:focus {
+      outline: none;
+      border-color: var(--text);
+    }
+    .feedback-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .feedback-msg {
+      font-size: 12px;
+      color: var(--success);
+    }
+    .fb-submit {
+      padding: 7px 18px;
+      background: var(--text);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .fb-submit:hover { background: var(--primary-hover); }
+    .fb-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── SEO section ── */
     .seo-section {
       background: #f0f4f8;
       padding: 48px 0 32px;
