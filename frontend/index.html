@@ -680,7 +680,7 @@
     <a class="topbar-logo" href="/">FixEpub</a>
     <span class="topbar-badge">免费</span>
     <div style="flex:1"></div>
-    <a href="#" id="suggestBtn" style="font-size:12px; color:var(--muted); text-decoration:none; font-weight:500;">功能建议</a>
+    <button id="suggestBtn" style="background:none; border:none; padding:8px; font-size:12px; color:var(--muted); cursor:pointer; font-weight:500; font-family:inherit;">功能建议</button>
   </nav>
 
   <div class="container">
@@ -907,9 +907,10 @@
   <script src="lib.js"></script>
   <script src="https://www.paypal.com/sdk/js?client-id=ATpeFr3DombSdiVk3SwEp3rKg89vb9JkyAmoEt6UcyqFcbOxQJpRhAVJOrRraJpzuiuH8QsoWnTsC3yf&currency=USD"></script>
   <script>
-    const API = window.EPUB_FACTORY_API || "http://127.0.0.1:8000";
+    const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
 
-    const $ = (id) => document.getElementById(id);
+    document.addEventListener("DOMContentLoaded", () => {
+      const $ = (id) => document.getElementById(id);
     const dropzone = $("dropzone");
     const fileInput = $("fileInput");
     const fileNameEl = $("fileName");
@@ -1511,8 +1512,8 @@
     });
 
     // ─── 功能建议 ────────────────────────────────────────────────────────────
-    $("suggestBtn").addEventListener("click", e => {
-      e.preventDefault();
+    $("suggestBtn").addEventListener("click", () => {
+      console.log("Suggest button clicked");
       $("suggestModal").style.display = "flex";
       $("suggestText").focus();
     });
@@ -1579,7 +1580,8 @@
         alert("支付遇到问题，请重试或检查网络");
       }
     }).render('#paypal-button-container');
-  </script>
+  });
+</script>
 
   <!-- ── EPUB 预览 Modal ─────────────────────────────────────────────── -->
   <div id="previewModal" class="preview-modal" role="dialog" aria-modal="true" aria-label="EPUB 预览" style="display:none;">
@@ -1619,8 +1621,6 @@
         </div>
       </div>
     </div>
-  </div>
-
   </div>
 
   <!-- ─── 功能建议 Modal ──────────────────────────────────────────────── -->
@@ -1698,7 +1698,7 @@
       </details>
       <details class="faq-item">
         <summary>支持 PDF 文件吗？</summary>
-        <p>支持上传 PDF 文件进行繁简转换和格式处理。</p>
+        <p>是的，FixEpub 现已支持 PDF 转换。我们通过先进的文本提取算法将 PDF 转换为可重排的 EPUB 格式，并支持后续的繁简转换、优化以及 AI 翻译功能。建议上传文字版 PDF 以获得最佳效果。</p>
       </details>
     </div>
   </section>
