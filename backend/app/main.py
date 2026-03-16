@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .converter import converter
+from .infra.rate_limiter import MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, get_real_ip, rate_limiter
 from .job_runner import run_job
 from .models import DeviceProfile, Job, JobStatus, OutputMode, TraditionalVariant
 from .storage import job_store
@@ -253,6 +254,7 @@ def download_result(job_id: str):
 
 @app.post("/api/v2/jobs")
 async def create_job_v2(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     output_mode: OutputMode = Form(OutputMode.traditional),
@@ -273,6 +275,16 @@ async def create_job_v2(
     if not (file.filename and (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf"))):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
+    # ── 免费配额检查（在写文件前，避免浪费磁盘） ──────────────────────────────
+    client_ip = get_real_ip(request)
+    allowed, count = rate_limiter.check_and_increment(client_ip)
+    if not allowed:
+        from app.infra.rate_limiter import FREE_DAILY_LIMIT
+        raise HTTPException(
+            status_code=429,
+            detail=f"今日免费转换次数已用完（每日上限 {FREE_DAILY_LIMIT} 次），请明天再试。",
+        )
+
     glossary: dict = {}
     if glossary_json:
         try:
@@ -292,6 +304,16 @@ async def create_job_v2(
     input_path = UPLOAD_DIR / f"{job_id}-{file.filename}"
     with input_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+
+    # ── 文件大小检查（写入后检查，超限则删除并退还配额） ──────────────────────
+    file_size = input_path.stat().st_size
+    if file_size > MAX_FILE_SIZE_BYTES:
+        input_path.unlink(missing_ok=True)
+        rate_limiter.reset_ip(client_ip)  # 退还本次配额
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大（{file_size // 1024 // 1024}MB），免费转换最大支持 {MAX_FILE_SIZE_MB}MB。",
+        )
 
     job = Job(
         id=job_id,
