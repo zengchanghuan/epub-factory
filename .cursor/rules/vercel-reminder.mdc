@@ -1,0 +1,30 @@
+---
+description: 在涉及前端部署、预览、日志排查时提醒使用 Vercel MCP 能力
+alwaysApply: true
+---
+
+# Vercel 能力与使用提醒
+
+项目已集成 Vercel MCP（user-vercel），在以下场景应主动提醒用户可使用 Vercel：
+
+## 适用场景（提醒用户或直接使用）
+
+- **部署前端/全栈项目**：说「部署到 Vercel」时，使用 `deploy_to_vercel` 部署当前项目
+- **查看项目与部署**：需要列项目、查某次部署状态时，用 `list_teams` → `list_projects` / `list_deployments` / `get_deployment`
+- **排查线上问题**：需要看运行时或构建日志时，用 `get_runtime_logs`、`get_deployment_build_logs`
+- **查 Vercel 文档/概念**：路由、缓存、环境变量、Preview vs Production 等，用 `search_vercel_documentation` 或 `explain_vercel_concept` 相关提示
+- **域名**：查域名可用性与价格用 `check_domain_availability_and_price`
+
+## 可用工具摘要（18 个）
+
+部署：`deploy_to_vercel`  
+项目/团队：`list_projects`、`list_teams`、`get_project`  
+部署与日志：`list_deployments`、`get_deployment`、`get_deployment_build_logs`、`get_runtime_logs`  
+文档与访问：`search_vercel_documentation`、`get_access_to_vercel_url`、`web_fetch_vercel_url`  
+域名：`check_domain_availability_and_price`  
+Toolbar 等：`list_toolbar_threads`、`get_toolbar_thread` 等
+
+## 提醒话术示例
+
+当用户在做前端部署、要发预览链接、或排查线上错误时，可补充：
+「需要的话可以让我帮你部署到 Vercel / 查 Vercel 上的部署和日志。」
