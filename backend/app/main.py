@@ -5,7 +5,14 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 import os as _os
+
+# Load environment variables from .env file if it exists
+dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
+
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -133,6 +140,49 @@ app.add_middleware(
 )
 
 
+import requests
+from requests.auth import HTTPBasicAuth
+
+def verify_paypal_order(order_id: str, client_id: str, secret: str) -> bool:
+    """向 PayPal 验证订单是否已经真实支付完成 (COMPLETED)"""
+    # 如果需要在沙盒测试，改为 "https://api-m.sandbox.paypal.com"
+    paypal_api_base = "https://api-m.paypal.com" 
+    try:
+        # 获取 Access Token
+        token_res = requests.post(
+            f"{paypal_api_base}/v1/oauth2/token",
+            auth=HTTPBasicAuth(client_id, secret),
+            data={"grant_type": "client_credentials"},
+            timeout=10
+        )
+        if not token_res.ok:
+            logger.error(f"Failed to get PayPal token: {token_res.text}")
+            return False
+            
+        access_token = token_res.json().get("access_token")
+        
+        # 查询订单状态
+        order_res = requests.get(
+            f"{paypal_api_base}/v2/checkout/orders/{order_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10
+        )
+        if not order_res.ok:
+            logger.error(f"Failed to get PayPal order: {order_res.text}")
+            return False
+            
+        order_data = order_res.json()
+        status = order_data.get("status")
+        
+        if status == "COMPLETED":
+            return True
+        else:
+            logger.warning(f"PayPal order {order_id} is not completed. Status: {status}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"PayPal verification error: {str(e)}")
+        return False
 def process_job(job: Job) -> None:
     """进程内执行转换（供 BackgroundTasks 使用）；实际逻辑在 job_runner.run_job。"""
     run_job(job.id)
@@ -275,15 +325,16 @@ async def create_job_v2(
     if not (file.filename and (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf"))):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
-    # ── 免费配额检查（在写文件前，避免浪费磁盘） ──────────────────────────────
+    # ── 免费配额检查（仅对非付费任务生效；付费翻译不受免费次数限制） ───────────────
     client_ip = get_real_ip(request)
-    allowed, count = rate_limiter.check_and_increment(client_ip)
-    if not allowed:
-        from app.infra.rate_limiter import FREE_DAILY_LIMIT
-        raise HTTPException(
-            status_code=429,
-            detail=f"今日免费转换次数已用完（每日上限 {FREE_DAILY_LIMIT} 次），请明天再试。",
-        )
+    if not enable_translation:
+        allowed, count = rate_limiter.check_and_increment(client_ip)
+        if not allowed:
+            from app.infra.rate_limiter import FREE_DAILY_LIMIT
+            raise HTTPException(
+                status_code=429,
+                detail=f"今日免费转换次数已用完（每日上限 {FREE_DAILY_LIMIT} 次），请明天再试。",
+            )
 
     glossary: dict = {}
     if glossary_json:
@@ -298,6 +349,24 @@ async def create_job_v2(
         temperature = 1.3
     elif not enable_translation:
         temperature = None
+
+    # 检查 PayPal 订单是否已支付 (如果传了 paypal_order_id 且非测试环境)
+    if enable_translation and not _skip_payment:
+        if not paypal_order_id:
+            raise HTTPException(status_code=402, detail="AI 翻译为收费功能，请先完成支付")
+            
+        paypal_client_id = _os.environ.get("PAYPAL_CLIENT_ID")
+        paypal_secret = _os.environ.get("PAYPAL_SECRET")
+        
+        if paypal_client_id and paypal_secret:
+            is_valid = verify_paypal_order(paypal_order_id, paypal_client_id, paypal_secret)
+            if not is_valid:
+                raise HTTPException(status_code=402, detail="PayPal 支付验证失败，订单未完成或金额异常")
+            logger.info(f"Received and verified PayPal order: {paypal_order_id} for translation")
+        else:
+            # 兼容开发者没有配置环境变量的场景
+            logger.warning("PAYPAL_CLIENT_ID or PAYPAL_SECRET not configured, skipping strict verification")
+            logger.info(f"Received PayPal order: {paypal_order_id} for translation")
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
@@ -621,6 +690,55 @@ def get_admin_error_stats(
         "by_error_code": by_error_code,
         "recent": recent,
     }
+
+
+# ---------- 支付回调 Webhook (Lemon Squeezy) ----------
+
+import hmac
+import hashlib
+
+@app.post("/api/v2/webhooks/lemonsqueezy", include_in_schema=False)
+async def lemonsqueezy_webhook(request: Request):
+    """
+    处理 Lemon Squeezy 的 Webhook 回调（例如 order_created）。
+    用于在用户支付成功后更新状态，并触发异步转换任务。
+    """
+    secret = _os.environ.get("LEMON_SQUEEZY_WEBHOOK_SECRET")
+    if not secret:
+        logger.warning("LEMON_SQUEEZY_WEBHOOK_SECRET is not set")
+        return {"ok": True}
+
+    signature = request.headers.get("X-Signature", "")
+    payload = await request.body()
+    
+    # 验证签名
+    digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(digest, signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    data = await request.json()
+    event_name = data.get("meta", {}).get("event_name")
+    
+    if event_name == "order_created":
+        # 假设前端创建 Checkout 时将 job_id 放入了 custom_data
+        custom_data = data.get("meta", {}).get("custom_data", {})
+        job_id = custom_data.get("job_id")
+        
+        if job_id:
+            job = job_store.get(job_id)
+            if job and job.status == JobStatus.pending:
+                logger.info("LemonSqueezy payment verified, starting job", extra={"job_id": job_id})
+                if _use_celery():
+                    from app.tasks.job_pipeline import run_conversion
+                    run_conversion.delay(job.id)
+                else:
+                    # 注意：如果不是 Celery 环境，由于 fastapi BackgroundTasks 必须在请求生命周期内添加
+                    # 这里如果是独立 webhook 请求，只能同步或另起线程，简单起见：
+                    from .job_runner import run_job
+                    import threading
+                    threading.Thread(target=run_job, args=(job.id,)).start()
+                
+    return {"ok": True}
 
 
 # ---------- 流量统计 ----------

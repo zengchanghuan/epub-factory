@@ -184,10 +184,24 @@ node runner.js test_f6_history.js
 
 ## 待实现（Roadmap）
 
+### 支付与合规 MVP (P0)
+- [ ] **网站合规三件套** (提交 Lemon Squeezy 审核前必做)
+  - [ ] Privacy Policy (隐私政策)：声明上传文件处理后删除不留底。
+  - [ ] Terms of Service (服务条款)：说明预付费机制。
+  - [ ] Refund Policy (退款政策)：明确“数字服务一经执行不退款”。
+  - [ ] Contact Us：配置官网支持邮箱。
+- [ ] **极简支付接入** (Lemon Squeezy)
+  - [ ] 前端：上传后拉起 Checkout (传参 `task_id`)，先不写复杂的购物车。
+  - [ ] 后端：编写单个 Webhook 接收 `order_created` 回调，更新状态并触发翻译任务。
+
+### 体验优化 (P1)
+- [ ] **多语言支持 (i18n)**：支持中英等界面语言切换，适配出海需求。
+- [ ] **Dark / Light 模式**：前端适配暗黑模式，提升夜间使用体验。
+
+### 核心功能 (P2)
 - [ ] 幽灵目录 AI 语义提取（LLM 推断无标签章节）
 - [ ] AI 生成图片 Alt 文本（ADA/A11y 合规）
 - [ ] Redis + Celery 任务队列（支持并发、重试）
 - [ ] 用户鉴权（Supabase Auth）
-- [ ] 配额控制 + Paddle 计费
 - [ ] 域名上线 + SEO 内容发布
 - [ ] ProductHunt 发布
