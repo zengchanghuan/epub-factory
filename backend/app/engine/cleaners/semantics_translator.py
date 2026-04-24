@@ -1,17 +1,17 @@
 import asyncio
+import json
 import random
 import re
 import os
 import time
 from dataclasses import dataclass, field
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag, NavigableString
 from openai import AsyncOpenAI
 import httpx
 from ..translation_cache import TranslationCache
 
 
 # 定价：每百万 token 美元（来源：DeepSeek / OpenAI 公开价格，可随官网更新）
-# DeepSeek: https://api-docs.deepseek.com/zh-cn/quick_start/parameter_settings 等
 PRICING = {
     "deepseek-chat": {"input": 0.27, "output": 1.10},
     "deepseek-v3": {"input": 0.27, "output": 1.10},
@@ -105,8 +105,8 @@ class SemanticsTranslator:
     def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
                  glossary: dict | None = None, temperature: float | None = None):
         self.target_lang = target_lang
-        self.bilingual = bilingual  # True = 原文 + 译文并排
-        self.glossary: dict[str, str] = glossary or {}  # {原文术语: 目标语言术语}
+        self.bilingual = bilingual
+        self.glossary: dict[str, str] = glossary or {}
         self.cache = TranslationCache()
         self.progress_callback = None
 
@@ -118,11 +118,11 @@ class SemanticsTranslator:
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
         self.semaphore = asyncio.Semaphore(max(1, env_concurrency))
         self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "2")))
-        self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "25"))
+        self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "45"))  # increased for JSON batches
         if temperature is not None:
             self.temperature = float(temperature)
         else:
-            self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", "1.3"))
+            self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", "1.1"))
         self._clients: dict[str, AsyncOpenAI] = {}
         self.stats = TranslationStats()
 
@@ -162,15 +162,19 @@ class SemanticsTranslator:
         return deduped or [(self.base_url, self.model)]
 
     def _build_system_prompt(self) -> str:
-        """构建 System Prompt，若有术语表则注入为上下文（RAG）"""
         prompt = f"""你是一位顶级的书籍翻译专家。目标语言是：{self.target_lang}。
-用户将给你一段或多段包含 HTML 标签的文本。
+你将收到一个包含多段待翻译内容的 JSON 数组（输入格式为：[{{"id": 0, "html": "..."}}, ...]）。
 规则：
-1. 翻译文本内容，使其符合目标语言的母语表达习惯，信达雅。
-2. 绝对不能修改、增加或删除任何 HTML 标签及属性（如 id, class, href）。
-3. 保持标签与对应文字的包裹关系完全一致。
-4. 只输出翻译后的 HTML 字符串，不要输出任何解释，不要包含 markdown 代码块外壳。
-5. 如果输入中包含 <!-- CHUNK_SEP --> 分隔符，则每段独立翻译，输出中必须保留同样数量的 <!-- CHUNK_SEP --> 分隔符将各段翻译结果分开。"""
+1. 翻译 "html" 字段中的文本内容，使其符合目标语言的母语表达习惯，信达雅。
+2. 绝对不能修改、增加或删除任何 HTML 标签及属性（如 id, class, href）。保持标签与对应文字的包裹关系完全一致。
+3. 必须返回一个包含翻译结果的 JSON 对象，格式必须严格为：
+{{
+  "results": [
+    {{"id": 0, "translation": "翻译后的内容"}},
+    {{"id": 1, "translation": "..."}}
+  ]
+}}
+4. 返回的 JSON 必须包含输入中的每一个 id，绝对不能遗漏或合并！"""
 
         if self.glossary:
             lines = "\n".join(f"  {src} → {dst}" for src, dst in self.glossary.items())
@@ -178,29 +182,28 @@ class SemanticsTranslator:
 
         return prompt
 
-    @staticmethod
-    def _looks_like_html(text: str) -> bool:
-        """结果校验：至少包含标签形结构，避免纯错误文案被当作译文。"""
-        if not text or not text.strip():
-            return False
-        s = text.strip()
-        return "<" in s and ">" in s
+    def _extract_json_from_response(self, text: str) -> dict:
+        text = text.strip()
+        # Remove markdown codeblocks if exist
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+        return json.loads(text)
 
-    @staticmethod
-    def _looks_like_error_response(text: str) -> bool:
-        """结果校验：常见模型错误/拒绝回复前缀，视为无效需重试。"""
-        lower = (text or "").strip().lower()[:80]
-        prefixes = ("error", "sorry", "i cannot", "i'm unable", "i am unable", "api", "rate limit", "invalid")
-        return any(lower.startswith(p) for p in prefixes)
-
-    async def _call_llm(self, html_chunk: str) -> tuple[str, dict]:
-        """返回 (result_text, meta)；含 base_url/model fallback、指数退避+jitter、结果校验。"""
+    async def _call_llm_json_batch(self, payload: list[dict]) -> tuple[dict[int, str], dict]:
+        """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         system_prompt = self._build_system_prompt()
+        user_content = json.dumps(payload, ensure_ascii=False)
         last_error = None
         routes = self._candidate_routes()
         max_attempts = max(self.max_retries, len(routes))
         response = None
         base_url, model = self.base_url, self.model
+        
         for attempt in range(1, max_attempts + 1):
             base_url, model = routes[(attempt - 1) % len(routes)]
             try:
@@ -208,26 +211,36 @@ class SemanticsTranslator:
                     model=model,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": html_chunk}
+                        {"role": "user", "content": user_content}
                     ],
                     temperature=self.temperature,
+                    response_format={"type": "json_object"} if "gpt" in model.lower() else None,
                     timeout=self.request_timeout,
                 )
                 raw = (response.choices[0].message.content or "").strip()
-                result = re.sub(r"^```html\s*", "", raw)
-                result = re.sub(r"\s*```$", "", result)
-                if not self._looks_like_html(result) or self._looks_like_error_response(result):
-                    last_error = ValueError("Invalid response: not HTML or error-like")
+                try:
+                    parsed = self._extract_json_from_response(raw)
+                    results_list = parsed.get("results", [])
+                    if not isinstance(results_list, list) or len(results_list) != len(payload):
+                        raise ValueError(f"JSON 结构不对或数量不匹配: 期望 {len(payload)}, 收到 {len(results_list)}")
+                    
+                    translations = {}
+                    for item in results_list:
+                        translations[item["id"]] = item.get("translation", "")
+                    
+                    if model != self.model or base_url != self.base_url:
+                        print(f"⚠️ LLM fallback route succeeded: model={model}, base_url={base_url}")
+                    break
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    last_error = ValueError(f"Failed to parse LLM JSON: {json_err}")
                     self.stats.last_error = str(last_error)
                     if attempt >= max_attempts:
                         raise last_error
                     if self.progress_callback:
-                        self.progress_callback(f"译文校验未通过，重试 ({attempt}/{max_attempts})")
+                        self.progress_callback(f"JSON 解析失败，重试 ({attempt}/{max_attempts})")
                     await asyncio.sleep(min(2 ** (attempt - 1), 5) + random.uniform(0, 1))
                     continue
-                if model != self.model or base_url != self.base_url:
-                    print(f"⚠️ LLM fallback route succeeded: model={model}, base_url={base_url}")
-                break
+
             except Exception as exc:
                 last_error = exc
                 self.stats.last_error = str(exc)
@@ -251,14 +264,25 @@ class SemanticsTranslator:
             self.stats.total_tokens += getattr(usage, "total_tokens", None) or (prompt_tokens + completion_tokens)
         self.stats.api_calls += 1
 
-        result = (response.choices[0].message.content or "").strip()
-        result = re.sub(r"^```html\s*", "", result)
-        result = re.sub(r"\s*```$", "", result)
         meta = {"model": model, "base_url": base_url, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
-        return (result, meta)
+        return (translations, meta)
 
-    _BATCH_SEPARATOR = "\n<!-- CHUNK_SEP -->\n"
-    _BATCH_MAX_CHARS = 3000
+    _BATCH_MAX_CHARS = 2500
+
+    async def _translate_batch(self, html_chunks: list[str]) -> list[str]:
+        payload = [{"id": i, "html": html} for i, html in enumerate(html_chunks)]
+        async with self.semaphore:
+            translations_map, _ = await self._call_llm_json_batch(payload)
+        
+        results = []
+        for i in range(len(html_chunks)):
+            trans = translations_map.get(i, html_chunks[i])
+            results.append(trans)
+            self.cache.set(html_chunks[i], trans, self.target_lang)
+            self.stats.translated_chunks += 1
+            self.stats.total_chunks += 1
+            
+        return results
 
     async def _translate_html_chunk(self, html_chunk: str) -> str:
         self.stats.total_chunks += 1
@@ -266,50 +290,46 @@ class SemanticsTranslator:
         if cached:
             self.stats.cached_chunks += 1
             return cached
+            
+        payload = [{"id": 0, "html": html_chunk}]
         async with self.semaphore:
-            translated, _ = await self._call_llm(html_chunk)
+            translations_map, _ = await self._call_llm_json_batch(payload)
+        
+        translated = translations_map.get(0, html_chunk)
         self.cache.set(html_chunk, translated, self.target_lang)
         self.stats.translated_chunks += 1
         return translated
 
-    async def _translate_batch(self, chunks: list[str]) -> list[str]:
-        """将多个短 HTML 块合并为一次 LLM 调用，用分隔符拆分结果，大幅减少调用次数。"""
-        merged = self._BATCH_SEPARATOR.join(chunks)
-        async with self.semaphore:
-            translated, _ = await self._call_llm(merged)
-        parts = translated.split("<!-- CHUNK_SEP -->")
-        parts = [p.strip() for p in parts]
-        if len(parts) != len(chunks):
-            results = []
-            for c in chunks:
-                r = await self._translate_html_chunk(c)
-                results.append(r)
-            return results
-        for orig, trans in zip(chunks, parts):
-            self.cache.set(orig, trans, self.target_lang)
-            self.stats.translated_chunks += 1
-            self.stats.total_chunks += 1
-        return parts
-
     async def translate_single_chunk_async(self, html: str) -> "SingleChunkResult":
-        """
-        翻译单段 HTML chunk，供章节级任务按 chunk 并发调用与持久化。
-        :return: SingleChunkResult(translated, cached, model, base_url, prompt_tokens, completion_tokens, latency_ms, error)
-        """
-        text = BeautifulSoup(html, "html.parser").get_text() if html else ""
+        """单 chunk 调用（在 V2 Worker 中使用）"""
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text() if html else ""
         if not self._should_translate(text):
             return SingleChunkResult(html, True, None, None, 0, 0, 0, None)
+            
         self.stats.total_chunks += 1
-        cached = self.cache.get(html, self.target_lang)
+        
+        # 提取 inner_html 传给大模型，防止破坏外层标签属性
+        block_tag = soup.find()
+        if block_tag and block_tag.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']:
+            inner_html = "".join(str(c) for c in block_tag.contents).strip()
+        else:
+            inner_html = html.strip()
+            
+        cached = self.cache.get(inner_html, self.target_lang)
         if cached:
             self.stats.cached_chunks += 1
+            # Return cached inner_html directly. apply_chunk_results will handle it.
             return SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
+            
         try:
             t0 = time.monotonic()
+            payload = [{"id": 0, "html": inner_html}]
             async with self.semaphore:
-                translated, meta = await self._call_llm(html)
+                translations_map, meta = await self._call_llm_json_batch(payload)
+            translated = translations_map.get(0, inner_html)
             latency_ms = int((time.monotonic() - t0) * 1000)
-            self.cache.set(html, translated, self.target_lang)
+            self.cache.set(inner_html, translated, self.target_lang)
             self.stats.translated_chunks += 1
             return SingleChunkResult(
                 translated, False,
@@ -333,66 +353,42 @@ class SemanticsTranslator:
         if item_type == 9:
             text = content.decode('utf-8', errors='ignore')
             
-            # 【快速判断】如果整个页面没有可翻译的英文文本，直接原样返回
-            # 避免 BeautifulSoup 解析时破坏 SVG 大小写敏感的属性
             stripped = re.sub(r'<[^>]+>', '', text)
             if not self._should_translate(stripped):
                 return content
 
-            # 【纯字符串占位符法】在原始字符串层面用正则把图片/SVG 替换为占位符
-            # 绝不经过 BeautifulSoup 的 DOM 操作，100% 保证图片代码不被污染
-            placeholders = {}
-            placeholder_idx = 0
-            
-            def make_placeholder(match):
-                nonlocal placeholder_idx
-                pid = f"IMG_PH_{placeholder_idx}"
-                placeholder_idx += 1
-                placeholders[pid] = match.group(0)
-                return f'<span id="{pid}">{pid}</span>'
-
-            # 替换 <svg>...</svg> 整块（贪心匹配到最近的 </svg>）
-            text = re.sub(r'<svg[\s\S]*?</svg>', make_placeholder, text, flags=re.IGNORECASE)
-            # 替换自闭合 <img ... /> 或 <img ...>
-            text = re.sub(r'<img\b[^>]*/?\s*>', make_placeholder, text, flags=re.IGNORECASE)
-            # 替换独立的 <image ... /> (SVG 外的残余)
-            text = re.sub(r'<image\b[^>]*/?\s*>', make_placeholder, text, flags=re.IGNORECASE)
-
-            # 现在 text 中只剩纯文本和简单 HTML 标签，安全地交给 BeautifulSoup
             soup = BeautifulSoup(text, 'html.parser')
-
             blocks = soup.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
             
             translatable_blocks = []
-            translatable_htmls = []
+            inner_htmls = []
             
             for block in blocks:
                 has_block_child = block.find(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
                 if has_block_child:
                     continue
-                original_html = str(block)
-                if not self._should_translate(block.get_text()):
+                # 不取整个 block，而是抽取其 inner_html
+                inner_html = "".join(str(c) for c in block.contents).strip()
+                if not self._should_translate(inner_html):
                     continue
                 translatable_blocks.append(block)
-                translatable_htmls.append(original_html)
+                inner_htmls.append(inner_html)
 
             if translatable_blocks:
                 total_blocks = len(translatable_blocks)
-                cached_before = self.stats.cached_chunks
-
                 cached_results: dict[int, str] = {}
                 uncached: list[tuple[int, str]] = []
-                for i, html in enumerate(translatable_htmls):
-                    c = self.cache.get(html, self.target_lang)
+                for i, h_inner in enumerate(inner_htmls):
+                    c = self.cache.get(h_inner, self.target_lang)
                     if c:
                         cached_results[i] = c
                         self.stats.total_chunks += 1
                         self.stats.cached_chunks += 1
                     else:
-                        uncached.append((i, html))
+                        uncached.append((i, h_inner))
 
                 if self.progress_callback and cached_results:
-                    self.progress_callback(f"缓存命中 {len(cached_results)}/{total_blocks} 段落")
+                    self.progress_callback(f"缓存命中 {len(cached_results)}/{total_blocks} 句")
 
                 uncached_results: dict[int, str] = {}
                 batch: list[tuple[int, str]] = []
@@ -404,16 +400,20 @@ class SemanticsTranslator:
                         return
                     indices = [idx for idx, _ in batch]
                     htmls = [h for _, h in batch]
-                    if len(htmls) == 1:
-                        translated = await self._translate_html_chunk(htmls[0])
-                        uncached_results[indices[0]] = translated
-                    else:
+                    try:
                         translated_list = await self._translate_batch(htmls)
                         for idx, t in zip(indices, translated_list):
                             uncached_results[idx] = t
+                    except Exception as e:
+                        print(f"❌ Batch translation failed: {e}")
+                        for idx, h in zip(indices, htmls):
+                            self.stats.errors += 1
+                            self.stats.failed_chunks += 1
+                            uncached_results[idx] = h  # fallback to original
+                    
                     if self.progress_callback:
                         done = len(cached_results) + len(uncached_results)
-                        self.progress_callback(f"{done}/{total_blocks} 段落")
+                        self.progress_callback(f"{done}/{total_blocks} 句")
                     batch = []
                     batch_chars = 0
 
@@ -424,44 +424,27 @@ class SemanticsTranslator:
                     batch_chars += len(html)
                 await flush_batch()
 
-                results = []
                 for i in range(total_blocks):
-                    if i in cached_results:
-                        results.append(cached_results[i])
-                    elif i in uncached_results:
-                        results.append(uncached_results[i])
+                    block = translatable_blocks[i]
+                    original_inner = inner_htmls[i]
+                    translated_inner = cached_results.get(i) or uncached_results.get(i) or original_inner
+
+                    if self.bilingual:
+                        # 安全双语注入，不破坏 Box Model 结构
+                        new_content = BeautifulSoup(
+                            f'<span class="epub-original">{original_inner}</span><br/><span class="epub-translated">{translated_inner}</span>', 
+                            'html.parser'
+                        )
+                        block.clear()
+                        for child in new_content.contents:
+                            block.append(child)
                     else:
-                        results.append(translatable_htmls[i])
-                for block, translated_html in zip(translatable_blocks, results):
-                    if isinstance(translated_html, Exception):
-                        self.stats.errors += 1
-                        self.stats.failed_chunks += 1
-                        self.stats.last_error = str(translated_html)
-                        print(f"❌ Translation error: {translated_html}")
-                        continue
-                    try:
-                        new_soup = BeautifulSoup(translated_html, 'html.parser')
-                        new_tag = new_soup.find()
-                        if not new_tag:
-                            block.string = translated_html
-                            continue
+                        new_content = BeautifulSoup(translated_inner, 'html.parser')
+                        block.clear()
+                        for child in new_content.contents:
+                            block.append(child)
 
-                        if self.bilingual:
-                            block["class"] = block.get("class", []) + ["epub-original"]
-                            new_tag["class"] = new_tag.get("class", []) + ["epub-translated"]
-                            block.insert_after(new_tag)
-                        else:
-                            block.replace_with(new_tag)
-                    except Exception as e:
-                        print(f"❌ Error replacing tag: {e}")
-
-            result_text = str(soup)
-            
-            # 纯字符串替换：把占位符换回原始的图片/SVG HTML（绝对安全）
-            for pid, original_html in placeholders.items():
-                result_text = result_text.replace(f'<span id="{pid}">{pid}</span>', original_html)
-                        
-            return result_text.encode('utf-8')
+            return str(soup).encode('utf-8')
             
         return content
 

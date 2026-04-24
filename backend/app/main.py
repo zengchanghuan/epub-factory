@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .converter import converter
 from .infra.rate_limiter import MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, get_real_ip, rate_limiter
+from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_notification
 from .job_runner import run_job
 from .models import DeviceProfile, Job, JobStatus, OutputMode, TraditionalVariant
 from .storage import job_store
@@ -43,6 +44,8 @@ def _use_celery() -> bool:
 # ---------- API v2 状态与响应映射 ----------
 def _job_to_v2_status(job: Job) -> str:
     """将内部 JobStatus 映射为 API v2 状态字符串。"""
+    if job.status == JobStatus.pending_payment:
+        return "pending_payment"
     if job.status == JobStatus.pending:
         return "queued"
     if job.status == JobStatus.running:
@@ -131,6 +134,8 @@ logger.setLevel(logging.INFO)
 logger.handlers = [handler]
 
 app = FastAPI(title="EPUB Factory API", version="0.1.0")
+init_alipay()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -141,48 +146,7 @@ app.add_middleware(
 
 
 import requests
-from requests.auth import HTTPBasicAuth
 
-def verify_paypal_order(order_id: str, client_id: str, secret: str) -> bool:
-    """向 PayPal 验证订单是否已经真实支付完成 (COMPLETED)"""
-    # 如果需要在沙盒测试，改为 "https://api-m.sandbox.paypal.com"
-    paypal_api_base = "https://api-m.paypal.com" 
-    try:
-        # 获取 Access Token
-        token_res = requests.post(
-            f"{paypal_api_base}/v1/oauth2/token",
-            auth=HTTPBasicAuth(client_id, secret),
-            data={"grant_type": "client_credentials"},
-            timeout=10
-        )
-        if not token_res.ok:
-            logger.error(f"Failed to get PayPal token: {token_res.text}")
-            return False
-            
-        access_token = token_res.json().get("access_token")
-        
-        # 查询订单状态
-        order_res = requests.get(
-            f"{paypal_api_base}/v2/checkout/orders/{order_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10
-        )
-        if not order_res.ok:
-            logger.error(f"Failed to get PayPal order: {order_res.text}")
-            return False
-            
-        order_data = order_res.json()
-        status = order_data.get("status")
-        
-        if status == "COMPLETED":
-            return True
-        else:
-            logger.warning(f"PayPal order {order_id} is not completed. Status: {status}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"PayPal verification error: {str(e)}")
-        return False
 def process_job(job: Job) -> None:
     """进程内执行转换（供 BackgroundTasks 使用）；实际逻辑在 job_runner.run_job。"""
     run_job(job.id)
@@ -204,14 +168,17 @@ async def create_job(
     bilingual: bool = Form(False),
     glossary_json: Optional[str] = Form(None),  # JSON 字符串: '{"Harry": "哈利"}'
     device: DeviceProfile = Form(DeviceProfile.generic),
-    paypal_order_id: Optional[str] = Form(None),
+    out_trade_no: Optional[str] = Form(None),
 ):
-    if enable_translation:
-        if not paypal_order_id:
+    import os as _os
+    _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+    
+    if enable_translation and not _skip_payment:
+        # TODO: 替换为实际的支付宝/微信订单查询逻辑
+        if not out_trade_no:
             raise HTTPException(status_code=402, detail="AI 翻译为收费功能，请先完成支付")
-        # TODO: 这里应该加一个向 PayPal 服务器验证 order_id 是否真实的逻辑
-        # 验证是否 COMPLETED 且金额是对的。为了不阻塞流程，暂以订单号存在为准。
-        logger.info("Payment accepted", extra={"paypal_order_id": paypal_order_id})
+        logger.info("Payment validation pending", extra={"out_trade_no": out_trade_no})
+        
     if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
@@ -314,14 +281,12 @@ async def create_job_v2(
     bilingual: bool = Form(False),
     glossary_json: Optional[str] = Form(None),
     device: DeviceProfile = Form(DeviceProfile.generic),
-    paypal_order_id: Optional[str] = Form(None),
+    out_trade_no: Optional[str] = Form(None),
     temperature: Optional[float] = Form(None),
 ):
     """上传文件并创建后台任务，创建后立即返回（v2 契约）。temperature 不传时：翻译任务默认 1.3，纯格式转换不调用 LLM。"""
     import os as _os
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
-    if enable_translation and not paypal_order_id and not _skip_payment:
-        raise HTTPException(status_code=402, detail="AI 翻译为收费功能，请先完成支付")
     if not (file.filename and (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf"))):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
@@ -350,26 +315,27 @@ async def create_job_v2(
     elif not enable_translation:
         temperature = None
 
-    # 检查 PayPal 订单是否已支付 (如果传了 paypal_order_id 且非测试环境)
-    if enable_translation and not _skip_payment:
-        if not paypal_order_id:
-            raise HTTPException(status_code=402, detail="AI 翻译为收费功能，请先完成支付")
-            
-        paypal_client_id = _os.environ.get("PAYPAL_CLIENT_ID")
-        paypal_secret = _os.environ.get("PAYPAL_SECRET")
-        
-        if paypal_client_id and paypal_secret:
-            is_valid = verify_paypal_order(paypal_order_id, paypal_client_id, paypal_secret)
-            if not is_valid:
-                raise HTTPException(status_code=402, detail="PayPal 支付验证失败，订单未完成或金额异常")
-            logger.info(f"Received and verified PayPal order: {paypal_order_id} for translation")
-        else:
-            # 兼容开发者没有配置环境变量的场景
-            logger.warning("PAYPAL_CLIENT_ID or PAYPAL_SECRET not configured, skipping strict verification")
-            logger.info(f"Received PayPal order: {paypal_order_id} for translation")
+    # 国内支付：检查订单号
+    pay_url = None
+    job_status = JobStatus.pending
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
+
+    if enable_translation and not _skip_payment:
+        # 如果需要支付，先生成支付链接/二维码，任务状态设为 pending_payment
+        try:
+            pay_url = create_alipay_page_pay(
+                out_trade_no=job_id,
+                total_amount="0.01",
+                subject=f"EPUB AI 翻译服务 - {file.filename[:50]}",
+                return_url=f"https://fixepub.com/?job_id={job_id}"
+            )
+            job_status = JobStatus.pending_payment
+            logger.info("Created alipay payment order", extra={"job_id": job_id})
+        except Exception as e:
+            logger.error(f"Failed to create alipay order: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
     input_path = UPLOAD_DIR / f"{job_id}-{file.filename}"
     with input_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -397,19 +363,22 @@ async def create_job_v2(
         device=device,
         temperature=temperature,
         traditional_variant=traditional_variant.value,
+        status=job_status,
     )
     job_store.add(job)
-    if _use_celery():
-        from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job.id)
-    else:
-        background_tasks.add_task(process_job, job)
+
+    if job_status == JobStatus.pending:
+        if _use_celery():
+            from app.tasks.job_pipeline import run_conversion
+            run_conversion.delay(job.id)
+        else:
+            background_tasks.add_task(process_job, job)
 
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
-        "status": "queued",
-        "message": "任务已创建，已进入后台队列",
+        "status": _job_to_v2_status(job),
+        "message": "请完成支付以启动翻译任务" if job_status == JobStatus.pending_payment else "任务已创建，已进入后台队列",
         "source_filename": job.source_filename,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
@@ -417,6 +386,7 @@ async def create_job_v2(
         "device": job.device.value,
         "traditional_variant": job.traditional_variant,
         "created_at": job.created_at.isoformat(),
+        "pay_url": pay_url,
     }
 
 
@@ -692,53 +662,61 @@ def get_admin_error_stats(
     }
 
 
-# ---------- 支付回调 Webhook (Lemon Squeezy) ----------
+# ---------- 支付回调 Webhook (支付宝/微信) ----------
 
-import hmac
-import hashlib
-
-@app.post("/api/v2/webhooks/lemonsqueezy", include_in_schema=False)
-async def lemonsqueezy_webhook(request: Request):
+@app.post("/api/v2/webhooks/alipay", include_in_schema=False)
+async def alipay_webhook(request: Request):
     """
-    处理 Lemon Squeezy 的 Webhook 回调（例如 order_created）。
-    用于在用户支付成功后更新状态，并触发异步转换任务。
+    接收支付宝异步通知
     """
-    secret = _os.environ.get("LEMON_SQUEEZY_WEBHOOK_SECRET")
-    if not secret:
-        logger.warning("LEMON_SQUEEZY_WEBHOOK_SECRET is not set")
-        return {"ok": True}
-
-    signature = request.headers.get("X-Signature", "")
-    payload = await request.body()
-    
-    # 验证签名
-    digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(digest, signature):
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    data = await request.json()
-    event_name = data.get("meta", {}).get("event_name")
-    
-    if event_name == "order_created":
-        # 假设前端创建 Checkout 时将 job_id 放入了 custom_data
-        custom_data = data.get("meta", {}).get("custom_data", {})
-        job_id = custom_data.get("job_id")
+    try:
+        # 支付宝通常是 application/x-www-form-urlencoded
+        body = await request.body()
+        if not body:
+            return Response("fail")
+            
+        params = {}
+        if request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+            form_data = await request.form()
+            params = dict(form_data)
+        else:
+            # Fallback for testing/other content types
+            try:
+                params = await request.json()
+            except:
+                pass
+                
+        if not params:
+            return Response("fail")
+            
+        # 验签
+        is_valid = verify_alipay_notification(params.copy())
+        if not is_valid:
+            logger.warning("Alipay webhook signature verification failed", extra={"params": params})
+            return Response("fail")
+            
+        trade_status = params.get("trade_status")
+        out_trade_no = params.get("out_trade_no")
         
-        if job_id:
-            job = job_store.get(job_id)
-            if job and job.status == JobStatus.pending:
-                logger.info("LemonSqueezy payment verified, starting job", extra={"job_id": job_id})
+        if trade_status == "TRADE_SUCCESS" and out_trade_no:
+            job = job_store.get(out_trade_no)
+            if job and job.status == JobStatus.pending_payment:
+                logger.info(f"Alipay payment verified, starting job {out_trade_no}")
+                job_store.update_status(job.id, JobStatus.pending, "支付成功，排队中...")
                 if _use_celery():
                     from app.tasks.job_pipeline import run_conversion
                     run_conversion.delay(job.id)
                 else:
-                    # 注意：如果不是 Celery 环境，由于 fastapi BackgroundTasks 必须在请求生命周期内添加
-                    # 这里如果是独立 webhook 请求，只能同步或另起线程，简单起见：
-                    from .job_runner import run_job
                     import threading
-                    threading.Thread(target=run_job, args=(job.id,)).start()
-                
-    return {"ok": True}
+                    threading.Thread(target=process_job, args=(job,)).start()
+        
+        return Response("success")
+        
+    except Exception as e:
+        logger.error(f"Error processing alipay webhook: {e}", exc_info=True)
+        return Response("fail")
+
+
 
 
 # ---------- 流量统计 ----------

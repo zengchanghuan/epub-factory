@@ -82,18 +82,30 @@ def apply_chunk_results(
             continue
         try:
             frag = BeautifulSoup(cr.translated_html, "html.parser")
+            
+            # Check if translation is wrapped in an identical outer tag (legacy cache behavior)
             new_tag = frag.find(BLOCK_TAGS) or frag.find()
-            if new_tag is None:
-                continue
-            if bilingual:
-                # 原文保留并加 class，译文插在原文之后
-                cls = node.get("class") or []
-                if "epub-original" not in cls:
-                    node["class"] = cls + ["epub-original"]
-                new_tag["class"] = list(new_tag.get("class") or []) + ["epub-translated"]
-                node.insert_after(new_tag)
+            if new_tag and new_tag.name == node.name:
+                translated_contents = list(new_tag.contents)
             else:
-                node.replace_with(new_tag)
-        except Exception:
+                translated_contents = list(frag.contents)
+
+            if bilingual:
+                # Native safe bilingual injection
+                original_span = soup.new_tag("span", attrs={"class": "epub-original"})
+                original_span.extend(list(node.contents))
+                
+                translated_span = soup.new_tag("span", attrs={"class": "epub-translated"})
+                translated_span.extend(translated_contents)
+                
+                node.clear()
+                node.append(original_span)
+                node.append(soup.new_tag("br"))
+                node.append(translated_span)
+            else:
+                node.clear()
+                node.extend(translated_contents)
+        except Exception as e:
+            print(f"Error applying chunk {cr.chunk_id}: {e}")
             continue
     return soup.encode(formatter="html", encoding="utf-8")

@@ -9,6 +9,7 @@ PROJECT_NAME="epub-factory"
 ZIP_FILE="epub-factory.zip"
 KEY_FILE="fixepub-key.pem"
 REMOTE_HOST="fixepub" # This should be configured in your ~/.ssh/config
+REMOTE_ZIP_PATH="/tmp/$ZIP_FILE"
 
 echo "📦 Packaging project..."
 rm -f "$ZIP_FILE"
@@ -19,6 +20,10 @@ zip -r "$ZIP_FILE" . \
     -x "*.venv*" \
     -x "*.env" \
     -x "$ZIP_FILE" \
+    -x "$KEY_FILE" \
+    -x "AWS_访问证书/*" \
+    -x "backend/visits.jsonl" \
+    -x "backend/feedback.jsonl" \
     -x "backend/uploads/*" \
     -x "backend/outputs/*" \
     -x "backend/*.db*" \
@@ -27,13 +32,14 @@ zip -r "$ZIP_FILE" . \
     -x "tools/epubcheck.zip" \
     -x ".cursor/*"
 
-echo "🚀 Uploading to server ($REMOTE_HOST)..."
-scp -i "$KEY_FILE" "$ZIP_FILE" "$REMOTE_HOST:~"
+echo "🚀 Uploading to server ($REMOTE_HOST:$REMOTE_ZIP_PATH)..."
+scp -i "$KEY_FILE" "$ZIP_FILE" "$REMOTE_HOST:$REMOTE_ZIP_PATH"
 
 echo "🛠  Deploying on server..."
 ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
   echo "--- Extracting files ---"
-  unzip -o "$ZIP_FILE" -d "$PROJECT_NAME"
+  mkdir -p "$PROJECT_NAME"
+  unzip -o "$REMOTE_ZIP_PATH" -d "$PROJECT_NAME"
   
   echo "--- Updating dependencies ---"
   cd "$PROJECT_NAME/backend"
@@ -61,6 +67,7 @@ ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
   fi
   
   echo "--- Deployment on server completed! ---"
+  rm -f "$REMOTE_ZIP_PATH"
 EOF
 
 echo "🧹 Cleaning up local temporary files..."

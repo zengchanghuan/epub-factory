@@ -16,6 +16,8 @@ backend/rate_limit.db-shm
 backend/rate_limit.db-wal
 backend/feedback.jsonl
 *.pem
+AWS_访问证书/
+backend/visits.jsonl
 
 tools/
 epub-factory/

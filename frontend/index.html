@@ -870,7 +870,16 @@
 
       <!-- 支付与提交按钮区 -->
       <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
-      <div id="paypal-button-container" style="display:none; margin-top:12px;"></div>
+
+      <!-- 仅用于支付宝审核的支付模拟 UI (平时可隐藏) -->
+      <div id="mockPayArea" style="margin-top: 15px; padding: 15px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #f8fafc; display: none;">
+        <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text);">服务名称：EPUB 电子书 AI 翻译服务</div>
+        <div style="font-size: 20px; font-weight: 700; color: #ff5000; margin-bottom: 15px;">¥ 0.01 / 本</div>
+        <div style="display: flex; gap: 10px;">
+           <button style="flex: 1; padding: 10px; background: #1677ff; color: white; border: none; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">支付宝付款</button>
+           <button style="flex: 1; padding: 10px; background: #07c160; color: white; border: none; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">微信支付</button>
+        </div>
+      </div>
     </div>
 
     <!-- 任务中心卡片 -->
@@ -988,9 +997,8 @@
   </div>
 
   <script src="lib.js"></script>
-  <script src="https://www.paypal.com/sdk/js?client-id=ATzusU6RWdPLzCg2JzeRuNMuXfrF0yDLNpCQe-aQbuP5yTtfEAEhlkkB1gcmSJM1ey5GVg_ngtIyYdTz&currency=USD"></script>
   <script>
-    const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8001" : "");
+    const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
 
     document.addEventListener("DOMContentLoaded", () => {
       const $ = (id) => document.getElementById(id);
@@ -1008,14 +1016,11 @@
     const jobTimerEl = $("jobTimer");
     const progressLogEl = $("progressLog");
 
-    const paypalContainer = $("paypal-button-container");
-
     let selectedFile = null;
     let pollTimer = null;
     let elapsedTimer = null;
     let jobStartMs = null;
     let lastProgressMessage = "";
-    let paymentOrderId = null;
     let currentJobId = null;
 
     // ─── 视图切换：上传 / 任务中心 ────────────────────────────────────────────
@@ -1087,7 +1092,11 @@
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
           const s = data.status || "";
-          const legacy = s === "completed" || s === "partial_completed" ? "success" : (s === "failed" || s === "cancelled" ? "failed" : "running");
+          let legacy = "running";
+          if (s === "completed" || s === "partial_completed") legacy = "success";
+          else if (s === "failed" || s === "cancelled") legacy = "failed";
+          else if (s === "pending_payment") legacy = "pending";
+          
           // 失败时禁止用「转换成功」等成功类文案，避免前后端不一致导致误导
           const isFailed = s === "failed" || s === "cancelled";
           let statusLineMessage = data.message || "";
@@ -1111,6 +1120,20 @@
             $("errorCodeMsg").textContent = codeText;
             $("errorCodeMsg").style.display = "block";
           }
+          if (s !== "pending_payment" && s !== "failed" && s !== "cancelled") {
+            if (!$("queueNotice").querySelector("#goToTasksBtn")) {
+              $("queueNotice").innerHTML = `
+                任务已进入后台队列。您可以关闭本页，稍后在「任务中心」查看结果与下载。
+                <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
+              `;
+              $("goToTasksBtn").addEventListener("click", (e) => {
+                e.preventDefault();
+                showView("tasks");
+                if (currentJobId) openJobDetail(currentJobId);
+              });
+            }
+          }
+
           if ((data.status === "completed" || data.status === "partial_completed") && data.download_url) {
             downloadBtn.href = `${API}${data.download_url}`;
             showResultActions(data.job_id, `${API}${data.download_url}`);
@@ -1225,19 +1248,18 @@
     function updateSubmitButton() {
       if (!selectedFile) {
         submitBtn.disabled = true;
-        submitBtn.style.display = "block";
-        paypalContainer.style.display = "none";
+        submitBtn.textContent = "开始转换";
+        $("mockPayArea").style.display = "none";
         return;
       }
       
-      if (enableTranslation.checked && !DEV_MODE) {
-        submitBtn.style.display = "none";
-        paypalContainer.style.display = "block";
+      submitBtn.disabled = false;
+      if (enableTranslation.checked) {
+        submitBtn.textContent = "提交订单 (¥0.01)";
       } else {
-        submitBtn.disabled = false;
-        submitBtn.style.display = "block";
-        paypalContainer.style.display = enableTranslation.checked ? "none" : "none";
+        submitBtn.textContent = "开始转换";
       }
+      $("mockPayArea").style.display = "none"; // Hide mock area, using real flow
     }
 
     function selectFile(file) {
@@ -1428,11 +1450,7 @@
         }
       }
       
-      // 如果有支付订单号，一并提交
-      if (paymentOrderId) {
-        form.append("paypal_order_id", paymentOrderId);
-      }
-
+      // (后端会自己判断是否需要进行支付并返回链接)
       try {
         startJobTimer();
         const res = await fetch(`${API}/api/v2/jobs`, { method: "POST", body: form });
@@ -1443,10 +1461,27 @@
         const data = await res.json();
 
         currentJobId = data.job_id;
-        $("metaJobId").textContent = data.job_id;
-        $("metaTraceId").textContent = data.trace_id || "-";
-        setStatus("running", data.message || "任务已进入后台队列");
-        $("queueNotice").classList.add("visible");
+        
+        if (data.status === "pending_payment" && data.pay_url) {
+          $("metaJobId").textContent = data.job_id;
+          $("metaTraceId").textContent = data.trace_id || "-";
+          setStatus("pending", "等待支付完成...");
+          
+          // 显示支付入口
+          $("queueNotice").innerHTML = `
+            <div style="text-align: center; margin: 10px 0;">
+              <p style="font-size: 14px; margin-bottom: 15px; color: var(--text);">您的订单已生成，金额：<strong style="color: #ff5000;">¥0.01</strong></p>
+              <a href="${data.pay_url}" target="_blank" style="display: inline-block; padding: 10px 24px; background: #1677ff; color: white; border-radius: var(--radius-sm); font-weight: 600; text-decoration: none;">前往支付宝付款</a>
+              <p style="font-size: 12px; color: var(--subtle); margin-top: 15px;">付款成功后，本页面会自动刷新并开始任务</p>
+            </div>
+          `;
+          $("queueNotice").classList.add("visible");
+        } else {
+          $("metaJobId").textContent = data.job_id;
+          $("metaTraceId").textContent = data.trace_id || "-";
+          setStatus("running", data.message || "任务已进入后台队列");
+          $("queueNotice").classList.add("visible");
+        }
 
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(() => pollJobV2(data.job_id), 2000);
@@ -1638,31 +1673,7 @@
     });
 
     // ─── PayPal 集成 ─────────────────────────────────────────────────────────
-    paypal.Buttons({
-      style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal' },
-      createOrder: function(data, actions) {
-        // 设置收费金额，例如统一价 $1.99
-        return actions.order.create({
-          purchase_units: [{
-            amount: { value: '1.99' },
-            description: `EPUB AI Translation: ${selectedFile.name}`
-          }]
-        });
-      },
-      onApprove: function(data, actions) {
-        return actions.order.capture().then(function(details) {
-          // 支付成功
-          paymentOrderId = data.orderID;
-          // 隐藏 PayPal 按钮，显示加载中的状态
-          paypalContainer.style.display = "none";
-          submitJob();
-        });
-      },
-      onError: function(err) {
-        console.error("PayPal Error:", err);
-        alert("支付遇到问题，请重试或检查网络");
-      }
-    }).render('#paypal-button-container');
+    // 已移除，改为支付宝支付逻辑
   });
 </script>
 

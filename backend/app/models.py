@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 
 class JobStatus(str, Enum):
+    pending_payment = "pending_payment"
     pending = "pending"
     running = "running"
     success = "success"

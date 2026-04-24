@@ -172,6 +172,7 @@ cd backend
 .venv/bin/python test_c4_bilingual.py
 .venv/bin/python test_c5_persistent_store.py
 .venv/bin/python test_c6_glossary_rag.py
+.venv/bin/python test_e6_payment_gate.py
 
 # 前端测试（F1-F6，共 53 个用例，零依赖）
 cd frontend/tests
