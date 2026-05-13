@@ -33,7 +33,19 @@ _sentry_dsn = _os.environ.get("SENTRY_DSN")
 if _sentry_dsn:
     try:
         import sentry_sdk
-        sentry_sdk.init(dsn=_sentry_dsn)
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            environment=_os.environ.get("APP_ENV", "production"),
+            traces_sample_rate=float(_os.environ.get("SENTRY_TRACES_RATE", "0.1")),
+            integrations=[
+                StarletteIntegration(transaction_style="endpoint"),
+                FastApiIntegration(transaction_style="endpoint"),
+            ],
+            # 脱敏：不上报请求 body（可能含用户文件/名词表）
+            send_default_pii=False,
+        )
     except Exception:
         pass
 
@@ -292,27 +304,45 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
+        payload: dict = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
             "level": record.levelname,
             "message": record.getMessage(),
             "logger": record.name,
         }
-        if hasattr(record, "trace_id"):
-            payload["trace_id"] = record.trace_id
-        if hasattr(record, "job_id"):
-            payload["job_id"] = record.job_id
-        if hasattr(record, "error_code"):
-            payload["error_code"] = record.error_code
-        if hasattr(record, "error_message"):
-            payload["error_message"] = record.error_message
+        for field in ("trace_id", "job_id", "error_code", "error_message"):
+            if hasattr(record, field):
+                payload[field] = getattr(record, field)
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
 
 
-logger = logging.getLogger("epub_factory")
-handler = logging.StreamHandler()
-handler.setFormatter(JsonFormatter())
-logger.setLevel(logging.INFO)
-logger.handlers = [handler]
+def _build_logger() -> logging.Logger:
+    _logger = logging.getLogger("epub_factory")
+    _logger.setLevel(logging.INFO)
+    _logger.handlers = []
+    fmt = JsonFormatter()
+
+    stdout_handler = logging.StreamHandler()
+    stdout_handler.setFormatter(fmt)
+    _logger.addHandler(stdout_handler)
+
+    # 若配置了 LOG_FILE，同时写到文件（供 LogListener / CLS 采集）
+    log_file = _os.environ.get("LOG_FILE")
+    if log_file:
+        import logging.handlers as _lh
+        _os.makedirs(_os.path.dirname(log_file), exist_ok=True)
+        file_handler = _lh.RotatingFileHandler(
+            log_file, maxBytes=50 * 1024 * 1024, backupCount=7, encoding="utf-8"
+        )
+        file_handler.setFormatter(fmt)
+        _logger.addHandler(file_handler)
+
+    return _logger
+
+
+logger = _build_logger()
 
 app = FastAPI(title="EPUB Factory API", version="0.1.0")
 init_alipay()
