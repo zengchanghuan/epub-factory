@@ -30,6 +30,18 @@ class JobStore:
             jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
             return jobs[:limit]
 
+    def list_jobs_by_creator_ip(self, creator_ip: str, limit: int = 100) -> list:
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if j.creator_ip == creator_ip]
+            jobs.sort(key=lambda j: j.created_at, reverse=True)
+            return jobs[:limit]
+
+    def list_jobs_by_creator_session(self, creator_session: str, limit: int = 100) -> list:
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if j.creator_session == creator_session]
+            jobs.sort(key=lambda j: j.created_at, reverse=True)
+            return jobs[:limit]
+
     def add_stage(self, stage: JobStage) -> JobStage:
         """记录阶段事件（内存：追加到列表；持久化：见 storage_db）。"""
         with self._lock:
@@ -67,6 +79,21 @@ class JobStore:
         with self._lock:
             out = [n for n in self._notifications if job_id is None or n.job_id == job_id]
             return sorted(out, key=lambda n: n.created_at)
+
+    def try_mark_paid(self, job_id: str, message: str = "支付成功，排队中...") -> bool:
+        """
+        将任务从 pending_payment 原子切换到 pending：
+        - 返回 True  表示本次调用赢得了竞态（应由调用方负责入队）
+        - 返回 False 表示任务不存在 / 已被其他 webhook 处理 / 状态不符
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.pending_payment:
+                return False
+            job.status = JobStatus.pending
+            job.message = message
+            job.updated_at = datetime.now(timezone.utc)
+            return True
 
     def update_status(
         self,

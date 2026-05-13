@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -39,6 +41,19 @@ def _use_celery() -> bool:
     """是否使用 Celery 执行转换（需配置 broker 且任务在持久化 store 中）。"""
     import os
     return bool(os.environ.get("CELERY_BROKER_URL") or os.environ.get("REDIS_URL"))
+
+
+# 翻译任务的应付金额（元）；通过环境变量集中管理，避免 hardcode 在 webhook 校验里。
+TRANSLATION_PRICE_CNY: str = _os.environ.get("TRANSLATION_PRICE_CNY", "0.01").strip() or "0.01"
+
+
+def _amount_equal(a: str, b: str) -> bool:
+    """容错的金额相等判断：忽略尾随零、空白与符号差异（"0.01" == "0.010" == " 0.01 "）。"""
+    from decimal import Decimal, InvalidOperation
+    try:
+        return Decimal(a) == Decimal(b)
+    except (InvalidOperation, ValueError, TypeError):
+        return False
 
 
 # ---------- API v2 状态与响应映射 ----------
@@ -101,6 +116,108 @@ def _v2_stage_summary(job: Job) -> Optional[dict]:
         progress = min(90, len(stages) * 25)
     return {"current_stage": last.stage_name, "progress_percent": progress}
 
+
+def _safe_upload_name(filename: str) -> str:
+    """Sanitize upload filename to avoid path traversal and bad chars."""
+    base = os.path.basename(filename or "")
+    if not base:
+        return "upload.bin"
+    # Keep only conservative chars.
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    if cleaned.startswith("."):
+        cleaned = cleaned.lstrip(".")
+    return cleaned or "upload.bin"
+
+
+def _extract_job_token(request: Request, job_id: str) -> Optional[str]:
+    header_token = request.headers.get("X-Job-Token")
+    if header_token:
+        return header_token.strip()
+    query_token = request.query_params.get("token")
+    if query_token:
+        return query_token.strip()
+    cookie_token = request.cookies.get(f"job_token_{job_id}")
+    if cookie_token:
+        return cookie_token.strip()
+    return None
+
+
+def _get_client_session(request: Request) -> str:
+    return request.headers.get("X-Client-Session", "").strip()
+
+
+def _anonymize_ip(ip: str) -> str:
+    """
+    对 IP 做最小可观测脱敏：
+    - IPv4: 1.2.3.4 → 1.2.3.0     （保留 /24，足以用于地区/运营商粗粒度统计）
+    - IPv6: a:b:c:d::1 → a:b:c:d:: （保留 /64）
+    - 其他/解析失败：返回空字符串，避免泄漏原文
+    """
+    import ipaddress
+    if not ip:
+        return ""
+    try:
+        obj = ipaddress.ip_address(ip.strip())
+    except ValueError:
+        return ""
+    if isinstance(obj, ipaddress.IPv4Address):
+        parts = ip.split(".")
+        if len(parts) == 4:
+            parts[3] = "0"
+            return ".".join(parts)
+        return ""
+    # IPv6: 保留前 64 位
+    try:
+        net = ipaddress.IPv6Network(f"{obj}/64", strict=False)
+        return f"{net.network_address}"
+    except ValueError:
+        return ""
+
+
+def _require_admin(request: Request, x_admin_key: Optional[str]) -> None:
+    """
+    强制 /api/v2/admin/* 接口的访问鉴权：
+    - 未配置环境变量 ADMIN_SECRET → 503，避免运维忘配时整套 admin 接口裸开
+    - 配置了但 key 不对 / 缺失 → 403
+    - 使用 hmac.compare_digest 做常量时间比较，避免侧信道
+    """
+    import hmac
+    secret = (_os.environ.get("ADMIN_SECRET") or "").strip()
+    if not secret:
+        logger.warning("admin endpoint accessed but ADMIN_SECRET not configured")
+        raise HTTPException(status_code=503, detail="管理员接口未启用")
+    key = (x_admin_key or request.query_params.get("admin_key") or "").strip()
+    if not key or not hmac.compare_digest(key.encode("utf-8"), secret.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+
+
+_LEGACY_ACCESS_WINDOW_DAYS = int(_os.environ.get("LEGACY_ACCESS_WINDOW_DAYS", "30"))
+
+
+def _authorize_job_access(request: Request, job: Job) -> bool:
+    """
+    匿名安全的访问鉴权：
+    1) 任务有 access_token → 严格按 X-Job-Token / cookie / ?token= 校验；
+    2) 老任务（无 access_token）→ 仅在 LEGACY_ACCESS_WINDOW_DAYS（默认 30 天）内
+       允许 session 或 IP 兜底；超过窗口直接拒绝，避免同 NAT 出口 IP 互访。
+    """
+    token = _extract_job_token(request, job.id)
+    if job.access_token:
+        return bool(token and token == job.access_token)
+
+    from datetime import datetime, timedelta, timezone as _tz
+    created = job.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=_tz.utc)
+    if created is None or (datetime.now(_tz.utc) - created) > timedelta(days=_LEGACY_ACCESS_WINDOW_DAYS):
+        return False
+
+    creator_session = (job.creator_session or "").strip()
+    if creator_session and creator_session == _get_client_session(request):
+        return True
+    creator_ip = (job.creator_ip or "").strip()
+    return bool(creator_ip and creator_ip == get_real_ip(request))
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
@@ -136,13 +253,38 @@ logger.handlers = [handler]
 app = FastAPI(title="EPUB Factory API", version="0.1.0")
 init_alipay()
 
+_allowed_origins_raw = _os.environ.get("CORS_ALLOW_ORIGINS", "https://fixepub.com,https://www.fixepub.com")
+_allowed_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# 静态文件挂载在 "/" 时，任何被丢进 frontend/ 的文件都会被服务出去；
+# 这里用一道黑名单兜底：明显属于"凭据 / 数据库 / 备份 / 日志"的扩展名直接 404，
+# 避免运维误把 .env / .bak / .csv / *.db 之类放进前端目录被公网下载。
+_DENY_PATH_SUFFIXES = (
+    ".bak", ".backup", ".old", ".orig", ".swp", ".tmp",
+    ".log", ".sql", ".sqlite", ".sqlite3", ".db", ".dbf",
+    ".env", ".ini", ".conf", ".cfg",
+    ".csv", ".tsv", ".xlsx",
+    ".pem", ".key", ".crt", ".cer", ".p12", ".pfx",
+    ".pyc", ".pyo",
+    ".git", ".gitignore",
+)
+
+
+@app.middleware("http")
+async def _block_sensitive_files(request: Request, call_next):
+    path = request.url.path.lower()
+    if any(path.endswith(suf) for suf in _DENY_PATH_SUFFIXES) or "/.git" in path or "/.env" in path:
+        return Response(status_code=404)
+    return await call_next(request)
 
 
 import requests
@@ -159,6 +301,7 @@ def healthz() -> dict:
 
 @app.post("/api/v1/jobs")
 async def create_job(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     output_mode: OutputMode = Form(OutputMode.traditional),
@@ -172,13 +315,15 @@ async def create_job(
 ):
     import os as _os
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
-    
+
+    # v1 端点没有接入真实的支付订单校验，禁止从 v1 申请 AI 翻译。
+    # 付费翻译统一走 /api/v2/jobs（带支付宝下单 + 异步回调验签）。
     if enable_translation and not _skip_payment:
-        # TODO: 替换为实际的支付宝/微信订单查询逻辑
-        if not out_trade_no:
-            raise HTTPException(status_code=402, detail="AI 翻译为收费功能，请先完成支付")
-        logger.info("Payment validation pending", extra={"out_trade_no": out_trade_no})
-        
+        raise HTTPException(
+            status_code=410,
+            detail="付费翻译已下线在 v1 接口，请改用 POST /api/v2/jobs（含支付下单与回调验签）",
+        )
+
     if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
@@ -193,16 +338,21 @@ async def create_job(
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
-    input_path = UPLOAD_DIR / f"{job_id}-{file.filename}"
+    safe_name = _safe_upload_name(file.filename)
+    input_path = UPLOAD_DIR / f"{job_id}-{safe_name}"
     with input_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    client_session = _get_client_session(request) or uuid.uuid4().hex
     job = Job(
         id=job_id,
-        source_filename=file.filename,
+        source_filename=safe_name,
         output_mode=output_mode,
         trace_id=trace_id,
         input_path=str(input_path),
+        access_token=uuid.uuid4().hex,
+        creator_ip=get_real_ip(request),
+        creator_session=client_session,
         enable_translation=enable_translation,
         target_lang=target_lang,
         bilingual=bilingual,
@@ -219,6 +369,7 @@ async def create_job(
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
+        "access_token": job.access_token,
         "status": job.status,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
@@ -230,10 +381,12 @@ async def create_job(
 
 
 @app.get("/api/v1/jobs/{job_id}")
-def get_job(job_id: str):
+def get_job(job_id: str, request: Request):
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -255,10 +408,12 @@ def get_job(job_id: str):
 
 
 @app.get("/api/v1/jobs/{job_id}/download")
-def download_result(job_id: str):
+def download_result(job_id: str, request: Request):
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     if job.status != JobStatus.success or not job.output_path:
         raise HTTPException(status_code=400, detail="任务未完成，无法下载")
     output_path = Path(job.output_path)
@@ -287,6 +442,7 @@ async def create_job_v2(
     """上传文件并创建后台任务，创建后立即返回（v2 契约）。temperature 不传时：翻译任务默认 1.3，纯格式转换不调用 LLM。"""
     import os as _os
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+    client_session = _get_client_session(request) or uuid.uuid4().hex
     if not (file.filename and (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf"))):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
@@ -315,47 +471,86 @@ async def create_job_v2(
     elif not enable_translation:
         temperature = None
 
-    # 国内支付：检查订单号
-    pay_url = None
-    job_status = JobStatus.pending
+    if enable_translation and not _skip_payment and out_trade_no:
+        raise HTTPException(status_code=400, detail="不允许客户端自带订单号")
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
+    safe_name = _safe_upload_name(file.filename)
+    input_path = UPLOAD_DIR / f"{job_id}-{safe_name}"
 
+    # ── Content-Length 预拦（攻击者可伪造，仅用作"明显过大"的快速短路） ──
+    try:
+        declared_len = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared_len = 0
+    # multipart 表单还会带表单字段开销，宽放 64KB 阈值
+    if declared_len and declared_len > MAX_FILE_SIZE_BYTES + 64 * 1024:
+        if not enable_translation:
+            rate_limiter.reset_ip(client_ip)
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大（约 {declared_len // 1024 // 1024}MB），免费转换最大支持 {MAX_FILE_SIZE_MB}MB。",
+        )
+
+    # ── 写盘 + 流式大小校验：边读边数，超阈值立刻中断 ─────────────────
+    bytes_written = 0
+    over_size = False
+    try:
+        with input_path.open("wb") as buffer:
+            while True:
+                chunk = file.file.read(1024 * 1024)  # 1MB / chunk
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > MAX_FILE_SIZE_BYTES:
+                    over_size = True
+                    break
+                buffer.write(chunk)
+    except Exception:
+        input_path.unlink(missing_ok=True)
+        raise
+
+    if over_size:
+        input_path.unlink(missing_ok=True)
+        if not enable_translation:
+            rate_limiter.reset_ip(client_ip)
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大（>{MAX_FILE_SIZE_MB}MB），免费转换最大支持 {MAX_FILE_SIZE_MB}MB。",
+        )
+    file_size = bytes_written
+
+    # ── 通过所有"无副作用"的校验后，才创建支付订单 ────────────────────
+    pay_url = None
+    job_status = JobStatus.pending
+    expected_amount = ""
     if enable_translation and not _skip_payment:
-        # 如果需要支付，先生成支付链接/二维码，任务状态设为 pending_payment
         try:
+            expected_amount = TRANSLATION_PRICE_CNY
             pay_url = create_alipay_page_pay(
                 out_trade_no=job_id,
-                total_amount="0.01",
-                subject=f"EPUB AI 翻译服务 - {file.filename[:50]}",
+                total_amount=expected_amount,
+                subject=f"EPUB AI 翻译服务 - {_safe_upload_name(file.filename)[:50]}",
                 return_url=f"https://fixepub.com/?job_id={job_id}"
             )
             job_status = JobStatus.pending_payment
             logger.info("Created alipay payment order", extra={"job_id": job_id})
         except Exception as e:
+            input_path.unlink(missing_ok=True)
             logger.error(f"Failed to create alipay order: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
-    input_path = UPLOAD_DIR / f"{job_id}-{file.filename}"
-    with input_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    # ── 文件大小检查（写入后检查，超限则删除并退还配额） ──────────────────────
-    file_size = input_path.stat().st_size
-    if file_size > MAX_FILE_SIZE_BYTES:
-        input_path.unlink(missing_ok=True)
-        rate_limiter.reset_ip(client_ip)  # 退还本次配额
-        raise HTTPException(
-            status_code=413,
-            detail=f"文件过大（{file_size // 1024 // 1024}MB），免费转换最大支持 {MAX_FILE_SIZE_MB}MB。",
-        )
 
     job = Job(
         id=job_id,
-        source_filename=file.filename,
+        source_filename=safe_name,
         output_mode=output_mode,
         trace_id=trace_id,
         input_path=str(input_path),
+        access_token=uuid.uuid4().hex,
+        creator_ip=client_ip,
+        creator_session=client_session,
+        expected_amount=expected_amount,
         enable_translation=enable_translation,
         target_lang=target_lang,
         bilingual=bilingual,
@@ -377,6 +572,7 @@ async def create_job_v2(
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
+        "access_token": job.access_token,
         "status": _job_to_v2_status(job),
         "message": "请完成支付以启动翻译任务" if job_status == JobStatus.pending_payment else "任务已创建，已进入后台队列",
         "source_filename": job.source_filename,
@@ -391,12 +587,22 @@ async def create_job_v2(
 
 
 @app.get("/api/v2/jobs")
-def list_jobs_v2(limit: int = 100):
+def list_jobs_v2(request: Request, limit: int = 100):
     """获取任务中心列表（v2）。"""
-    list_fn = getattr(job_store, "list_jobs", None)
+    session_list_fn = getattr(job_store, "list_jobs_by_creator_session", None)
+    ip_list_fn = getattr(job_store, "list_jobs_by_creator_ip", None)
+    all_list_fn = getattr(job_store, "list_jobs", None)
+    list_fn = session_list_fn or ip_list_fn or all_list_fn
     if not list_fn:
         return {"items": []}
-    jobs = list_fn(limit=limit)
+    client_ip = get_real_ip(request)
+    client_session = _get_client_session(request)
+    if session_list_fn and client_session:
+        jobs = session_list_fn(client_session, limit=limit)
+    elif ip_list_fn:
+        jobs = ip_list_fn(client_ip, limit=limit)
+    else:
+        jobs = [j for j in all_list_fn(limit=limit) if j.creator_ip == client_ip]
     items = [
         {
             "job_id": j.id,
@@ -413,21 +619,25 @@ def list_jobs_v2(limit: int = 100):
 
 
 @app.get("/api/v2/jobs/{job_id}")
-def get_job_v2(job_id: str):
+def get_job_v2(job_id: str, request: Request):
     """获取任务详情（v2 契约）。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     download_path = f"/api/v2/jobs/{job.id}/download" if job.output_path else None
     return _job_to_v2_detail(job, download_path)
 
 
 @app.get("/api/v2/jobs/{job_id}/download")
-def download_result_v2(job_id: str):
+def download_result_v2(job_id: str, request: Request):
     """下载结果 EPUB（v2）。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     if job.status != JobStatus.success or not job.output_path:
         raise HTTPException(status_code=400, detail="任务未完成，无法下载")
     output_path = Path(job.output_path)
@@ -477,11 +687,13 @@ def _v2_job_stats(job_id: str) -> dict:
 
 
 @app.get("/api/v2/jobs/{job_id}/stats")
-def get_job_stats_v2(job_id: str):
+def get_job_stats_v2(job_id: str, request: Request):
     """获取章节/块级聚合统计（v2）。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     return _v2_job_stats(job_id)
 
 
@@ -503,20 +715,24 @@ def _v2_job_events(job_id: str) -> list:
 
 
 @app.get("/api/v2/jobs/{job_id}/events")
-def get_job_events_v2(job_id: str):
+def get_job_events_v2(job_id: str, request: Request):
     """获取结构化阶段日志（v2）。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     return {"items": _v2_job_events(job_id)}
 
 
 @app.post("/api/v2/jobs/{job_id}/cancel")
-def cancel_job_v2(job_id: str):
+def cancel_job_v2(job_id: str, request: Request):
     """取消任务（v2）。仅当任务为 queued 或 running 时可取消。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
     if job.status not in (JobStatus.pending, JobStatus.running):
         raise HTTPException(status_code=400, detail="当前状态不可取消")
     job_store.update_status(job_id, JobStatus.cancelled, "用户取消")
@@ -555,13 +771,9 @@ def get_admin_translation_stats(
 ):
     """
     后台用：汇总所有任务的 Token 用量与预估费用（供自己查看成本）。
-    若设置环境变量 ADMIN_SECRET，则请求头需带 X-Admin-Key: <ADMIN_SECRET> 或 ?admin_key=<ADMIN_SECRET>。
+    需要环境变量 ADMIN_SECRET，并通过请求头 X-Admin-Key 或 ?admin_key= 传递。
     """
-    secret = _os.environ.get("ADMIN_SECRET")
-    if secret:
-        key = x_admin_key or request.query_params.get("admin_key")
-        if key != secret:
-            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+    _require_admin(request, x_admin_key)
     list_fn = getattr(job_store, "list_jobs", None)
     if not list_fn:
         return {"total_prompt_tokens": 0, "total_completion_tokens": 0, "total_tokens": 0, "total_cost_usd": 0.0, "jobs_count": 0, "by_job": []}
@@ -608,14 +820,10 @@ def get_admin_error_stats(
 ):
     """
     后台用：汇总失败任务的错误码分布与最近明细。
-    若设置环境变量 ADMIN_SECRET，则请求头需带 X-Admin-Key。
+    需要环境变量 ADMIN_SECRET，并通过请求头 X-Admin-Key 或 ?admin_key= 传递。
     可选参数 ?since=2024-01-01（ISO 日期）过滤时间范围，?limit=N 控制明细数量。
     """
-    secret = _os.environ.get("ADMIN_SECRET")
-    if secret:
-        key = x_admin_key or request.query_params.get("admin_key")
-        if key != secret:
-            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+    _require_admin(request, x_admin_key)
 
     list_fn = getattr(job_store, "list_jobs", None)
     if not list_fn:
@@ -692,24 +900,59 @@ async def alipay_webhook(request: Request):
         # 验签
         is_valid = verify_alipay_notification(params.copy())
         if not is_valid:
-            logger.warning("Alipay webhook signature verification failed", extra={"params": params})
+            logger.warning("Alipay webhook signature verification failed")
             return Response("fail")
             
         trade_status = params.get("trade_status")
         out_trade_no = params.get("out_trade_no")
+        app_id = params.get("app_id")
+        seller_id = params.get("seller_id")
+        total_amount = params.get("total_amount")
+
+        expected_app_id = _os.environ.get("ALIPAY_APP_ID", "").strip()
+        expected_seller_id = _os.environ.get("ALIPAY_SELLER_ID", "").strip()
+
+        if expected_app_id and app_id != expected_app_id:
+            logger.warning("Alipay webhook app_id mismatch", extra={"job_id": out_trade_no or ""})
+            return Response("fail")
+        if expected_seller_id and seller_id != expected_seller_id:
+            logger.warning("Alipay webhook seller_id mismatch", extra={"job_id": out_trade_no or ""})
+            return Response("fail")
         
         if trade_status == "TRADE_SUCCESS" and out_trade_no:
             job = job_store.get(out_trade_no)
-            if job and job.status == JobStatus.pending_payment:
-                logger.info(f"Alipay payment verified, starting job {out_trade_no}")
-                job_store.update_status(job.id, JobStatus.pending, "支付成功，排队中...")
-                if _use_celery():
-                    from app.tasks.job_pipeline import run_conversion
-                    run_conversion.delay(job.id)
-                else:
-                    import threading
-                    threading.Thread(target=process_job, args=(job,)).start()
-        
+            if not job:
+                # 未知订单：告诉支付宝"已收到"避免无限重试，但记日志以便排查
+                logger.warning("Alipay webhook for unknown job", extra={"job_id": out_trade_no})
+                return Response("success")
+
+            # 订单金额二次校验：必须等于下单时落库的 expected_amount。
+            # 兼容旧数据：若 expected_amount 为空（老任务），回退到环境定价。
+            expected = (getattr(job, "expected_amount", "") or TRANSLATION_PRICE_CNY).strip()
+            actual = str(total_amount or "").strip()
+            if not _amount_equal(actual, expected):
+                logger.warning("Alipay webhook amount mismatch", extra={"job_id": out_trade_no})
+                return Response("fail")
+
+            # 条件原子更新：只有"首次确认支付成功"的 webhook 会拿到 True，
+            # 后续重试 / 并发回调一律返回 False，避免重复入队 → 重复消费 Token。
+            try_mark = getattr(job_store, "try_mark_paid", None)
+            won_race = bool(try_mark(job.id)) if callable(try_mark) else (
+                job.status == JobStatus.pending_payment
+                and bool(job_store.update_status(job.id, JobStatus.pending, "支付成功，排队中..."))
+            )
+            if not won_race:
+                logger.info("Alipay webhook ignored (already processed)", extra={"job_id": out_trade_no})
+                return Response("success")
+
+            logger.info(f"Alipay payment verified, starting job {out_trade_no}")
+            if _use_celery():
+                from app.tasks.job_pipeline import run_conversion
+                run_conversion.delay(job.id)
+            else:
+                import threading
+                threading.Thread(target=process_job, args=(job,)).start()
+
         return Response("success")
         
     except Exception as e:
@@ -727,7 +970,7 @@ async def track_pv(request: Request):
     import json as _json
     from datetime import datetime, timezone
     
-    ip = get_real_ip(request)
+    ip = _anonymize_ip(get_real_ip(request))
     ua = request.headers.get("user-agent", "")
     ts = datetime.now(timezone.utc).isoformat()
     
@@ -750,11 +993,7 @@ def get_admin_visits(
     """查看访问统计。需要 ADMIN_SECRET 鉴权。"""
     import json as _json
     from datetime import datetime, timedelta, timezone
-    secret = _os.environ.get("ADMIN_SECRET")
-    if secret:
-        key = x_admin_key or request.query_params.get("admin_key")
-        if key != secret:
-            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+    _require_admin(request, x_admin_key)
 
     pv_file = BASE_DIR / "visits.jsonl"
     stats = {"total_pv": 0, "unique_ips": set(), "daily": {}}
@@ -819,7 +1058,7 @@ async def submit_feedback(request: Request):
         "job_id": job_id,
         "type": feedback_type,
         "message": message,
-        "ip": get_real_ip(request),
+        "ip": _anonymize_ip(get_real_ip(request)),
     }
 
     # 结构化日志（可被日志聚合系统收集）
@@ -844,13 +1083,9 @@ def get_admin_feedback(
     x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
     limit: int = 100,
 ):
-    """查看用户反馈列表。需要 ADMIN_SECRET 鉴权（若已配置）。"""
+    """查看用户反馈列表。需要 ADMIN_SECRET 鉴权。"""
     import json as _json
-    secret = _os.environ.get("ADMIN_SECRET")
-    if secret:
-        key = x_admin_key or request.query_params.get("admin_key")
-        if key != secret:
-            raise HTTPException(status_code=403, detail="需要有效的管理员密钥")
+    _require_admin(request, x_admin_key)
     feedback_file = BASE_DIR / "feedback.jsonl"
     items = []
     if feedback_file.exists():

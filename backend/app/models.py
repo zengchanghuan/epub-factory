@@ -110,6 +110,10 @@ class Job:
     output_mode: OutputMode
     trace_id: str
     input_path: str
+    access_token: str = ""
+    creator_ip: str = ""
+    creator_session: str = ""
+    expected_amount: str = ""  # 下单时的应付金额（元），webhook 校验依据
     enable_translation: bool = False
     target_lang: str = "zh-CN"
     bilingual: bool = False

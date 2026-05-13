@@ -48,6 +48,10 @@ class JobRecord(Base):
     trace_id = Column(String(64), nullable=False)
     source_filename = Column(String(512), nullable=False)
     input_path = Column(Text, nullable=False)
+    access_token = Column(String(64), nullable=True)
+    creator_ip = Column(String(64), nullable=True)
+    creator_session = Column(String(128), nullable=True)
+    expected_amount = Column(String(16), nullable=True)
     output_path = Column(Text, nullable=True)
     output_mode = Column(String(16), nullable=False, default="simplified")
     enable_translation = Column(Boolean, nullable=False, default=False)
@@ -166,6 +170,14 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN metrics_summary TEXT")
     if "traditional_variant" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN traditional_variant VARCHAR(16)")
+    if "access_token" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN access_token VARCHAR(64)")
+    if "creator_ip" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN creator_ip VARCHAR(64)")
+    if "creator_session" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN creator_session VARCHAR(128)")
+    if "expected_amount" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN expected_amount VARCHAR(16)")
     if not migrations:
         return
     with engine.begin() as conn:
@@ -196,6 +208,10 @@ def _record_to_job(r: JobRecord) -> Job:
         trace_id=r.trace_id,
         source_filename=r.source_filename,
         input_path=r.input_path,
+        access_token=getattr(r, "access_token", None) or "",
+        creator_ip=getattr(r, "creator_ip", None) or "",
+        creator_session=getattr(r, "creator_session", None) or "",
+        expected_amount=getattr(r, "expected_amount", None) or "",
         output_path=r.output_path,
         output_mode=OutputMode(r.output_mode),
         enable_translation=r.enable_translation,
@@ -371,6 +387,10 @@ def _job_to_record(job: Job) -> JobRecord:
         trace_id=job.trace_id,
         source_filename=job.source_filename,
         input_path=job.input_path,
+        access_token=getattr(job, "access_token", "") or "",
+        creator_ip=getattr(job, "creator_ip", "") or "",
+        creator_session=getattr(job, "creator_session", "") or "",
+        expected_amount=getattr(job, "expected_amount", "") or "",
         output_path=job.output_path,
         output_mode=job.output_mode.value,
         enable_translation=job.enable_translation,
@@ -419,6 +439,51 @@ class PersistentJobStore:
                 .all()
             )
             return [_record_to_job(r) for r in rows]
+
+    def list_jobs_by_creator_ip(self, creator_ip: str, limit: int = 100) -> list:
+        with self._Session() as session:
+            from sqlalchemy import desc
+            rows = (
+                session.query(JobRecord)
+                .filter_by(creator_ip=creator_ip)
+                .order_by(desc(JobRecord.created_at))
+                .limit(limit)
+                .all()
+            )
+            return [_record_to_job(r) for r in rows]
+
+    def list_jobs_by_creator_session(self, creator_session: str, limit: int = 100) -> list:
+        with self._Session() as session:
+            from sqlalchemy import desc
+            rows = (
+                session.query(JobRecord)
+                .filter_by(creator_session=creator_session)
+                .order_by(desc(JobRecord.created_at))
+                .limit(limit)
+                .all()
+            )
+            return [_record_to_job(r) for r in rows]
+
+    def try_mark_paid(self, job_id: str, message: str = "支付成功，排队中...") -> bool:
+        """
+        条件原子更新：只有当 status='pending_payment' 时，才切到 'pending'。
+        返回 True 表示本次 UPDATE 影响了 1 行（赢得竞态）；返回 False 表示
+        任务不存在 / 已被其他 webhook 入队过 / 状态不符。
+        """
+        from sqlalchemy import update
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job_id)
+                .where(JobRecord.status == JobStatus.pending_payment.value)
+                .values(
+                    status=JobStatus.pending.value,
+                    message=message,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+            return (result.rowcount or 0) == 1
 
     def update_status(
         self,
