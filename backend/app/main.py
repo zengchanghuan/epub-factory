@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +47,60 @@ def _use_celery() -> bool:
 # 翻译任务的应付金额（元）；通过环境变量集中管理，避免 hardcode 在 webhook 校验里。
 TRANSLATION_PRICE_CNY: str = _os.environ.get("TRANSLATION_PRICE_CNY", "0.01").strip() or "0.01"
 
+# access_token 默认有效期（天），过期后必须重新发起任务才能继续查询/下载。
+ACCESS_TOKEN_TTL_DAYS: int = int(_os.environ.get("ACCESS_TOKEN_TTL_DAYS", "7"))
+
+# 短时下载签名：URL 上挂 ?exp=&sig= ，sig = HMAC-SHA256(secret, f"{job_id}:{exp}")。
+# 未配置 secret 时签名功能关闭，下载只接受 access_token 鉴权（向后兼容）。
+DOWNLOAD_SIGN_SECRET: str = (
+    _os.environ.get("DOWNLOAD_SIGN_SECRET")
+    or _os.environ.get("ADMIN_SECRET")
+    or ""
+).strip()
+DOWNLOAD_SIGN_TTL_SECONDS: int = int(_os.environ.get("DOWNLOAD_SIGN_TTL_SECONDS", "600"))
+
+
+def _sign_download(job_id: str) -> tuple:
+    """生成 (exp, sig) 用于短时下载 URL；未配置 secret 时返回 (0, '')。"""
+    import hashlib
+    import hmac as _hmac
+    import time as _time
+    if not DOWNLOAD_SIGN_SECRET or not job_id:
+        return 0, ""
+    exp = int(_time.time()) + DOWNLOAD_SIGN_TTL_SECONDS
+    msg = f"{job_id}:{exp}".encode("utf-8")
+    sig = _hmac.new(DOWNLOAD_SIGN_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    return exp, sig
+
+
+def _verify_download_sig(job_id: str, exp: Optional[int], sig: Optional[str]) -> bool:
+    """校验下载 URL 上的签名是否合法且未过期。"""
+    import hashlib
+    import hmac as _hmac
+    import time as _time
+    if not DOWNLOAD_SIGN_SECRET or not exp or not sig or not job_id:
+        return False
+    try:
+        exp_int = int(exp)
+    except (ValueError, TypeError):
+        return False
+    if _time.time() > exp_int:
+        return False
+    msg = f"{job_id}:{exp_int}".encode("utf-8")
+    expected = _hmac.new(DOWNLOAD_SIGN_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(expected, sig)
+
+
+def _attach_download_sig(job_id: str, base_url: str) -> str:
+    """在 base_url 上追加 ?exp=&sig= 参数；未配置签名时原样返回。"""
+    if not base_url:
+        return base_url
+    exp, sig = _sign_download(job_id)
+    if not sig:
+        return base_url
+    sep = "&" if "?" in base_url else "?"
+    return f"{base_url}{sep}exp={exp}&sig={sig}"
+
 
 def _amount_equal(a: str, b: str) -> bool:
     """容错的金额相等判断：忽略尾随零、空白与符号差异（"0.01" == "0.010" == " 0.01 "）。"""
@@ -76,6 +131,7 @@ def _job_to_v2_status(job: Job) -> str:
 
 def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     """构建 v2 任务详情响应。"""
+    download_url = _attach_download_sig(job.id, download_url_path) if job.output_path else None
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -88,7 +144,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "error_code": job.error_code,
-        "download_url": f"{download_url_path}" if job.output_path else None,
+        "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "translation_stats": job.translation_stats or None,
         "metrics_summary": job.metrics_summary or None,
@@ -198,18 +254,26 @@ def _authorize_job_access(request: Request, job: Job) -> bool:
     """
     匿名安全的访问鉴权：
     1) 任务有 access_token → 严格按 X-Job-Token / cookie / ?token= 校验；
+       同时若设置了 token_expires_at 且已过期，则拒绝。
     2) 老任务（无 access_token）→ 仅在 LEGACY_ACCESS_WINDOW_DAYS（默认 30 天）内
        允许 session 或 IP 兜底；超过窗口直接拒绝，避免同 NAT 出口 IP 互访。
     """
     token = _extract_job_token(request, job.id)
     if job.access_token:
-        return bool(token and token == job.access_token)
+        if not token or token != job.access_token:
+            return False
+        expires = getattr(job, "token_expires_at", None)
+        if expires is not None:
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > expires:
+                return False
+        return True
 
-    from datetime import datetime, timedelta, timezone as _tz
     created = job.created_at
     if created is not None and created.tzinfo is None:
-        created = created.replace(tzinfo=_tz.utc)
-    if created is None or (datetime.now(_tz.utc) - created) > timedelta(days=_LEGACY_ACCESS_WINDOW_DAYS):
+        created = created.replace(tzinfo=timezone.utc)
+    if created is None or (datetime.now(timezone.utc) - created) > timedelta(days=_LEGACY_ACCESS_WINDOW_DAYS):
         return False
 
     creator_session = (job.creator_session or "").strip()
@@ -351,6 +415,7 @@ async def create_job(
         trace_id=trace_id,
         input_path=str(input_path),
         access_token=uuid.uuid4().hex,
+        token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
         creator_ip=get_real_ip(request),
         creator_session=client_session,
         enable_translation=enable_translation,
@@ -401,19 +466,24 @@ def get_job(job_id: str, request: Request):
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "translation_stats": job.translation_stats or None,
         "metrics_summary": job.metrics_summary or None,
-        "download_url": f"/api/v1/jobs/{job.id}/download" if job.output_path else None,
+        "download_url": _attach_download_sig(job.id, f"/api/v1/jobs/{job.id}/download") if job.output_path else None,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
     }
 
 
 @app.get("/api/v1/jobs/{job_id}/download")
-def download_result(job_id: str, request: Request):
+def download_result(
+    job_id: str,
+    request: Request,
+    exp: Optional[int] = None,
+    sig: Optional[str] = None,
+):
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not _authorize_job_access(request, job):
-        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not (_verify_download_sig(job_id, exp, sig) or _authorize_job_access(request, job)):
+        raise HTTPException(status_code=403, detail="无权访问该任务（链接可能已过期，请回任务中心重新获取下载链接）")
     if job.status != JobStatus.success or not job.output_path:
         raise HTTPException(status_code=400, detail="任务未完成，无法下载")
     output_path = Path(job.output_path)
@@ -548,6 +618,7 @@ async def create_job_v2(
         trace_id=trace_id,
         input_path=str(input_path),
         access_token=uuid.uuid4().hex,
+        token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
         creator_ip=client_ip,
         creator_session=client_session,
         expected_amount=expected_amount,
@@ -631,13 +702,23 @@ def get_job_v2(job_id: str, request: Request):
 
 
 @app.get("/api/v2/jobs/{job_id}/download")
-def download_result_v2(job_id: str, request: Request):
-    """下载结果 EPUB（v2）。"""
+def download_result_v2(
+    job_id: str,
+    request: Request,
+    exp: Optional[int] = None,
+    sig: Optional[str] = None,
+):
+    """
+    下载结果 EPUB（v2）。
+    两种鉴权方式任一通过即可：
+    1) 短时签名 URL（?exp=&sig=）—— 由 GET /api/v2/jobs/{id} 返回，默认 10 分钟有效；
+    2) 任意 _authorize_job_access 通过的方式（access_token / 同会话 / legacy IP 兜底）。
+    """
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not _authorize_job_access(request, job):
-        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not (_verify_download_sig(job_id, exp, sig) or _authorize_job_access(request, job)):
+        raise HTTPException(status_code=403, detail="无权访问该任务（链接可能已过期，请回任务中心重新获取下载链接）")
     if job.status != JobStatus.success or not job.output_path:
         raise HTTPException(status_code=400, detail="任务未完成，无法下载")
     output_path = Path(job.output_path)

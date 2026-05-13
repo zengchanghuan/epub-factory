@@ -111,6 +111,7 @@ class Job:
     trace_id: str
     input_path: str
     access_token: str = ""
+    token_expires_at: Optional[datetime] = None  # access_token 过期时间，None 表示永久（兼容旧任务）
     creator_ip: str = ""
     creator_session: str = ""
     expected_amount: str = ""  # 下单时的应付金额（元），webhook 校验依据

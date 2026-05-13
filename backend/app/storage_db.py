@@ -49,6 +49,7 @@ class JobRecord(Base):
     source_filename = Column(String(512), nullable=False)
     input_path = Column(Text, nullable=False)
     access_token = Column(String(64), nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
     creator_ip = Column(String(64), nullable=True)
     creator_session = Column(String(128), nullable=True)
     expected_amount = Column(String(16), nullable=True)
@@ -178,6 +179,8 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN creator_session VARCHAR(128)")
     if "expected_amount" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN expected_amount VARCHAR(16)")
+    if "token_expires_at" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN token_expires_at DATETIME")
     if not migrations:
         return
     with engine.begin() as conn:
@@ -209,6 +212,7 @@ def _record_to_job(r: JobRecord) -> Job:
         source_filename=r.source_filename,
         input_path=r.input_path,
         access_token=getattr(r, "access_token", None) or "",
+        token_expires_at=getattr(r, "token_expires_at", None),
         creator_ip=getattr(r, "creator_ip", None) or "",
         creator_session=getattr(r, "creator_session", None) or "",
         expected_amount=getattr(r, "expected_amount", None) or "",
@@ -388,6 +392,7 @@ def _job_to_record(job: Job) -> JobRecord:
         source_filename=job.source_filename,
         input_path=job.input_path,
         access_token=getattr(job, "access_token", "") or "",
+        token_expires_at=getattr(job, "token_expires_at", None),
         creator_ip=getattr(job, "creator_ip", "") or "",
         creator_session=getattr(job, "creator_session", "") or "",
         expected_amount=getattr(job, "expected_amount", "") or "",
