@@ -748,7 +748,7 @@
     }
     .queue-notice .btn-link:hover { background: var(--primary-hover); color: white; }
 
-    footer { display: none; }
+    /* footer { display: none; } */
 
     /* ── Responsive ──────────────────────────────────────────────────────── */
     @media (max-width: 640px) {
@@ -1002,6 +1002,45 @@
 
     document.addEventListener("DOMContentLoaded", () => {
       const $ = (id) => document.getElementById(id);
+    const JOB_TOKEN_STORE_KEY = "job_access_tokens_v1";
+    const CLIENT_SESSION_KEY = "anon_client_session_v1";
+    function getClientSession() {
+      let sid = localStorage.getItem(CLIENT_SESSION_KEY);
+      if (!sid) { sid = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`; localStorage.setItem(CLIENT_SESSION_KEY, sid); }
+      return sid;
+    }
+    function clientHeaders() {
+      return { "X-Client-Session": getClientSession() };
+    }
+    function readJobTokens() {
+      try { return JSON.parse(localStorage.getItem(JOB_TOKEN_STORE_KEY) || "{}"); } catch (_) { return {}; }
+    }
+    function saveJobToken(jobId, token) {
+      if (!jobId || !token) return;
+      const all = readJobTokens();
+      all[jobId] = token;
+      localStorage.setItem(JOB_TOKEN_STORE_KEY, JSON.stringify(all));
+    }
+    function getJobToken(jobId) {
+      return readJobTokens()[jobId] || "";
+    }
+    function authHeaders(jobId) {
+      const token = getJobToken(jobId);
+      return token ? { "X-Job-Token": token } : {};
+    }
+    function withJobToken(url, jobId) {
+      const token = getJobToken(jobId);
+      if (!token) return url;
+      return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+    }
+    function escapeHtml(v) {
+      return String(v || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
     const dropzone = $("dropzone");
     const fileInput = $("fileInput");
     const fileNameEl = $("fileName");
@@ -1041,7 +1080,7 @@
     function loadTaskList() {
       const emptyEl = $("tasksEmpty");
       const listEl = $("tasksList");
-      fetch(`${API}/api/v2/jobs`)
+      fetch(`${API}/api/v2/jobs`, { headers: clientHeaders() })
         .then(r => r.json())
         .then(data => {
           const items = (data.items || []);
@@ -1053,13 +1092,15 @@
           emptyEl.style.display = "none";
           listEl.style.display = "block";
           listEl.innerHTML = items.map(j => {
-            const statusClass = (j.status || "").replace(".", "_");
-            const statusText = typeof mapV2StatusText === "function" ? mapV2StatusText(j.status) : j.status;
+            const statusClass = String(j.status || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+            const statusText = escapeHtml(typeof mapV2StatusText === "function" ? mapV2StatusText(j.status) : j.status);
             const time = j.created_at ? new Date(j.created_at).toLocaleString() : "";
+            const safeFilename = escapeHtml(j.source_filename || "-");
+            const safeMessage = escapeHtml(j.message || "");
             return `<li class="tasks-item" data-job-id="${j.job_id}">
               <div class="tasks-info">
-                <div class="tasks-filename" title="${(j.source_filename || "").replace(/"/g, "&quot;")}">${(j.source_filename || "-")}</div>
-                <div class="tasks-meta">${time} · ${j.message || ""}</div>
+                <div class="tasks-filename" title="${safeFilename}">${safeFilename}</div>
+                <div class="tasks-meta">${time} · ${safeMessage}</div>
               </div>
               <span class="tasks-status ${statusClass}">${statusText}</span>
               <button type="button" class="tasks-view-btn" data-job-id="${j.job_id}">查看</button>
@@ -1088,7 +1129,7 @@
     }
 
     function pollJobV2(jobId) {
-      fetch(`${API}/api/v2/jobs/${jobId}`)
+      fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId) })
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
           const s = data.status || "";
@@ -1135,8 +1176,8 @@
           }
 
           if ((data.status === "completed" || data.status === "partial_completed") && data.download_url) {
-            downloadBtn.href = `${API}${data.download_url}`;
-            showResultActions(data.job_id, `${API}${data.download_url}`);
+            downloadBtn.href = withJobToken(`${API}${data.download_url}`, data.job_id);
+            showResultActions(data.job_id, withJobToken(`${API}${data.download_url}`, data.job_id));
             saveHistory(localStorage, buildHistoryEntry({ ...data, status: "success", download_url: data.download_url }, API));
             renderHistory();
             if (data.metrics_summary) renderMetrics(data.metrics_summary);
@@ -1349,7 +1390,7 @@
 
     async function pollJob(jobId) {
       try {
-        const res = await fetch(`${API}/api/v1/jobs/${jobId}`);
+        const res = await fetch(`${API}/api/v1/jobs/${jobId}`, { headers: authHeaders(jobId) });
         if (!res.ok) throw new Error("查询失败");
         const data = await res.json();
 
@@ -1364,8 +1405,8 @@
         }
 
         if (data.status === "success" && data.download_url) {
-          downloadBtn.href = `${API}${data.download_url}`;
-          showResultActions(data.job_id, `${API}${data.download_url}`);
+          downloadBtn.href = withJobToken(`${API}${data.download_url}`, data.job_id);
+          showResultActions(data.job_id, withJobToken(`${API}${data.download_url}`, data.job_id));
           // 保存到历史
           saveHistory(localStorage, buildHistoryEntry(data, API));
           renderHistory();
@@ -1453,7 +1494,7 @@
       // (后端会自己判断是否需要进行支付并返回链接)
       try {
         startJobTimer();
-        const res = await fetch(`${API}/api/v2/jobs`, { method: "POST", body: form });
+        const res = await fetch(`${API}/api/v2/jobs`, { method: "POST", headers: clientHeaders(), body: form });
         if (!res.ok) {
           const detail = await res.json().catch(() => ({}));
           throw new Error(detail.detail || "创建任务失败");
@@ -1461,6 +1502,7 @@
         const data = await res.json();
 
         currentJobId = data.job_id;
+        if (data.access_token) saveJobToken(data.job_id, data.access_token);
         
         if (data.status === "pending_payment" && data.pay_url) {
           $("metaJobId").textContent = data.job_id;
@@ -1843,7 +1885,7 @@
 
   <footer class="site-footer">
     <div class="container">
-      <p>© 2026 <a href="/">FixEpub.com</a> · 免费 EPUB 转换与 AI 翻译工具</p>
+      <p>© 2026 <a href="/">FixEpub.com</a> · 免费 EPUB 转换与 AI 翻译工具 · <a href="https://beian.miit.gov.cn/" target="_blank">粤ICP备2026051457号-1</a></p>
       <div style="margin-top: 10px; font-size: 12px; display: flex; justify-content: center; gap: 15px;">
         <a href="/privacy.html">Privacy Policy</a>
         <a href="/terms.html">Terms of Service</a>
