@@ -7,7 +7,7 @@ set -e
 # Configuration
 PROJECT_NAME="epub-factory"
 ZIP_FILE="epub-factory.zip"
-KEY_FILE="fixepub-key.pem"
+KEY_FILE="fix_epub.pem"
 REMOTE_HOST="fixepub" # This should be configured in your ~/.ssh/config
 REMOTE_ZIP_PATH="/tmp/$ZIP_FILE"
 
@@ -19,6 +19,14 @@ zip -r "$ZIP_FILE" . \
     -x "*__pycache__*" \
     -x "*.venv*" \
     -x "*.env" \
+    -x "*.pem" \
+    -x "*.key" \
+    -x "*.crt" \
+    -x "*.p12" \
+    -x "*.pfx" \
+    -x "*secret*" \
+    -x "*Secret*" \
+    -x "*.csv" \
     -x "$ZIP_FILE" \
     -x "$KEY_FILE" \
     -x "AWS_访问证书/*" \
@@ -44,7 +52,7 @@ ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
   echo "--- Updating dependencies ---"
   cd "$PROJECT_NAME/backend"
   if [ ! -d ".venv" ]; then
-    python3.11 -m venv .venv
+    python3 -m venv .venv
   fi
   .venv/bin/pip install -r requirements.txt
   

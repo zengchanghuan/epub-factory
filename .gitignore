@@ -21,3 +21,20 @@ backend/visits.jsonl
 
 tools/
 epub-factory/
+
+# Secrets / credentials (never commit)
+*.csv
+SecretKey*
+*secret*
+*Secret*
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Local test fixtures
+test.pdf
+test[0-9]*.pdf
+test_*/
+/文化大革命人民的歷史*.pdf
+
