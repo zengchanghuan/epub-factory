@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Optional
@@ -6,8 +7,10 @@ from alipay.aop.api.AlipayClientConfig import AlipayClientConfig
 from alipay.aop.api.DefaultAlipayClient import DefaultAlipayClient
 from alipay.aop.api.domain.AlipayTradePagePayModel import AlipayTradePagePayModel
 from alipay.aop.api.domain.AlipayTradePrecreateModel import AlipayTradePrecreateModel
+from alipay.aop.api.domain.AlipayTradeQueryModel import AlipayTradeQueryModel
 from alipay.aop.api.request.AlipayTradePagePayRequest import AlipayTradePagePayRequest
 from alipay.aop.api.request.AlipayTradePrecreateRequest import AlipayTradePrecreateRequest
+from alipay.aop.api.request.AlipayTradeQueryRequest import AlipayTradeQueryRequest
 from alipay.aop.api.util.SignatureUtils import verify_with_rsa
 
 logger = logging.getLogger("epub_factory.alipay")
@@ -89,6 +92,39 @@ def create_alipay_precreate(out_trade_no: str, total_amount: str, subject: str) 
         raise ValueError(f"Alipay error: {resp.get('msg')} {resp.get('sub_msg')}")
     
     return resp.get("qr_code")
+
+def query_alipay_trade(out_trade_no: str) -> Optional[str]:
+    """
+    查询支付宝订单状态。
+
+    返回值（支付宝标准交易状态字符串）：
+      WAIT_BUYER_PAY  - 待付款
+      TRADE_SUCCESS   - 支付成功
+      TRADE_FINISHED  - 交易结束（不可退款）
+      TRADE_CLOSED    - 已关闭 / 超时
+      None            - 查询失败（网络异常 / 订单不存在）
+    """
+    if not _alipay_client:
+        return None
+    try:
+        model = AlipayTradeQueryModel()
+        model.out_trade_no = out_trade_no
+        req = AlipayTradeQueryRequest(biz_model=model)
+        resp_str = _alipay_client.execute(req)
+        if not resp_str:
+            return None
+        resp = json.loads(resp_str).get("alipay_trade_query_response", {})
+        if resp.get("code") != "10000":
+            logger.warning(
+                "Alipay trade query failed",
+                extra={"job_id": out_trade_no, "sub_msg": resp.get("sub_msg")},
+            )
+            return None
+        return resp.get("trade_status")
+    except Exception as e:
+        logger.error(f"Alipay trade query exception: {e}", extra={"job_id": out_trade_no})
+        return None
+
 
 def verify_alipay_notification(params: dict) -> bool:
     """验证异步通知签名"""

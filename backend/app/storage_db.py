@@ -9,7 +9,7 @@
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import (
@@ -484,6 +484,44 @@ class PersistentJobStore:
                 .values(
                     status=JobStatus.pending.value,
                     message=message,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+            return (result.rowcount or 0) == 1
+
+    def list_stale_pending_payment(self, min_age_minutes: int = 30) -> list:
+        """
+        返回所有停留在 pending_payment 超过 min_age_minutes 分钟的任务。
+        用于对账 cron：这些订单 webhook 可能已漏发，需主动调支付宝查单。
+        """
+        from sqlalchemy import and_
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=min_age_minutes)
+        with self._Session() as session:
+            rows = (
+                session.query(JobRecord)
+                .filter(
+                    and_(
+                        JobRecord.status == JobStatus.pending_payment.value,
+                        JobRecord.created_at < cutoff,
+                    )
+                )
+                .order_by(JobRecord.created_at)
+                .all()
+            )
+            return [_record_to_job(r) for r in rows]
+
+    def mark_payment_timeout(self, job_id: str) -> bool:
+        """将超时未支付任务标记为 cancelled。"""
+        from sqlalchemy import update
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job_id)
+                .where(JobRecord.status == JobStatus.pending_payment.value)
+                .values(
+                    status=JobStatus.cancelled.value,
+                    message="支付超时，订单已关闭",
                     updated_at=datetime.now(timezone.utc),
                 )
             )

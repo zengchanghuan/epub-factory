@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.schedules import crontab
 
 
 def _default_result_backend(broker_url: str) -> str:
@@ -17,17 +18,34 @@ def build_celery_app() -> Celery:
         "epub_factory",
         broker=broker_url,
         backend=result_backend,
-        include=["app.tasks.health", "app.tasks.job_pipeline", "app.tasks.translate"],
+        include=[
+            "app.tasks.health",
+            "app.tasks.job_pipeline",
+            "app.tasks.translate",
+            "app.tasks.reconcile",
+        ],
     )
+
+    # 对账定时：每天凌晨 2:00（Asia/Shanghai）执行一次
+    reconcile_hour = int(os.environ.get("RECONCILE_CRON_HOUR", "2"))
+    reconcile_minute = int(os.environ.get("RECONCILE_CRON_MINUTE", "0"))
+
     app.conf.update(
         task_serializer="json",
         result_serializer="json",
         accept_content=["json"],
-        timezone="UTC",
+        timezone="Asia/Shanghai",
         enable_utc=True,
         task_track_started=True,
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        beat_schedule={
+            "reconcile-payments-daily": {
+                "task": "jobs.reconcile_payments",
+                "schedule": crontab(hour=reconcile_hour, minute=reconcile_minute),
+                "options": {"expires": 3600},  # 若 beat 延迟超过 1h 则丢弃本次
+            },
+        },
     )
     return app
 

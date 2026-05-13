@@ -95,6 +95,25 @@ class JobStore:
             job.updated_at = datetime.now(timezone.utc)
             return True
 
+    def list_stale_pending_payment(self, min_age_minutes: int = 30) -> list:
+        from datetime import timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=min_age_minutes)
+        with self._lock:
+            return [
+                j for j in self._jobs.values()
+                if j.status == JobStatus.pending_payment and j.created_at < cutoff
+            ]
+
+    def mark_payment_timeout(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.pending_payment:
+                return False
+            job.status = JobStatus.cancelled
+            job.message = "支付超时，订单已关闭"
+            job.updated_at = datetime.now(timezone.utc)
+            return True
+
     def update_status(
         self,
         job_id: str,
