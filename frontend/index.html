@@ -854,10 +854,10 @@
       <div id="dropzone" class="dropzone">
         <span class="icon">📁</span>
         <div class="main-text">拖拽文件到这里，或点击选择</div>
-        <div class="sub-text">支持 .epub / .pdf 格式</div>
+        <div class="sub-text">支持 .epub / .pdf / .mobi / .azw3 格式</div>
         <div class="file-name" id="fileName" style="display:none;"></div>
       </div>
-      <input id="fileInput" type="file" accept=".epub,.pdf" />
+      <input id="fileInput" type="file" accept=".epub,.pdf,.mobi,.azw3" />
 
       <div class="form-row">
         <div class="form-group" style="flex:2;">
@@ -1443,8 +1443,8 @@
     function selectFile(file) {
       if (!file) return;
       const name = file.name.toLowerCase();
-      if (!(name.endsWith(".epub") || name.endsWith(".pdf"))) {
-        alert("仅支持 .epub 或 .pdf 文件");
+      if (!(name.endsWith(".epub") || name.endsWith(".pdf") || name.endsWith(".mobi") || name.endsWith(".azw3"))) {
+        alert("仅支持 .epub, .pdf, .mobi 或 .azw3 文件");
         return;
       }
       selectedFile = file;
@@ -1848,7 +1848,7 @@
       <div class="guide-block">
         <h2 class="seo-title">如何转换您的电子书？</h2>
         <ol class="guide-steps">
-          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub 或 .pdf 电子书文件（单文件大小限制 20MB 以内）。</li>
+          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 20MB 以内）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
           <li><strong>下载使用：</strong>转换完成后，直接下载 EPUB 文件，导入 Apple Books、Kindle 或任意阅读器即可使用。</li>

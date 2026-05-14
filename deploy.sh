@@ -50,6 +50,12 @@ ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
   unzip -o "$REMOTE_ZIP_PATH" -d "$PROJECT_NAME"
   
   echo "--- Updating dependencies ---"
+  # Install calibre for ebook-convert (mobi/azw3 to epub) if not present
+  if ! command -v ebook-convert &> /dev/null; then
+    echo "Installing calibre for format conversion..."
+    sudo apt-get update && sudo apt-get install -y calibre
+  fi
+  
   cd "$PROJECT_NAME/backend"
   if [ ! -d ".venv" ]; then
     python3 -m venv .venv

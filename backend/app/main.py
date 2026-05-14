@@ -586,8 +586,9 @@ async def create_job(
             detail="付费翻译已下线在 v1 接口，请改用 POST /api/v2/jobs（含支付下单与回调验签）",
         )
 
-    if not (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf")):
-        raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
+    supported_exts = (".epub", ".pdf", ".mobi", ".azw3")
+    if not any(file.filename.lower().endswith(ext) for ext in supported_exts):
+        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi 或 .azw3 文件")
 
     glossary: dict = {}
     if glossary_json:
@@ -720,8 +721,9 @@ async def create_job_v2(
     )
     _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
-    if not (file.filename and (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf"))):
-        raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
+    supported_exts = (".epub", ".pdf", ".mobi", ".azw3")
+    if not (file.filename and any(file.filename.lower().endswith(ext) for ext in supported_exts)):
+        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi 或 .azw3 文件")
 
     # 免费配额已关闭，所有转换均走付费流程
     client_ip = get_real_ip(request)

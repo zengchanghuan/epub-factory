@@ -82,8 +82,26 @@ def run_job(job_id: str) -> None:
             )
             job_store.add_stage(stage)
 
+        input_path = Path(job.input_path)
+        if input_path.suffix.lower() in [".mobi", ".azw3"]:
+            on_progress(f"正在将 {input_path.suffix.upper()[1:]} 格式转换为 EPUB...")
+            on_stage("format_convert", f"开始转换 {input_path.suffix} 到 epub")
+            start_time = datetime.now()
+            import subprocess
+            temp_epub = input_path.with_suffix(".epub")
+            try:
+                subprocess.run(["ebook-convert", str(input_path), str(temp_epub)], check=True, capture_output=True)
+                input_path = temp_epub
+                elapsed = int((datetime.now() - start_time).total_seconds() * 1000)
+                on_stage("format_convert", "格式转换完成", elapsed_ms=elapsed)
+            except subprocess.CalledProcessError as e:
+                err_msg = e.stderr.decode("utf-8", errors="ignore")
+                raise RuntimeError(f"格式转换失败，可能受 DRM 保护或格式损坏。详情: {err_msg[:200]}")
+            except FileNotFoundError:
+                raise RuntimeError("服务器未安装 ebook-convert (Calibre)，无法转换此格式。")
+
         result = converter.convert_file_to_horizontal(
-            Path(job.input_path),
+            input_path,
             output_path,
             job.output_mode,
             enable_translation=job.enable_translation,
