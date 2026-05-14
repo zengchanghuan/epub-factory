@@ -922,6 +922,26 @@ def get_admin_translation_stats(
     }
 
 
+@app.get("/api/v2/admin/balance", include_in_schema=False)
+def get_admin_balance(
+    request: Request,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    """查询当前大模型账户余额（仅支持 DeepSeek）。"""
+    _require_admin(request, x_admin_key)
+    try:
+        from app.tasks.balance_check import _fetch_deepseek_balance, _PROVIDER, _WARN_THRESHOLD
+        balance = _fetch_deepseek_balance()
+        return {
+            "provider": _PROVIDER,
+            "balance_cny": balance,
+            "threshold_cny": _WARN_THRESHOLD,
+            "status": "ok" if (balance is not None and balance >= _WARN_THRESHOLD) else ("low" if balance is not None else "error"),
+        }
+    except Exception as e:
+        return {"provider": "unknown", "balance_cny": None, "status": "error", "error": str(e)}
+
+
 @app.get("/api/v2/admin/error-stats", include_in_schema=False)
 def get_admin_error_stats(
     request: Request,

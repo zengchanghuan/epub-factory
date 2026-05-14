@@ -27,6 +27,9 @@
     th { color: var(--muted); font-weight: 500; }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
     .err { color: var(--error); margin-top: 8px; }
+    .balance-ok { color: var(--ok); }
+    .balance-low { color: var(--error); }
+    .balance-unknown { color: var(--muted); }
     .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
     /* 错误码分布色块 */
     .code-bars { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
@@ -69,16 +72,44 @@
 
   <!-- ─── Tab: Token 费用 ─── -->
   <div class="tab-panel active" id="panel-token">
+
+    <!-- 余额卡片 -->
     <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+        <h2 style="margin:0;">大模型账户余额</h2>
+        <button id="refreshBalanceBtn" style="font-size:13px;padding:6px 14px;">查询余额</button>
+      </div>
+      <div class="row" style="margin-top:14px;">
+        <div class="stat">
+          <label>提供商</label>
+          <span id="balanceProvider" class="balance-unknown">—</span>
+        </div>
+        <div class="stat">
+          <label>当前余额 (CNY)</label>
+          <span id="balanceCny" class="balance-unknown">—</span>
+        </div>
+        <div class="stat">
+          <label>状态</label>
+          <span id="balanceStatus" class="balance-unknown">—</span>
+        </div>
+      </div>
+      <p class="hint">余额低于阈值时，Celery Beat 会写 ERROR 日志触发 CLS 短信告警。</p>
+    </div>
+
+    <!-- Token 用量汇总 -->
+    <div class="card">
+      <h2>Token 用量 &amp; 费用</h2>
       <div class="row" id="tokenSummary" style="display:none;">
         <div class="stat"><label>总 Prompt Tokens</label><span id="totalPrompt">0</span></div>
         <div class="stat"><label>总 Completion Tokens</label><span id="totalCompletion">0</span></div>
         <div class="stat"><label>总 Tokens</label><span id="totalTokens">0</span></div>
         <div class="stat"><label>预估费用 (USD)</label><span id="totalCost">0</span></div>
+        <div class="stat"><label>约合 (CNY)</label><span id="totalCostCny">0</span></div>
         <div class="stat"><label>任务数</label><span id="jobsCount">0</span></div>
       </div>
-      <p class="hint">数据来自 /api/v2/admin/translation-stats，仅统计含翻译结果的任务。</p>
+      <p class="hint">数据来自 /api/v2/admin/translation-stats，仅统计含翻译结果的任务。汇率按 1 USD ≈ 7.2 CNY 估算。</p>
     </div>
+
     <div class="card" id="tokenTableCard" style="display:none;">
       <h2>按任务明细</h2>
       <div style="overflow-x:auto;">
@@ -86,7 +117,8 @@
           <thead>
             <tr>
               <th>任务 ID</th><th>文件名</th><th>创建时间</th>
-              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th><th class="num">费用 (USD)</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th>
+              <th class="num">费用 (USD)</th><th class="num">约合 (CNY)</th>
             </tr>
           </thead>
           <tbody id="tokenTableBody"></tbody>
@@ -203,6 +235,40 @@
     function getKey() { return document.getElementById("adminKey").value.trim(); }
     function fetchOpts(key) { return key ? { headers: { "X-Admin-Key": key } } : {}; }
 
+    const USD_TO_CNY = 7.2;
+
+    // ─── 余额查询 ─────────────────────────────────────────
+    async function loadBalance() {
+      const key = getKey();
+      const url = `${API}/api/v2/admin/balance` + (key ? `?admin_key=${encodeURIComponent(key)}` : "");
+      const providerEl = document.getElementById("balanceProvider");
+      const cnyEl = document.getElementById("balanceCny");
+      const statusEl = document.getElementById("balanceStatus");
+      try {
+        const res = await fetch(url, fetchOpts(key));
+        if (!res.ok) throw new Error(res.status === 403 ? "需要有效的管理员密钥" : await res.text());
+        const d = await res.json();
+        providerEl.textContent = d.provider || "—";
+        providerEl.className = "";
+        if (d.balance_cny != null) {
+          cnyEl.textContent = "¥" + d.balance_cny.toFixed(2);
+          cnyEl.className = d.status === "ok" ? "balance-ok" : "balance-low";
+          statusEl.textContent = d.status === "ok" ? "正常" : (d.status === "low" ? "⚠️ 余额不足" : "异常");
+          statusEl.className = d.status === "ok" ? "balance-ok" : "balance-low";
+        } else {
+          cnyEl.textContent = "查询失败";
+          cnyEl.className = "balance-unknown";
+          statusEl.textContent = "—";
+          statusEl.className = "balance-unknown";
+        }
+      } catch (e) {
+        cnyEl.textContent = "—";
+        cnyEl.className = "balance-unknown";
+        statusEl.textContent = e.message || "错误";
+        statusEl.className = "balance-low";
+      }
+    }
+
     // ─── Token 统计 ─────────────────────────────────────────
     async function loadTokenStats() {
       const key = getKey();
@@ -214,7 +280,8 @@
         document.getElementById("totalPrompt").textContent = data.total_prompt_tokens.toLocaleString();
         document.getElementById("totalCompletion").textContent = data.total_completion_tokens.toLocaleString();
         document.getElementById("totalTokens").textContent = data.total_tokens.toLocaleString();
-        document.getElementById("totalCost").textContent = data.total_cost_usd.toFixed(4);
+        document.getElementById("totalCost").textContent = "$" + data.total_cost_usd.toFixed(4);
+        document.getElementById("totalCostCny").textContent = "¥" + (data.total_cost_usd * USD_TO_CNY).toFixed(3);
         document.getElementById("jobsCount").textContent = data.jobs_count;
         document.getElementById("tokenSummary").style.display = "flex";
 
@@ -223,15 +290,17 @@
         if (data.by_job && data.by_job.length) {
           document.getElementById("tokenTableCard").style.display = "block";
           data.by_job.forEach(function (row) {
+            const cny = row.cost_usd != null ? (row.cost_usd * USD_TO_CNY).toFixed(4) : "";
             const tr = document.createElement("tr");
             tr.innerHTML =
-              "<td>" + (row.job_id || "") + "</td>" +
-              "<td title=\"" + (row.source_filename || "") + "\">" + trunc(row.source_filename, 36) + "</td>" +
-              "<td>" + fmtDate(row.created_at) + "</td>" +
+              "<td style='font-family:monospace;font-size:12px;'>" + (row.job_id || "") + "</td>" +
+              "<td title=\"" + esc(row.source_filename || "") + "\">" + trunc(row.source_filename, 32) + "</td>" +
+              "<td style='font-size:12px;white-space:nowrap;'>" + fmtDate(row.created_at) + "</td>" +
               "<td class=\"num\">" + (row.prompt_tokens || 0).toLocaleString() + "</td>" +
               "<td class=\"num\">" + (row.completion_tokens || 0).toLocaleString() + "</td>" +
               "<td class=\"num\">" + (row.total_tokens || 0).toLocaleString() + "</td>" +
-              "<td class=\"num\">" + (row.cost_usd != null ? row.cost_usd.toFixed(4) : "") + "</td>";
+              "<td class=\"num\">" + (row.cost_usd != null ? "$" + row.cost_usd.toFixed(4) : "—") + "</td>" +
+              "<td class=\"num\">" + (cny ? "¥" + cny : "—") + "</td>";
             tbody.appendChild(tr);
           });
         } else {
@@ -388,10 +457,14 @@
     // ─── 事件绑定 ────────────────────────────────────────
     document.getElementById("loadBtn").addEventListener("click", function () {
       showGlobalErr("");
+      loadBalance();
       loadTokenStats();
       loadErrorStats();
       loadFeedback();
       loadVisits();
+    });
+    document.getElementById("refreshBalanceBtn").addEventListener("click", function () {
+      loadBalance();
     });
     document.getElementById("filterBtn").addEventListener("click", function () {
       showGlobalErr("");
@@ -399,6 +472,7 @@
     });
 
     // 初始加载
+    loadBalance();
     loadTokenStats();
     loadErrorStats();
     loadFeedback();
