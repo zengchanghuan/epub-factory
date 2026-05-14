@@ -73,6 +73,12 @@ ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
     sudo systemctl restart epub-factory-worker
     echo "Restarted epub-factory-worker service."
   fi
+
+  # Restart celery beat scheduler if it exists
+  if systemctl list-unit-files | grep -q epub-factory-beat.service; then
+    sudo systemctl restart epub-factory-beat
+    echo "Restarted epub-factory-beat service."
+  fi
   
   echo "--- Deployment on server completed! ---"
   rm -f "$REMOTE_ZIP_PATH"
