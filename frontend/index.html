@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Best AI EPUB Translator & Formatter – 免费 AI 电子书翻译与排版引擎</title>
+  <title>Best AI EPUB Translator & Formatter – AI 电子书翻译与精排版引擎</title>
 
   <!-- SEO Meta -->
   <meta name="description" content="专业级 AI EPUB 电子书翻译与排版工具：一键获取极致双语对照、沉浸式译文、完美竖排转横排、繁简转换，以及针对 Kindle 和 Apple Books 的深度排版优化。" />
@@ -24,7 +24,7 @@
   <!-- Open Graph / 社交分享 -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://fixepub.com/" />
-  <meta property="og:title" content="Best AI EPUB Translator & Formatter – 免费 AI 电子书翻译与排版引擎" />
+  <meta property="og:title" content="Best AI EPUB Translator & Formatter – AI 电子书翻译与精排版引擎" />
   <meta property="og:description" content="专业级 AI EPUB 电子书翻译与排版工具：双语对照、沉浸式译文、竖排转横排、繁简转换，Kindle/Apple Books 深度排版优化。" />
   <meta property="og:image" content="https://fixepub.com/og-image.png" />
   <meta property="og:locale" content="zh_CN" />
@@ -32,7 +32,7 @@
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Best AI EPUB Translator & Formatter – 免费 AI 电子书翻译与排版引擎" />
+  <meta name="twitter:title" content="Best AI EPUB Translator & Formatter – AI 电子书翻译与精排版引擎" />
   <meta name="twitter:description" content="专业级 AI EPUB 电子书翻译与排版工具：双语对照、沉浸式译文、竖排转横排、繁简转换，Kindle/Apple Books 深度排版优化。" />
   <meta name="twitter:image" content="https://fixepub.com/og-image.png" />
 
@@ -41,9 +41,9 @@
   {
     "@context": "https://schema.org",
     "@type": "WebApplication",
-    "name": "EPUB Factory",
+    "name": "FixEpub",
     "url": "https://fixepub.com/",
-    "description": "免费在线 EPUB 转换工具，支持繁简转换、Kindle/Apple Books 优化、AI 翻译",
+    "description": "专业级在线 EPUB 转换工具，支持繁简转换、Kindle/Apple Books 优化、AI 翻译",
     "applicationCategory": "UtilitiesApplication",
     "operatingSystem": "Web",
     "offers": {
@@ -83,7 +83,7 @@
     "@context": "https://schema.org",
     "@type": "Product",
     "name": "FixEpub 电子书转换与 AI 翻译服务",
-    "description": "提供免费的 EPUB 繁简转换、Kindle 墨水屏排版优化及 AI 智能英中翻译。通过 ExtremeCompiler 引擎确保排版精美与 Unicode 兼容。",
+    "description": "提供专业的 EPUB 繁简转换、Kindle 墨水屏排版优化及 AI 智能英中翻译。通过 ExtremeCompiler 引擎确保排版精美与 Unicode 兼容。",
     "brand": {
       "@type": "Brand",
       "name": "FixEpub"
@@ -213,11 +213,42 @@
       color: var(--muted);
       font-weight: 500;
     }
+    .topbar-divider {
+      width: 1px;
+      height: 18px;
+      background: var(--border-strong);
+      margin: 0 6px;
+      flex-shrink: 0;
+    }
+    .topbar-nav {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .topbar-nav a {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 5px 10px;
+      border-radius: var(--radius-sm);
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .topbar-nav a:hover { background: var(--surface); color: var(--text); }
+    .topbar-nav a.active {
+      background: var(--text);
+      color: #fff;
+    }
+    .topbar-nav a.active:hover { background: var(--primary-hover); }
 
     .container {
       max-width: 680px;
       margin: 0 auto;
-      padding: 48px 24px 100px;
+      padding: 48px 24px 48px;
     }
 
     /* ── Header ──────────────────────────────────────────────────────────── */
@@ -702,6 +733,7 @@
       flex-shrink: 0;
     }
     .tasks-status.queued           { background: var(--warning-bg);  color: var(--warning-text); }
+    .tasks-status.pending_payment  { background: #fff7ed; color: #b45309; }
     .tasks-status.running          { background: #eff6ff; color: #1d4ed8; }
     .tasks-status.completed        { background: var(--success-bg);  color: #166534; }
     .tasks-status.partial_completed{ background: var(--warning-bg);  color: var(--warning-text); }
@@ -721,6 +753,12 @@
       transition: background 0.15s;
     }
     .tasks-view-btn:hover { background: #ebebeb; }
+    .tasks-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
 
     /* ── Queue notice ────────────────────────────────────────────────────── */
     .queue-notice {
@@ -748,11 +786,40 @@
     }
     .queue-notice .btn-link:hover { background: var(--primary-hover); color: white; }
 
+    .detail-panel {
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .detail-panel > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      user-select: none;
+    }
+    .detail-panel > summary::-webkit-details-marker { display: none; }
+    .detail-panel > summary::after {
+      content: "展开";
+      float: right;
+      color: var(--subtle);
+      font-weight: 500;
+    }
+    .detail-panel[open] > summary::after { content: "收起"; }
+    .detail-panel-body {
+      padding: 0 12px 12px;
+      border-top: 1px solid var(--border);
+    }
+
     /* footer { display: none; } */
 
     /* ── Responsive ──────────────────────────────────────────────────────── */
     @media (max-width: 640px) {
-      .container { padding: 32px 16px 80px; }
+      .container { padding: 32px 16px 40px; }
       header h1 { font-size: 24px; }
       .topbar { padding: 0 16px; }
     }
@@ -761,7 +828,11 @@
 <body>
   <nav class="topbar">
     <a class="topbar-logo" href="/">FixEpub</a>
-    <span class="topbar-badge">免费</span>
+    <div class="topbar-divider"></div>
+    <div class="topbar-nav">
+      <a href="/" class="active">✦ 转换 &amp; 翻译</a>
+      <a href="/epub-repair.html">🔧 格式修复</a>
+    </div>
     <div style="flex:1"></div>
     <button id="suggestBtn" style="background:none; border:none; padding:8px; font-size:12px; color:var(--muted); cursor:pointer; font-weight:500; font-family:inherit;">功能建议</button>
   </nav>
@@ -789,30 +860,33 @@
       <input id="fileInput" type="file" accept=".epub,.pdf" />
 
       <div class="form-row">
-        <div class="form-group">
-          <label>输出模式</label>
-          <select id="outputMode">
-            <option value="simplified">横排简体</option>
-            <option value="traditional">横排繁体</option>
-          </select>
-        </div>
-        <div class="form-group" id="traditionalVariantGroup" style="display:none;">
-          <label>繁体来源 <span class="hint">（选简体时生效，用于繁→简转换）</span></label>
-          <select id="traditionalVariant">
-            <option value="auto">自动 / 通用</option>
-            <option value="tw">台湾繁体</option>
-            <option value="hk">香港繁体</option>
+        <div class="form-group" style="flex:2;">
+          <label>转换方向</label>
+          <select id="conversionMode">
+            <optgroup label="繁体（竖/横排）→ 横排简体">
+              <option value="simplified|tw" selected>台湾正体 → 横排简体（大陆）</option>
+              <option value="simplified|hk">港澳繁体 → 横排简体（大陆）</option>
+              <option value="simplified|auto">繁体通用 → 横排简体</option>
+            </optgroup>
+            <optgroup label="横排简体 → 横排繁体">
+              <option value="traditional|tw">横排简体 → 台湾正体</option>
+              <option value="traditional|hk">横排简体 → 港澳繁体</option>
+              <option value="traditional|auto">横排简体 → 繁体通用</option>
+            </optgroup>
           </select>
         </div>
         <div class="form-group">
           <label>目标设备</label>
           <select id="device">
             <option value="generic">通用</option>
-            <option value="kindle">Kindle (墨水屏优化)</option>
+            <option value="kindle">Kindle（墨水屏优化）</option>
             <option value="apple">Apple Books</option>
           </select>
         </div>
       </div>
+      <!-- 隐藏字段，供后端兼容旧参数名 -->
+      <input type="hidden" id="outputMode" value="simplified">
+      <input type="hidden" id="traditionalVariant" value="tw">
 
       <div class="toggle-row">
         <div>
@@ -827,8 +901,8 @@
 
       <div id="translationOptions" style="display:none;">
         <div class="pricing-notice">
-          付费说明：AI 翻译为预付费服务，当前价格为 $1.99/次。仅在支付成功后才会创建并执行转换任务。<br/>
-          页面展示的 Token 消耗与费用估算仅用于信息披露和透明化，不构成额外扣费依据，本次任务不会二次扣费。
+          AI 翻译按实际字符数计费（¥0.10 / 1,000 字符），上传文件后自动估算费用，最低 ¥5.99。<br/>
+          费用在支付完成后才会扣除，本次任务不会二次扣费。
         </div>
 
         <div class="form-group" style="margin-top: 12px;">
@@ -868,17 +942,32 @@
         </div>
       </div>
 
-      <!-- 支付与提交按钮区 -->
+      <!-- 价格提示（格式转换固定 ¥5.99） -->
+      <div id="conversionPriceHint" style="font-size:13px; color:var(--muted); margin:10px 0 0; display:none;">
+        格式转换服务：<strong style="color:var(--text);">¥5.99 / 次</strong>，支持繁简转换、竖排改横排、设备排版优化。
+      </div>
+
+      <!-- 提交按钮 -->
       <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
 
-      <!-- 仅用于支付宝审核的支付模拟 UI (平时可隐藏) -->
-      <div id="mockPayArea" style="margin-top: 15px; padding: 15px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #f8fafc; display: none;">
-        <div style="font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text);">服务名称：EPUB 电子书 AI 翻译服务</div>
-        <div style="font-size: 20px; font-weight: 700; color: #ff5000; margin-bottom: 15px;">¥ 0.01 / 本</div>
-        <div style="display: flex; gap: 10px;">
-           <button style="flex: 1; padding: 10px; background: #1677ff; color: white; border: none; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">支付宝付款</button>
-           <button style="flex: 1; padding: 10px; background: #07c160; color: white; border: none; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">微信支付</button>
-        </div>
+      <!-- 格式转换扫码支付区 -->
+      <div id="conversionPayArea" style="display:none; margin-top:16px; padding:20px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center;">
+        <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px;">扫码支付完成后自动开始转换</div>
+        <div style="font-size:24px; font-weight:700; color:var(--text); margin-bottom:14px;">¥5.99</div>
+        <img id="conversionQrImg" src="" alt="支付宝二维码" style="width:160px; height:160px; border:1px solid var(--border); border-radius:8px; background:#fff;" />
+        <div style="font-size:12px; color:var(--muted); margin-top:8px;">使用支付宝 App 扫码 · 支付后自动处理</div>
+      </div>
+
+      <!-- 翻译跳转支付区 -->
+      <div id="translationPayArea" style="display:none; margin-top:16px; padding:20px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center;">
+        <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:6px;">应付金额</div>
+        <div style="font-size:26px; font-weight:700; color:var(--text); margin-bottom:4px;" id="translationPriceDisplay">¥—</div>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:14px;" id="translationCharDisplay"></div>
+        <a id="translationPayLink" href="#" target="_blank"
+           style="display:inline-block; padding:10px 28px; background:#1677ff; color:#fff; border-radius:8px; font-weight:600; text-decoration:none; font-size:14px;">
+          前往支付宝付款
+        </a>
+        <div style="font-size:12px; color:var(--subtle); margin-top:12px;">支付完成后本页面自动开始任务，请勿关闭页面</div>
       </div>
     </div>
 
@@ -909,24 +998,10 @@
         <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
       </div>
 
-      <dl class="meta-grid">
-        <dt>Job ID</dt>
-        <dd id="metaJobId">-</dd>
-        <dt>Trace ID</dt>
-        <dd id="metaTraceId">-</dd>
-        <dt>文件名</dt>
-        <dd id="metaFilename">-</dd>
-        <dt>输出模式</dt>
-        <dd id="metaMode">-</dd>
-      </dl>
-
-      <div id="resultActions" style="display:none; display:none; gap:10px; flex-wrap:wrap; margin-top:16px;">
+      <div id="resultActions" style="gap:10px; flex-wrap:wrap; margin-top:16px;">
         <a class="download-btn" id="downloadBtn" href="#">
           ↓ 下载转换结果
         </a>
-        <button class="preview-btn" id="previewBtn">
-          ◎ 在线预览
-        </button>
       </div>
 
       <!-- SafeMode 降级提示 -->
@@ -936,66 +1011,72 @@
         ⚠️ 引擎已降级为安全模式（仅保留排版方向转换），完整功能可尝试重新提交。
       </div>
 
-      <div class="error-msg" id="errorMsg" style="display:none;"></div>
-      <div id="errorCodeMsg" style="display:none; margin-top:6px;
-           font-size:12px; color:#6b7280; font-family: monospace;"></div>
-      <div class="progress-log" id="progressLog"></div>
+      <details class="detail-panel" id="detailPanel" open>
+        <summary>查看详细信息（任务标识 / 日志 / 质量 / 耗时）</summary>
+        <div class="detail-panel-body">
+          <dl class="meta-grid">
+            <dt>Job ID</dt>
+            <dd id="metaJobId">-</dd>
+            <dt>Trace ID</dt>
+            <dd id="metaTraceId">-</dd>
+            <dt>文件名</dt>
+            <dd id="metaFilename">-</dd>
+            <dt>输出模式</dt>
+            <dd id="metaMode">-</dd>
+          </dl>
 
-      <!-- 质量统计卡片 -->
-      <div class="quality-card" id="qualityCard">
-        <div class="quality-title">✨ 转换质量报告</div>
-        <div class="quality-grid">
-          <div class="quality-item">
-            <span class="quality-value" id="qCss">0</span>
-            <span class="quality-label">清理冗余样式</span>
+          <div class="error-msg" id="errorMsg" style="display:none;"></div>
+          <div id="errorCodeMsg" style="display:none; margin-top:6px;
+               font-size:12px; color:#6b7280; font-family: monospace;"></div>
+          <div class="progress-log" id="progressLog"></div>
+
+          <!-- 质量统计卡片 -->
+          <div class="quality-card" id="qualityCard">
+            <div class="quality-title">✨ 转换质量报告</div>
+            <div class="quality-grid">
+              <div class="quality-item">
+                <span class="quality-value" id="qCss">0</span>
+                <span class="quality-label">清理冗余样式</span>
+              </div>
+              <div class="quality-item">
+                <span class="quality-value" id="qTypo">0</span>
+                <span class="quality-label">修复排版断层</span>
+              </div>
+              <div class="quality-item">
+                <span class="quality-value" id="qToc">0</span>
+                <span class="quality-label">重建目录节点</span>
+              </div>
+              <div class="quality-item">
+                <span class="quality-value" id="qStem">0</span>
+                <span class="quality-label">防溢出保护对象</span>
+              </div>
+            </div>
           </div>
-          <div class="quality-item">
-            <span class="quality-value" id="qTypo">0</span>
-            <span class="quality-label">修复排版断层</span>
+
+          <!-- 翻译费用摘要 -->
+          <div id="costSummary" style="display:none; margin-top:12px; padding:10px 14px;
+               background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;
+               font-size:13px; color:#065f46;">
+            🤖 翻译消耗：<span id="costText"></span>
           </div>
-          <div class="quality-item">
-            <span class="quality-value" id="qToc">0</span>
-            <span class="quality-label">重建目录节点</span>
-          </div>
-          <div class="quality-item">
-            <span class="quality-value" id="qStem">0</span>
-            <span class="quality-label">防溢出保护对象</span>
+
+          <!-- Pipeline 耗时折叠面板 -->
+          <div class="metrics-panel" id="metricsPanel">
+            <button class="metrics-toggle" id="metricsToggle">
+              <span>⏱ Pipeline 耗时</span>
+              <span id="metricsTotalMs" style="font-weight:400;"></span>
+            </button>
+            <div class="metrics-body" id="metricsBody"></div>
           </div>
         </div>
-      </div>
-
-      <!-- 翻译费用摘要 -->
-      <div id="costSummary" style="display:none; margin-top:12px; padding:10px 14px;
-           background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;
-           font-size:13px; color:#065f46;">
-        🤖 翻译消耗：<span id="costText"></span>
-      </div>
-
-      <!-- Pipeline 耗时折叠面板 -->
-      <div class="metrics-panel" id="metricsPanel">
-        <button class="metrics-toggle" id="metricsToggle">
-          <span>⏱ Pipeline 耗时</span>
-          <span id="metricsTotalMs" style="font-weight:400;"></span>
-        </button>
-        <div class="metrics-body" id="metricsBody"></div>
-      </div>
+      </details>
     </div>
 
-    <!-- 历史记录卡片 -->
-    <div class="card history-card" id="historyCard">
-      <h2 style="justify-content: space-between;">
-        <span><span class="icon">🕐</span> 最近转换</span>
-        <button class="history-clear" id="historyClearBtn">清除记录</button>
-      </h2>
-      <ul class="history-list" id="historyList"></ul>
-    </div>
+    <!-- 历史记录卡片已移除（避免与任务中心重复） -->
 
-    <footer>
-      EPUB Factory &mdash; ExtremeCompiler Engine v2.0 &middot; EpubCheck 5.1.0
-      &middot; <a href="/admin.html" target="_blank" rel="noopener" style="color:var(--muted);">后台 Token/费用统计</a>
-    </footer>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
   <script src="lib.js"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
@@ -1097,18 +1178,18 @@
             const time = j.created_at ? new Date(j.created_at).toLocaleString() : "";
             const safeFilename = escapeHtml(j.source_filename || "-");
             const safeMessage = escapeHtml(j.message || "");
+            const metaParts = [time, safeMessage].filter(Boolean).join(" · ");
             return `<li class="tasks-item" data-job-id="${j.job_id}">
               <div class="tasks-info">
                 <div class="tasks-filename" title="${safeFilename}">${safeFilename}</div>
-                <div class="tasks-meta">${time} · ${safeMessage}</div>
+                <div class="tasks-meta">${metaParts || "—"}</div>
               </div>
-              <span class="tasks-status ${statusClass}">${statusText}</span>
-              <button type="button" class="tasks-view-btn" data-job-id="${j.job_id}">查看</button>
+              <div class="tasks-actions">
+                <span class="tasks-status ${statusClass}">${statusText}</span>
+                <button type="button" class="tasks-view-btn" data-job-id="${j.job_id}">下载</button>
+              </div>
             </li>`;
           }).join("");
-          listEl.querySelectorAll(".tasks-view-btn").forEach(btn => {
-            btn.addEventListener("click", () => openJobDetail(btn.getAttribute("data-job-id")));
-          });
         })
         .catch(() => {
           emptyEl.textContent = "加载任务列表失败，请稍后重试。";
@@ -1117,12 +1198,42 @@
         });
     }
 
+    // 任务列表点击委托：避免列表重渲染后按钮失去绑定
+    $("tasksList").addEventListener("click", (e) => {
+      const btn = e.target.closest(".tasks-view-btn");
+      if (!btn) return;
+      const jobId = btn.getAttribute("data-job-id");
+      if (jobId) handleTaskPrimaryAction(jobId);
+    });
+
+    function handleTaskPrimaryAction(jobId) {
+      fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId) })
+        .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
+        .then(data => {
+          const done = data.status === "completed" || data.status === "partial_completed";
+          if (done && data.download_url) {
+            const url = withJobToken(`${API}${data.download_url}`, jobId);
+            window.location.href = url;
+            return;
+          }
+          openJobDetail(jobId);
+        })
+        .catch(() => openJobDetail(jobId));
+    }
+
     function openJobDetail(jobId) {
       currentJobId = jobId;
       statusCard.classList.add("visible");
+      const detailPanel = $("detailPanel");
+      if (detailPanel) detailPanel.open = true;
+      // 立即给出“有反应”的视觉反馈
+      $("metaFilename").textContent = "加载中...";
+      $("metaMode").textContent = "-";
+      setStatus("pending", "正在加载任务详情...");
       $("metaJobId").textContent = jobId;
       $("metaTraceId").textContent = "-";
       startJobTimer();
+      statusCard.scrollIntoView({ behavior: "smooth", block: "start" });
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(() => pollJobV2(jobId), 2000);
       pollJobV2(jobId);
@@ -1155,7 +1266,7 @@
             appendProgressLog((data.error_code ? "[" + data.error_code + "] " : "") + data.message);
           }
           $("metaFilename").textContent = data.source_filename || "-";
-          $("metaMode").textContent = data.output_mode ? (data.output_mode === "simplified" ? "横排简体" : "横排繁体") + " / " + (data.device || "generic") : "-";
+          $("metaMode").textContent = data.output_mode ? formatJobMeta(data) : "-";
           const codeText = typeof formatErrorCode === "function" ? formatErrorCode(data.error_code) : "";
           if (codeText) {
             $("errorCodeMsg").textContent = codeText;
@@ -1198,6 +1309,7 @@
             submitBtn.disabled = false;
           }
           if (data.status === "failed" || data.status === "cancelled") {
+            $("detailPanel").open = true;
             errorMsg.textContent = (data.error_code ? "[" + data.error_code + "] " : "") + (data.message && !/转换成功/.test(data.message) ? data.message : "任务失败");
             errorMsg.style.display = "block";
             clearInterval(pollTimer);
@@ -1208,6 +1320,7 @@
         })
         .catch(err => {
           setStatus("failed", err.message);
+          $("detailPanel").open = true;
           errorMsg.textContent = err.message;
           errorMsg.style.display = "block";
           clearInterval(pollTimer);
@@ -1225,13 +1338,32 @@
       if (currentJobId) openJobDetail(currentJobId);
     });
 
-    // 支持 ?job_id=xxx 直接打开任务详情
     (function initFromQuery() {
       const params = new URLSearchParams(location.search);
+      // 管理员测试模式：URL 带 admin_key 时存入 localStorage/sessionStorage
+      const adminKeyParam = params.get("admin_key");
+      if (adminKeyParam) {
+        sessionStorage.setItem("admin_key", adminKeyParam);
+        localStorage.setItem("admin_key", adminKeyParam);
+        // 去掉 URL 里的 admin_key，避免分享出去
+        params.delete("admin_key");
+        const newUrl = params.toString()
+          ? `${location.pathname}?${params.toString()}`
+          : location.pathname;
+        history.replaceState(null, "", newUrl);
+      }
       const jobId = params.get("job_id");
       if (jobId) {
         showView("tasks");
-        openJobDetail(jobId);
+        // 用户付完款被支付宝跳回这里：先主动调一次 recover 兜底
+        // （服务端会查询支付宝订单并补发任务），再开始正常轮询。
+        fetch(`${API}/api/v2/jobs/${jobId}/recover`, {
+          method: "POST",
+          headers: authHeaders(jobId),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+          .finally(() => openJobDetail(jobId));
       }
     })();
 
@@ -1240,6 +1372,7 @@
       const list = loadHistory(localStorage);
       const card = $("historyCard");
       const ul = $("historyList");
+      if (!card || !ul) return;
       if (!list.length) { card.classList.remove("visible"); return; }
       card.classList.add("visible");
       ul.innerHTML = list.map(e => `
@@ -1254,10 +1387,13 @@
         </li>`).join("");
     }
 
-    $("historyClearBtn").addEventListener("click", () => {
-      clearHistory(localStorage);
-      renderHistory();
-    });
+    const historyClearBtn = $("historyClearBtn");
+    if (historyClearBtn) {
+      historyClearBtn.addEventListener("click", () => {
+        clearHistory(localStorage);
+        renderHistory();
+      });
+    }
 
     renderHistory(); // 页面加载时恢复历史
 
@@ -1295,8 +1431,9 @@
       }
       
       submitBtn.disabled = false;
-      if (enableTranslation.checked) {
-        submitBtn.textContent = "提交订单 (¥0.01)";
+      const _isAdminTest = !!(localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key"));
+      if (_isAdminTest) {
+        submitBtn.textContent = "提交订单 (¥0.01 测试)";
       } else {
         submitBtn.textContent = "开始转换";
       }
@@ -1314,6 +1451,15 @@
       fileNameEl.textContent = `✅ ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
       fileNameEl.style.display = "block";
       updateSubmitButton();
+      _updatePriceHint();
+    }
+
+    function _updatePriceHint() {
+      const isTranslation = $("enableTranslation").checked;
+      $("conversionPriceHint").style.display = (selectedFile && !isTranslation) ? "block" : "none";
+      // 重置支付区（避免上次残留）
+      $("conversionPayArea").style.display = "none";
+      $("translationPayArea").style.display = "none";
     }
 
     dropzone.addEventListener("click", () => fileInput.click());
@@ -1326,13 +1472,16 @@
     enableTranslation.addEventListener("change", () => {
       $("translationOptions").style.display = enableTranslation.checked ? "block" : "none";
       updateSubmitButton();
+      _updatePriceHint();
     });
 
-    function syncTraditionalVariantVisibility() {
-      $("traditionalVariantGroup").style.display = $("outputMode").value === "simplified" ? "block" : "none";
+    function syncConversionMode() {
+      const [mode, variant] = ($("conversionMode").value || "simplified|tw").split("|");
+      $("outputMode").value = mode;
+      $("traditionalVariant").value = variant || "auto";
     }
-    $("outputMode").addEventListener("change", syncTraditionalVariantVisibility);
-    syncTraditionalVariantVisibility();
+    $("conversionMode").addEventListener("change", syncConversionMode);
+    syncConversionMode();
 
     function setStatus(status, message) {
       statusCard.classList.add("visible");
@@ -1491,6 +1640,10 @@
         }
       }
       
+      // 管理员测试模式：自动附带 admin_key（后端用 HMAC 验证，决定是否按 ¥0.01 收费）
+      const _adminKey = localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key");
+      if (_adminKey) form.append("admin_key", _adminKey);
+
       // (后端会自己判断是否需要进行支付并返回链接)
       try {
         startJobTimer();
@@ -1503,24 +1656,42 @@
 
         currentJobId = data.job_id;
         if (data.access_token) saveJobToken(data.job_id, data.access_token);
-        
-        if (data.status === "pending_payment" && data.pay_url) {
-          $("metaJobId").textContent = data.job_id;
-          $("metaTraceId").textContent = data.trace_id || "-";
-          setStatus("pending", "等待支付完成...");
-          
-          // 显示支付入口
-          $("queueNotice").innerHTML = `
-            <div style="text-align: center; margin: 10px 0;">
-              <p style="font-size: 14px; margin-bottom: 15px; color: var(--text);">您的订单已生成，金额：<strong style="color: #ff5000;">¥0.01</strong></p>
-              <a href="${data.pay_url}" target="_blank" style="display: inline-block; padding: 10px 24px; background: #1677ff; color: white; border-radius: var(--radius-sm); font-weight: 600; text-decoration: none;">前往支付宝付款</a>
-              <p style="font-size: 12px; color: var(--subtle); margin-top: 15px;">付款成功后，本页面会自动刷新并开始任务</p>
-            </div>
-          `;
+        $("metaJobId").textContent = data.job_id;
+        $("metaTraceId").textContent = data.trace_id || "-";
+
+        if (data.status === "pending_payment") {
+          setStatus("pending", "等待支付完成后自动开始...");
           $("queueNotice").classList.add("visible");
+
+          if (data.qr_code) {
+            // 格式转换：扫码支付
+            const qrDataUrl = await QRCode.toDataURL(data.qr_code, { width: 200, margin: 1 });
+            $("conversionQrImg").src = qrDataUrl;
+            $("conversionPayArea").style.display = "block";
+            $("conversionPriceHint").style.display = "none";
+          } else if (data.pay_url) {
+            const amt = data.amount || "—";
+            const chars = data.estimated_chars || 0;
+            $("translationPriceDisplay").textContent = `¥${amt}`;
+
+            let charInfo = chars > 0 ? `约 ${(chars / 1000).toFixed(1)}K 字符` : "";
+
+            const p = data.pricing || null;
+            if (p && p.hit_ratio > 0.01) {
+              const savedRaw = parseFloat(p.raw_price_cny || "0");
+              const finalPrice = parseFloat(p.price_cny || "0");
+              const saved = Math.max(0, savedRaw - finalPrice);
+              const pct = Math.round((p.hit_ratio || 0) * 100);
+              const savedTxt = saved > 0.005
+                ? `<span style="color:#5cb85c;font-weight:600;">已为你节省 ¥${saved.toFixed(2)}</span>（缓存命中 ${pct}%）`
+                : `缓存命中 ${pct}%`;
+              charInfo = `${charInfo ? charInfo + "<br>" : ""}${savedTxt}`;
+            }
+            $("translationCharDisplay").innerHTML = charInfo;
+            $("translationPayLink").href = data.pay_url;
+            $("translationPayArea").style.display = "block";
+          }
         } else {
-          $("metaJobId").textContent = data.job_id;
-          $("metaTraceId").textContent = data.trace_id || "-";
           setStatus("running", data.message || "任务已进入后台队列");
           $("queueNotice").classList.add("visible");
         }
@@ -1539,137 +1710,11 @@
 
     submitBtn.addEventListener("click", submitJob);
 
-    // ─── 结果操作区（下载 + 预览）────────────────────────────────────────────
-    let _previewUrl = null;
-    let _previewJobId = null;
-
+    // ─── 结果操作区（下载）────────────────────────────────────────────────────
     function showResultActions(jobId, downloadUrl) {
-      _previewJobId = jobId;
-      _previewUrl = downloadUrl;
       downloadBtn.href = downloadUrl;
       $("resultActions").classList.add("visible");
     }
-
-    // ─── epub.js 预览 ─────────────────────────────────────────────────────────
-    let _epubBook = null;
-    let _epubRendition = null;
-
-    function loadEpubJs(cb) {
-      if (window.ePub) { cb(); return; }
-      const s = document.createElement("script");
-      s.src = "https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js";
-      s.onload = cb;
-      s.onerror = () => alert("epub.js 加载失败，请检查网络");
-      document.head.appendChild(s);
-    }
-
-    async function openPreview() {
-      const modal = $("previewModal");
-      modal.style.display = "flex";
-      $("previewLoading").classList.remove("hidden");
-      $("epubViewer").innerHTML = "";
-      $("pageInfo").textContent = "—";
-
-      if (_epubBook) { try { _epubBook.destroy(); } catch(e){} }
-
-      loadEpubJs(async () => {
-        try {
-          const res = await fetch(_previewUrl);
-          if (!res.ok) throw new Error("下载失败 " + res.status);
-          const blob = await res.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const book = ePub(blobUrl);
-          _epubBook = book;
-
-          const rendition = book.renderTo("epubViewer", {
-            width: "100%",
-            height: "100%",
-            spread: "none",
-          });
-          _epubRendition = rendition;
-
-          await rendition.display();
-          $("previewLoading").classList.add("hidden");
-
-          book.loaded.metadata.then(meta => {
-            $("previewTitle").textContent = meta.title || "预览";
-          });
-
-          rendition.on("relocated", loc => {
-            const cur = loc.start.displayed.page;
-            const total = loc.start.displayed.total;
-            $("pageInfo").textContent = cur + " / " + total;
-          });
-        } catch(err) {
-          $("previewLoading").classList.add("hidden");
-          $("epubViewer").innerHTML = "<div style='padding:40px;color:var(--muted);text-align:center;font-size:14px;'>预览加载失败：" + err.message + "</div>";
-        }
-      });
-    }
-
-    $("previewBtn").addEventListener("click", openPreview);
-
-    $("closePreview").addEventListener("click", () => {
-      $("previewModal").style.display = "none";
-      if (_epubBook) { try { _epubBook.destroy(); } catch(e){} _epubBook = null; }
-    });
-
-    $("prevPage").addEventListener("click", () => { if (_epubRendition) _epubRendition.prev(); });
-    $("nextPage").addEventListener("click", () => { if (_epubRendition) _epubRendition.next(); });
-
-    document.addEventListener("keydown", e => {
-      if ($("previewModal").style.display === "none") return;
-      if (e.key === "ArrowLeft" || e.key === "ArrowUp") { if (_epubRendition) _epubRendition.prev(); }
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") { if (_epubRendition) _epubRendition.next(); }
-      if (e.key === "Escape") $("closePreview").click();
-    });
-
-    // ─── 反馈表单 ─────────────────────────────────────────────────────────────
-    let _feedbackType = "layout";
-
-    $("feedbackToggle").addEventListener("click", () => {
-      const form = $("feedbackForm");
-      const arrow = $("feedbackArrow");
-      const open = form.classList.toggle("open");
-      arrow.textContent = open ? "∧" : "∨";
-    });
-
-    document.querySelectorAll(".fb-type").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".fb-type").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        _feedbackType = btn.dataset.type;
-      });
-    });
-
-    $("submitFeedback").addEventListener("click", async () => {
-      const msg = $("feedbackText").value.trim();
-      if (!msg) {
-        $("feedbackMsg").style.color = "var(--error)";
-        $("feedbackMsg").textContent = "请填写反馈内容";
-        return;
-      }
-      const btn = $("submitFeedback");
-      btn.disabled = true;
-      $("feedbackMsg").style.color = "var(--muted)";
-      $("feedbackMsg").textContent = "提交中...";
-      try {
-        const res = await fetch(API + "/api/v2/feedback", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ job_id: _previewJobId, type: _feedbackType, message: msg }),
-        });
-        const data = await res.json();
-        $("feedbackMsg").style.color = "var(--success)";
-        $("feedbackMsg").textContent = data.message || "感谢您的反馈！";
-        $("feedbackText").value = "";
-      } catch(e) {
-        $("feedbackMsg").style.color = "var(--error)";
-        $("feedbackMsg").textContent = "提交失败，请重试";
-      } finally {
-        btn.disabled = false;
-      }
-    });
 
     // ─── 功能建议 ────────────────────────────────────────────────────────────
     $("suggestBtn").addEventListener("click", () => {
@@ -1718,46 +1763,6 @@
     // 已移除，改为支付宝支付逻辑
   });
 </script>
-
-  <!-- ── EPUB 预览 Modal ─────────────────────────────────────────────── -->
-  <div id="previewModal" class="preview-modal" role="dialog" aria-modal="true" aria-label="EPUB 预览" style="display:none;">
-    <div class="preview-topbar">
-      <span class="preview-title" id="previewTitle">预览</span>
-      <div class="preview-nav">
-        <button id="prevPage" title="上一页">‹</button>
-        <span id="pageInfo" class="page-info">—</span>
-        <button id="nextPage" title="下一页">›</button>
-      </div>
-      <button class="preview-close" id="closePreview" title="关闭">✕</button>
-    </div>
-    <div class="preview-body">
-      <div id="epubViewer" class="epub-viewer"></div>
-      <div class="preview-loading" id="previewLoading">
-        <div class="spinner"></div>
-        <p>加载中...</p>
-      </div>
-    </div>
-    <div class="feedback-bar" id="feedbackBar">
-      <div class="feedback-header" id="feedbackToggle">
-        <span>发现问题？提交修复建议</span>
-        <span id="feedbackArrow">∨</span>
-      </div>
-      <div class="feedback-form" id="feedbackForm">
-        <div class="feedback-types" id="feedbackTypes">
-          <button class="fb-type active" data-type="layout">排版异常</button>
-          <button class="fb-type" data-type="encoding">乱码</button>
-          <button class="fb-type" data-type="translation">翻译质量</button>
-          <button class="fb-type" data-type="missing">内容缺失</button>
-          <button class="fb-type" data-type="other">其他</button>
-        </div>
-        <textarea id="feedbackText" placeholder="请描述问题，例如：第三章标题字体异常..." rows="3"></textarea>
-        <div class="feedback-actions">
-          <span id="feedbackMsg" class="feedback-msg"></span>
-          <button id="submitFeedback" class="fb-submit">提交反馈</button>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <!-- ─── 功能建议 Modal ──────────────────────────────────────────────── -->
   <div id="suggestModal" class="preview-modal" style="display:none; justify-content:center; align-items:center; background:rgba(0,0,0,0.4); backdrop-filter:blur(4px);">
@@ -1836,7 +1841,7 @@
           </cite>
         </blockquote>
         <p style="font-size: 14px; color: var(--muted);">
-          成千上万的数字出版从业者和电子书爱好者选择 FixEpub，不仅仅是因为它的免费，更是因为它对排版细节的极致追求。
+          成千上万的数字出版从业者和电子书爱好者选择 FixEpub，是因为它对排版细节的极致追求。
         </p>
       </div>
 
@@ -1846,7 +1851,7 @@
           <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub 或 .pdf 电子书文件（单文件大小限制 20MB 以内）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
-          <li><strong>预览结果与下载：</strong>转换完成后，您可以在线预览 <strong>可重排布局 (Reflowable Layout)</strong> 的实际效果，确认无误后点击下载。</li>
+          <li><strong>下载使用：</strong>转换完成后，直接下载 EPUB 文件，导入 Apple Books、Kindle 或任意阅读器即可使用。</li>
         </ol>
       </div>
     </div>
@@ -1855,10 +1860,10 @@
   <!-- SEO 落地内容：FAQ + 功能说明（对用户可见，对搜索引擎友好） -->
   <section class="seo-section" aria-label="常见问题">
     <div class="container">
-      <h2 class="seo-title">关于 EPUB Factory 与 FixEpub 的技术优势</h2>
+      <h2 class="seo-title">关于 FixEpub 的技术优势</h2>
       <details class="faq-item">
-        <summary>EPUB Factory 是什么？它的核心竞争力在哪里？</summary>
-        <p>EPUB Factory (FixEpub) 是一款专注于电子书极致排版的免费在线工具。我们的核心优势在于自主研发的 <strong>ExtremeCompiler Engine v2.0</strong>，它能深度解析 EPUB 内部的 HTML/CSS 结构，并应用 <strong>Unicode 标准化 (Unicode Normalization)</strong>。无论是复杂的繁简转换，还是针对特定阅读器的 <strong>MOBI-KF8 转换</strong>，我们都能确保输出文件的代码纯净、兼容性极佳。</p>
+        <summary>FixEpub 是什么？它的核心竞争力在哪里？</summary>
+        <p>FixEpub 是一款专注于电子书极致排版的专业在线工具。我们的核心优势在于自主研发的 <strong>ExtremeCompiler Engine v2.0</strong>，它能深度解析 EPUB 内部的 HTML/CSS 结构，并应用 <strong>Unicode 标准化 (Unicode Normalization)</strong>。无论是复杂的繁简转换，还是针对特定阅读器的 <strong>MOBI-KF8 转换</strong>，我们都能确保输出文件的代码纯净、兼容性极佳。</p>
       </details>
       <details class="faq-item">
         <summary>如何将 EPUB 繁体转换为简体，并保持排版不乱？</summary>
@@ -1873,8 +1878,8 @@
         <p>开启「AI 翻译」后，您可以选择「双语并排」模式。系统将使用最先进的 LLM 模型（如 GPT-4 或 Claude 级别），结合深度语境分析，将英文原著翻译为优雅的中文。相比传统翻译软件，我们的 AI 能够识别文学修辞与专业术语，并保持 <strong>可重排布局 (Reflowable Layout)</strong> 的灵活性。AI 翻译每本收费 $1.99，仅为人工翻译成本的万分之一。</p>
       </details>
       <details class="faq-item">
-        <summary>免费版有哪些限制？文件安全吗？</summary>
-        <p>免费用户每天可转换 3 本电子书，单文件上限 20MB。我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
+        <summary>上传的文件安全吗？</summary>
+        <p>我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。单文件上限 20MB。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
       </details>
       <details class="faq-item">
         <summary>PDF 转 EPUB 的效果如何？</summary>
@@ -1885,7 +1890,7 @@
 
   <footer class="site-footer">
     <div class="container">
-      <p>© 2026 <a href="/">FixEpub.com</a> · 免费 EPUB 转换与 AI 翻译工具 · <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">粤ICP备2026051457号-1</a><span id="gongan-beian-wrap" hidden> · <a id="gongan-beian-link" href="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=REPLACE_RECORDCODE" target="_blank" rel="noreferrer"><img src="https://www.beian.gov.cn/img/ghs.png" width="14" height="14" alt="" decoding="async" style="vertical-align: text-bottom; margin-right: 4px;" />粤公网安备REPLACE_FULL_NUMBER号</a></span><!-- 公安备案通过后：1）在全国互联网安全管理服务平台「详情」核对 recordcode 与完整备案号文案；2）将上方 a 的 href 中 REPLACE_RECORDCODE 换为仅数字、文案中 REPLACE_FULL_NUMBER 换为数字部分；3）删除包裹层 span#gongan-beian-wrap 的 hidden 属性。亦可整段替换为平台复制的官方 HTML。 --></p>
+      <p>© 2026 <a href="/">FixEpub.com</a> · EPUB 转换与 AI 翻译工具 · <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">粤ICP备2026051457号-1</a><span id="gongan-beian-wrap" hidden> · <a id="gongan-beian-link" href="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=REPLACE_RECORDCODE" target="_blank" rel="noreferrer"><img src="https://www.beian.gov.cn/img/ghs.png" width="14" height="14" alt="" decoding="async" style="vertical-align: text-bottom; margin-right: 4px;" />粤公网安备REPLACE_FULL_NUMBER号</a></span><!-- 公安备案通过后：1）在全国互联网安全管理服务平台「详情」核对 recordcode 与完整备案号文案；2）将上方 a 的 href 中 REPLACE_RECORDCODE 换为仅数字、文案中 REPLACE_FULL_NUMBER 换为数字部分；3）删除包裹层 span#gongan-beian-wrap 的 hidden 属性。亦可整段替换为平台复制的官方 HTML。 --></p>
       <div style="margin-top: 10px; font-size: 12px; display: flex; justify-content: center; gap: 15px;">
         <a href="/privacy.html">Privacy Policy</a>
         <a href="/terms.html">Terms of Service</a>
@@ -1896,204 +1901,11 @@
   </footer>
 
   <style>
-    /* ── 预览按钮 ── */
+    /* ── 结果操作区 ── */
     #resultActions { display: none; }
     #resultActions.visible { display: flex !important; }
-    .preview-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      padding: 10px 20px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 13px;
-      font-weight: 600;
-      font-family: inherit;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    .preview-btn:hover { background: #ebebeb; }
 
-    /* ── 预览 Modal ── */
-    .preview-modal {
-      position: fixed;
-      inset: 0;
-      background: #fff;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-    }
-    .preview-topbar {
-      height: 52px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      padding: 0 20px;
-      gap: 12px;
-      flex-shrink: 0;
-      background: rgba(255,255,255,0.95);
-      backdrop-filter: blur(6px);
-    }
-    .preview-title {
-      font-size: 14px;
-      font-weight: 600;
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .preview-nav {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .preview-nav button {
-      width: 32px;
-      height: 32px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: var(--surface);
-      font-size: 18px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--text);
-      transition: background 0.15s;
-    }
-    .preview-nav button:hover { background: #ebebeb; }
-    .page-info {
-      font-size: 12px;
-      color: var(--muted);
-      min-width: 60px;
-      text-align: center;
-      font-variant-numeric: tabular-nums;
-    }
-    .preview-close {
-      width: 32px;
-      height: 32px;
-      border: none;
-      background: none;
-      font-size: 16px;
-      cursor: pointer;
-      color: var(--muted);
-      border-radius: var(--radius-sm);
-      transition: background 0.15s, color 0.15s;
-    }
-    .preview-close:hover { background: #f0f0f0; color: var(--text); }
-
-    .preview-body {
-      flex: 1;
-      overflow: hidden;
-      position: relative;
-      background: #fafafa;
-    }
-    .epub-viewer {
-      width: 100%;
-      height: 100%;
-    }
-    .epub-viewer iframe {
-      border: none !important;
-    }
-    .preview-loading {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
-      background: #fafafa;
-      font-size: 14px;
-      color: var(--muted);
-    }
-    .preview-loading.hidden { display: none; }
-    .spinner {
-      width: 28px;
-      height: 28px;
-      border: 2px solid var(--border);
-      border-top-color: var(--text);
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── 反馈栏 ── */
-    .feedback-bar {
-      border-top: 1px solid var(--border);
-      background: #fff;
-      flex-shrink: 0;
-    }
-    .feedback-header {
-      padding: 10px 20px;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--muted);
-      cursor: pointer;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      user-select: none;
-      transition: background 0.15s;
-    }
-    .feedback-header:hover { background: var(--surface); }
-    .feedback-form {
-      padding: 0 20px 16px;
-      display: none;
-    }
-    .feedback-form.open { display: block; }
-    .feedback-types {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      margin-bottom: 10px;
-    }
-    .fb-type {
-      padding: 4px 12px;
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      background: var(--surface);
-      font-size: 12px;
-      font-family: inherit;
-      cursor: pointer;
-      color: var(--muted);
-      font-weight: 500;
-      transition: all 0.15s;
-    }
-    .fb-type.active {
-      background: var(--text);
-      color: #fff;
-      border-color: var(--text);
-    }
-    .feedback-form textarea {
-      width: 100%;
-      padding: 9px 12px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      font-size: 13px;
-      font-family: inherit;
-      resize: vertical;
-      line-height: 1.6;
-      color: var(--text);
-      background: var(--bg);
-      transition: border-color 0.15s;
-    }
-    .feedback-form textarea:focus {
-      outline: none;
-      border-color: var(--text);
-    }
-    .feedback-actions {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 8px;
-    }
-    .feedback-msg {
-      font-size: 12px;
-      color: var(--success);
-    }
+    /* ── 功能建议 ── */
     .fb-submit {
       padding: 7px 18px;
       background: var(--text);
@@ -2111,7 +1923,7 @@
 
     /* ── SEO section ── */
     .features-section {
-      padding: 60px 0 20px;
+      padding: 30px 0 20px;
       border-top: 1px solid var(--border);
       margin-top: 40px;
     }

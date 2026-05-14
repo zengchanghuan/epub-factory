@@ -24,6 +24,32 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _build_output_suffix(job) -> str:
+    """
+    生成输出文件名的可读后缀，命名遵循"轻量、可读、可还原"原则：
+
+    - 仅转换繁体 → "繁体"
+    - 仅转换简体 → "简体"
+    - 翻译 → 在转换后缀基础上追加 "_翻译_{lang}"，双语模式追加 "_双语"
+
+    例：
+      原文件名：百年孤寂.epub
+      简体输出：百年孤寂_简体.epub
+      简翻英：  百年孤寂_简体_翻译_en.epub
+      简翻英双语：百年孤寂_简体_翻译_en_双语.epub
+    """
+    parts: list[str] = []
+    if job.output_mode == OutputMode.traditional:
+        parts.append("繁体")
+    else:
+        parts.append("简体")
+    if job.enable_translation:
+        parts.append(f"翻译_{job.target_lang}")
+        if job.bilingual:
+            parts.append("双语")
+    return "_".join(parts)
+
+
 def run_job(job_id: str) -> None:
     """从 store 加载 job 并执行整本转换，更新状态与输出路径。"""
     job = job_store.get(job_id)
@@ -35,12 +61,8 @@ def run_job(job_id: str) -> None:
     job_store.update_status(job.id, JobStatus.running, "开始转换")
     try:
         source_name = Path(job.source_filename).stem
-        suffix = "横排繁体" if job.output_mode == OutputMode.traditional else "横排简体"
-        if job.enable_translation:
-            suffix += f"-翻译_{job.target_lang}"
-            if job.bilingual:
-                suffix += "-双语"
-        output_path = OUTPUT_DIR / f"{source_name}-{suffix}.epub"
+        suffix = _build_output_suffix(job)
+        output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
 
         def on_progress(msg: str) -> None:
             job_store.update_status(job.id, JobStatus.running, msg)

@@ -101,6 +101,69 @@ class ExtremeCompiler:
 
         self.metrics = PipelineMetrics()
 
+    def _build_and_inject_auto_glossary(self, docs: list) -> None:
+        """
+        全书术语抽取并合并到翻译器的 glossary。
+
+        失败时静默跳过（不阻塞主流程，仅记录日志）；用户手填的 glossary 始终优先。
+        """
+        import logging
+        log = logging.getLogger("epub_factory.compiler")
+        try:
+            from bs4 import BeautifulSoup
+            from .glossary_extractor import build_auto_glossary, merge_glossaries
+
+            t0 = time.monotonic()
+            self.stage_callback("glossary", "正在抽取专有名词…")
+            texts: list[str] = []
+            for item in docs:
+                if self._should_skip_translation_for_file(item.get_name() or ""):
+                    continue
+                content = item.get_content()
+                if not content:
+                    continue
+                try:
+                    raw = content.decode("utf-8", errors="ignore") if isinstance(content, (bytes, bytearray)) else str(content)
+                    soup = BeautifulSoup(raw, "html.parser")
+                    texts.append(soup.get_text(separator=" "))
+                except Exception:
+                    continue
+
+            target_lang = getattr(self, "target_lang", None) or "zh-CN"
+            for cleaner in self.cleaners:
+                if isinstance(cleaner, SemanticsTranslator):
+                    target_lang = cleaner.target_lang
+                    break
+
+            auto = build_auto_glossary(
+                texts,
+                target_lang=target_lang,
+                min_count=2,
+                max_terms=200,
+            )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if not auto:
+                self.stage_callback("glossary", "未识别到需要统一的术语，跳过", elapsed_ms)
+                return
+
+            merged = merge_glossaries(self.glossary, auto)
+            # 注入到翻译器
+            for cleaner in self.cleaners:
+                if isinstance(cleaner, SemanticsTranslator):
+                    cleaner.glossary = merged
+            self.glossary = merged
+            log.info(
+                "auto_glossary built",
+                extra={"size": len(auto), "merged_size": len(merged), "elapsed_ms": elapsed_ms},
+            )
+            self.stage_callback(
+                "glossary",
+                f"已抽取 {len(auto)} 条全书共享术语（用户手填 {len(self.glossary) - len(auto)} 条）",
+                elapsed_ms,
+            )
+        except Exception as e:
+            log.warning(f"auto glossary skipped: {e}")
+
     @staticmethod
     def _should_skip_translation_for_file(file_name: str) -> bool:
         """仅跳过纯导航/元数据文件，正文性质的辅助章节（目录、附录、索引等）仍翻译。"""
@@ -183,6 +246,8 @@ class ExtremeCompiler:
         total_docs = len(docs)
         if self.enable_translation:
             self.stage_callback("translating", "开始翻译")
+            # ─── 阶段 0：术语抽取（保证全书人名/地名译法一致）──
+            self._build_and_inject_auto_glossary(docs)
 
         for i, item in enumerate(docs):
             item_type = item.get_type()

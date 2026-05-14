@@ -56,8 +56,148 @@ def _use_celery() -> bool:
     return bool(os.environ.get("CELERY_BROKER_URL") or os.environ.get("REDIS_URL"))
 
 
-# 翻译任务的应付金额（元）；通过环境变量集中管理，避免 hardcode 在 webhook 校验里。
-TRANSLATION_PRICE_CNY: str = _os.environ.get("TRANSLATION_PRICE_CNY", "0.01").strip() or "0.01"
+# ── 格式转换定价（元/次）────────────────────────────────────────────────────
+CONVERSION_PRICE_CNY: str = _os.environ.get("CONVERSION_PRICE_CNY", "5.99").strip() or "5.99"
+
+# ── AI 翻译 Token 计费参数 ───────────────────────────────────────────────────
+# 每 1000 字符（约等于 1000 token）收取的费用（元）
+TRANSLATION_PRICE_PER_1K: float = float(_os.environ.get("TRANSLATION_PRICE_PER_1K", "0.10"))
+# 单次最低收费
+TRANSLATION_MIN_PRICE: float = float(_os.environ.get("TRANSLATION_MIN_PRICE", "5.99"))
+# 单次最高收费（默认不封顶，防止超大文集亏损；如需限制可在 .env 设置）
+TRANSLATION_MAX_PRICE: float = float(_os.environ.get("TRANSLATION_MAX_PRICE", "99999"))
+
+# 兼容旧逻辑：若显式设置了 TRANSLATION_PRICE_CNY，优先使用固定价格（方便灰度切换）
+_TRANSLATION_FIXED_PRICE: str = _os.environ.get("TRANSLATION_PRICE_CNY", "").strip()
+# 历史变量名保留，部分地方仍引用
+TRANSLATION_PRICE_CNY: str = _TRANSLATION_FIXED_PRICE or CONVERSION_PRICE_CNY
+
+
+def _estimate_epub_chars(epub_path: str) -> int:
+    """快速统计 EPUB 中可翻译的字符数（用于预估 Token 费用）。"""
+    import zipfile
+    from html.parser import HTMLParser
+
+    class _StripTags(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._buf: list[str] = []
+        def handle_data(self, data: str):
+            self._buf.append(data)
+        def text(self) -> str:
+            return "".join(self._buf)
+
+    total = 0
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith((".xhtml", ".html", ".htm")):
+                    try:
+                        raw = zf.read(name).decode("utf-8", errors="ignore")
+                        p = _StripTags()
+                        p.feed(raw)
+                        total += len(p.text().strip())
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return total
+
+
+def _calc_translation_price(char_count: int) -> str:
+    """根据字符数计算翻译费用，返回两位小数字符串（如 '12.80'）。"""
+    if _TRANSLATION_FIXED_PRICE:
+        return _TRANSLATION_FIXED_PRICE
+    price = char_count / 1000.0 * TRANSLATION_PRICE_PER_1K
+    price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, price))
+    return f"{price:.2f}"
+
+
+def _estimate_translation_pricing(epub_path: str, target_lang: str, glossary: Optional[dict] = None) -> dict:
+    """
+    估算 EPUB 翻译总字符数 + 缓存命中字符数 + 按命中率折扣后的最终价格。
+
+    定价口径与 SemanticsTranslator 的运行时缓存粒度严格一致：单段 inner_html ×
+    (target_lang + glossary_hash) 作为缓存 key。这保证"预估省下来的钱"在实际
+    执行时确实不会被重复扣 token。
+
+    返回字典：
+      total_chars     – 全书可翻译字符总数
+      cached_chars    – 已在缓存中命中的字符数（不再产生 token 费用）
+      hit_ratio       – cached_chars / total_chars（0.0~1.0）
+      billable_chars  – total_chars - cached_chars
+      price_cny       – 最终需要支付金额（含 MIN/MAX 价格保护）
+      raw_price_cny   – 未折扣前的价格，便于前端展示"节省多少"
+    """
+    import hashlib
+    import zipfile
+
+    glossary = glossary or {}
+    glossary_hash = ""
+    if glossary:
+        items = sorted(glossary.items())
+        s = "|".join(f"{k}={v}" for k, v in items)
+        glossary_hash = hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+    cache_lang_key = f"{target_lang}@{glossary_hash}" if glossary_hash else target_lang
+
+    total_chars = 0
+    cached_chars = 0
+    try:
+        from bs4 import BeautifulSoup
+        from .engine.translation_cache import TranslationCache
+        cache = TranslationCache()
+        block_tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']
+
+        with zipfile.ZipFile(epub_path) as zf:
+            for name in zf.namelist():
+                if not name.lower().endswith((".xhtml", ".html", ".htm")):
+                    continue
+                try:
+                    raw = zf.read(name).decode("utf-8", errors="ignore")
+                    soup = BeautifulSoup(raw, "html.parser")
+                    for block in soup.find_all(block_tags):
+                        if block.find(block_tags):
+                            continue
+                        inner_html = "".join(str(c) for c in block.contents).strip()
+                        if not inner_html:
+                            continue
+                        chars = len(inner_html)
+                        total_chars += chars
+                        if cache.get(inner_html, cache_lang_key):
+                            cached_chars += chars
+                except Exception:
+                    continue
+    except Exception:
+        return {
+            "total_chars": 0,
+            "cached_chars": 0,
+            "hit_ratio": 0.0,
+            "billable_chars": 0,
+            "price_cny": TRANSLATION_PRICE_CNY,
+            "raw_price_cny": TRANSLATION_PRICE_CNY,
+        }
+
+    billable_chars = max(0, total_chars - cached_chars)
+    hit_ratio = (cached_chars / total_chars) if total_chars > 0 else 0.0
+
+    if _TRANSLATION_FIXED_PRICE:
+        raw_price = float(_TRANSLATION_FIXED_PRICE)
+        price = raw_price * (1 - hit_ratio)
+        price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, price))
+    else:
+        raw_price_unbounded = total_chars / 1000.0 * TRANSLATION_PRICE_PER_1K
+        billable_price = billable_chars / 1000.0 * TRANSLATION_PRICE_PER_1K
+        raw_price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, raw_price_unbounded))
+        price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, billable_price))
+
+    return {
+        "total_chars": total_chars,
+        "cached_chars": cached_chars,
+        "hit_ratio": round(hit_ratio, 3),
+        "billable_chars": billable_chars,
+        "price_cny": f"{price:.2f}",
+        "raw_price_cny": f"{raw_price:.2f}",
+    }
 
 # access_token 默认有效期（天），过期后必须重新发起任务才能继续查询/下载。
 ACCESS_TOKEN_TTL_DAYS: int = int(_os.environ.get("ACCESS_TOKEN_TTL_DAYS", "7"))
@@ -186,14 +326,42 @@ def _v2_stage_summary(job: Job) -> Optional[dict]:
 
 
 def _safe_upload_name(filename: str) -> str:
-    """Sanitize upload filename to avoid path traversal and bad chars."""
+    """
+    清洗上传文件名：保留中日韩字符与常见可读符号，剔除路径穿越与控制字符。
+
+    与旧实现相比：
+    - 旧版：把非 ASCII 字符（含中文）全部替换为 '_'，导致输出文件名丢失原始书名
+    - 新版：仅过滤路径分隔符 ('/', '\\') / NUL / 控制字符 / Windows 非法符号 (<>:"|?*)
+            其它字符（含中文/日文/韩文/常用符号）原样保留，最终下载更友好
+
+    任何情况下都不会让 stem 长度超过 120 字符，避免文件系统命名上限。
+    """
     base = os.path.basename(filename or "")
     if not base:
         return "upload.bin"
-    # Keep only conservative chars.
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
-    if cleaned.startswith("."):
-        cleaned = cleaned.lstrip(".")
+    base = base.replace("\x00", "")
+    cleaned_chars = []
+    for ch in base:
+        cp = ord(ch)
+        if cp < 0x20:
+            continue
+        if ch in ('/', '\\', '<', '>', ':', '"', '|', '?', '*'):
+            cleaned_chars.append("_")
+        else:
+            cleaned_chars.append(ch)
+    cleaned = "".join(cleaned_chars).strip().lstrip(".")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return "upload.bin"
+
+    stem, dot, ext = cleaned.rpartition(".")
+    if dot:
+        if len(stem) > 120:
+            stem = stem[:120].rstrip()
+        cleaned = f"{stem}.{ext}"
+    else:
+        if len(cleaned) > 120:
+            cleaned = cleaned[:120].rstrip()
     return cleaned or "upload.bin"
 
 
@@ -538,24 +706,25 @@ async def create_job_v2(
     device: DeviceProfile = Form(DeviceProfile.generic),
     out_trade_no: Optional[str] = Form(None),
     temperature: Optional[float] = Form(None),
+    admin_key: Optional[str] = Form(None),
 ):
     """上传文件并创建后台任务，创建后立即返回（v2 契约）。temperature 不传时：翻译任务默认 1.3，纯格式转换不调用 LLM。"""
     import os as _os
+    import hmac as _hmac
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+    # 管理员测试价：admin_key 匹配 ADMIN_SECRET 时，所有价格强制覆盖为 0.01
+    _admin_secret = (_os.environ.get("ADMIN_SECRET") or "").strip()
+    _is_admin_test = bool(
+        _admin_secret and admin_key and
+        _hmac.compare_digest(admin_key.strip(), _admin_secret)
+    )
+    _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
     if not (file.filename and (file.filename.lower().endswith(".epub") or file.filename.lower().endswith(".pdf"))):
         raise HTTPException(status_code=400, detail="仅支持 .epub 或 .pdf 文件")
 
-    # ── 免费配额检查（仅对非付费任务生效；付费翻译不受免费次数限制） ───────────────
+    # 免费配额已关闭，所有转换均走付费流程
     client_ip = get_real_ip(request)
-    if not enable_translation:
-        allowed, count = rate_limiter.check_and_increment(client_ip)
-        if not allowed:
-            from app.infra.rate_limiter import FREE_DAILY_LIMIT
-            raise HTTPException(
-                status_code=429,
-                detail=f"今日免费转换次数已用完（每日上限 {FREE_DAILY_LIMIT} 次），请明天再试。",
-            )
 
     glossary: dict = {}
     if glossary_json:
@@ -613,29 +782,64 @@ async def create_job_v2(
 
     if over_size:
         input_path.unlink(missing_ok=True)
-        if not enable_translation:
-            rate_limiter.reset_ip(client_ip)
         raise HTTPException(
             status_code=413,
-            detail=f"文件过大（>{MAX_FILE_SIZE_MB}MB），免费转换最大支持 {MAX_FILE_SIZE_MB}MB。",
+            detail=f"文件过大（>{MAX_FILE_SIZE_MB}MB），单文件最大支持 {MAX_FILE_SIZE_MB}MB。",
         )
     file_size = bytes_written
 
     # ── 通过所有"无副作用"的校验后，才创建支付订单 ────────────────────
     pay_url = None
+    qr_code = None
     job_status = JobStatus.pending
     expected_amount = ""
-    if enable_translation and not _skip_payment:
+    estimated_chars = 0
+
+    pricing_info = {}
+    if not _skip_payment:
         try:
-            expected_amount = TRANSLATION_PRICE_CNY
-            pay_url = create_alipay_page_pay(
-                out_trade_no=job_id,
-                total_amount=expected_amount,
-                subject=f"EPUB AI 翻译服务 - {_safe_upload_name(file.filename)[:50]}",
-                return_url=f"https://fixepub.com/?job_id={job_id}"
-            )
+            if enable_translation:
+                # 翻译：按 Token 动态定价 + 缓存命中率折扣
+                pricing_info = _estimate_translation_pricing(str(input_path), target_lang, glossary)
+                estimated_chars = pricing_info.get("total_chars", 0)
+                expected_amount = _TEST_PRICE if _is_admin_test else pricing_info.get("price_cny", _calc_translation_price(estimated_chars))
+                subject = f"EPUB AI 翻译服务 - {safe_name[:50]}"
+                pay_url = create_alipay_page_pay(
+                    out_trade_no=job_id,
+                    total_amount=expected_amount,
+                    subject=subject,
+                    return_url=f"https://fixepub.com/?job_id={job_id}",
+                )
+            else:
+                # 格式转换：固定价格。优先尝试扫码支付；若支付宝应用未开通当面付，
+                # 回退到已审核通过的电脑网站支付，避免用户看到“支付渠道不可用”。
+                from .infra.alipay import create_alipay_precreate
+                expected_amount = _TEST_PRICE if _is_admin_test else CONVERSION_PRICE_CNY
+                subject = f"EPUB 格式转换服务 - {safe_name[:50]}"
+                disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
+                try:
+                    if disable_precreate:
+                        raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
+                    qr_code = create_alipay_precreate(
+                        out_trade_no=job_id,
+                        total_amount=expected_amount,
+                        subject=subject,
+                    )
+                except Exception as precreate_exc:
+                    logger.warning(
+                        "Alipay precreate unavailable, fallback to page pay",
+                        extra={"job_id": job_id, "error": str(precreate_exc)},
+                    )
+                    pay_url = create_alipay_page_pay(
+                        out_trade_no=job_id,
+                        total_amount=expected_amount,
+                        subject=subject,
+                        return_url=f"https://fixepub.com/?job_id={job_id}",
+                    )
             job_status = JobStatus.pending_payment
-            logger.info("Created alipay payment order", extra={"job_id": job_id})
+            logger.info("Created alipay payment order", extra={
+                "job_id": job_id, "amount": expected_amount, "translation": enable_translation
+            })
         except Exception as e:
             input_path.unlink(missing_ok=True)
             logger.error(f"Failed to create alipay order: {e}", exc_info=True)
@@ -675,7 +879,7 @@ async def create_job_v2(
         "trace_id": job.trace_id,
         "access_token": job.access_token,
         "status": _job_to_v2_status(job),
-        "message": "请完成支付以启动翻译任务" if job_status == JobStatus.pending_payment else "任务已创建，已进入后台队列",
+        "message": "请完成支付以启动任务" if job_status == JobStatus.pending_payment else "任务已创建，已进入后台队列",
         "source_filename": job.source_filename,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
@@ -684,6 +888,10 @@ async def create_job_v2(
         "traditional_variant": job.traditional_variant,
         "created_at": job.created_at.isoformat(),
         "pay_url": pay_url,
+        "qr_code": qr_code,
+        "amount": expected_amount,
+        "estimated_chars": estimated_chars,
+        "pricing": pricing_info or None,
     }
 
 
@@ -836,6 +1044,72 @@ def get_job_events_v2(job_id: str, request: Request):
     return {"items": _v2_job_events(job_id)}
 
 
+@app.post("/api/v2/jobs/{job_id}/recover")
+def recover_job_payment(job_id: str, request: Request):
+    """
+    主动恢复支付（webhook 兜底）：用户付完款回到页面后，前端立刻调这个接口。
+
+    工作流程：
+    1) 鉴权：必须通过 _authorize_job_access（token / session / IP）
+    2) 仅对 pending_payment 状态有效；其它状态直接回当前状态，前端不要再轮询
+    3) 调支付宝 query API 主动查单：
+       - TRADE_SUCCESS / TRADE_FINISHED → try_mark_paid + 入队 run_conversion
+       - 其它 → 不动，让用户继续等 webhook
+    4) 此接口是补偿性的，与 webhook、reconcile cron 形成三层兜底，
+       即使支付宝异步通知挂了，用户回到页面就能在 1 秒内拿到正确状态。
+    """
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if job.status != JobStatus.pending_payment:
+        return {"job_id": job_id, "status": _job_to_v2_status(job), "recovered": False}
+
+    from .infra.alipay import query_alipay_trade
+    trade_status = query_alipay_trade(job_id)
+    logger.info(
+        "recover_job_payment: trade query result",
+        extra={"job_id": job_id, "trade_status": trade_status or "unknown"},
+    )
+
+    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+        return {
+            "job_id": job_id,
+            "status": _job_to_v2_status(job),
+            "recovered": False,
+            "trade_status": trade_status,
+        }
+
+    try_mark = getattr(job_store, "try_mark_paid", None)
+    won = bool(try_mark(job.id)) if callable(try_mark) else (
+        bool(job_store.update_status(job.id, JobStatus.pending, "支付成功，排队中..."))
+    )
+    if not won:
+        refreshed = job_store.get(job_id)
+        return {
+            "job_id": job_id,
+            "status": _job_to_v2_status(refreshed),
+            "recovered": False,
+            "trade_status": trade_status,
+        }
+
+    if _use_celery():
+        from app.tasks.job_pipeline import run_conversion
+        run_conversion.delay(job.id)
+    else:
+        import threading
+        threading.Thread(target=run_job, args=(job.id,), daemon=True).start()
+
+    refreshed = job_store.get(job_id)
+    return {
+        "job_id": job_id,
+        "status": _job_to_v2_status(refreshed),
+        "recovered": True,
+        "trade_status": trade_status,
+    }
+
+
 @app.post("/api/v2/jobs/{job_id}/cancel")
 def cancel_job_v2(job_id: str, request: Request):
     """取消任务（v2）。仅当任务为 queued 或 running 时可取消。"""
@@ -900,6 +1174,9 @@ def get_admin_translation_stats(
         pt = int(st.get("prompt_tokens") or 0)
         ct = int(st.get("completion_tokens") or 0)
         cost = float(st.get("cost_usd") or 0)
+        total_chunks = int(st.get("total_chunks") or 0)
+        cached_chunks = int(st.get("cached_chunks") or 0)
+        hit_ratio = (cached_chunks / total_chunks) if total_chunks else 0.0
         total_prompt += pt
         total_completion += ct
         total_cost += cost
@@ -911,6 +1188,9 @@ def get_admin_translation_stats(
             "completion_tokens": ct,
             "total_tokens": pt + ct,
             "cost_usd": round(cost, 4),
+            "total_chunks": total_chunks,
+            "cached_chunks": cached_chunks,
+            "cache_hit_ratio": round(hit_ratio, 3),
         })
     return {
         "total_prompt_tokens": total_prompt,
@@ -1051,6 +1331,27 @@ async def alipay_webhook(request: Request):
             return Response("fail")
         
         if trade_status == "TRADE_SUCCESS" and out_trade_no:
+            # ── 修复订单（repair_ 前缀）────────────────────────────
+            if out_trade_no.startswith("repair_"):
+                repair_job_id = out_trade_no[len("repair_"):]
+                repair_job = _repair_job_get(repair_job_id)
+                if not repair_job:
+                    logger.warning("Alipay webhook for unknown repair job", extra={"job_id": out_trade_no})
+                    return Response("success")
+                expected = REPAIR_PRICE_CNY
+                actual = str(total_amount or "").strip()
+                if not _amount_equal(actual, expected):
+                    logger.warning("Alipay webhook repair amount mismatch", extra={"job_id": out_trade_no})
+                    return Response("fail")
+                with _repair_jobs_lock:
+                    if _repair_jobs.get(repair_job_id, {}).get("status") != "pending_payment":
+                        return Response("success")
+                    _repair_jobs[repair_job_id]["status"] = "paid"
+                logger.info("repair payment confirmed, starting repair", extra={"job_id": repair_job_id})
+                _threading.Thread(target=_do_repair_async, args=(repair_job_id,), daemon=True).start()
+                return Response("success")
+
+            # ── 翻译/转换订单（原有逻辑）─────────────────────────
             job = job_store.get(out_trade_no)
             if not job:
                 # 未知订单：告诉支付宝"已收到"避免无限重试，但记日志以便排查
@@ -1232,6 +1533,236 @@ def get_admin_feedback(
     return {"items": items, "total": len(items)}
 
 
+# ─────────────────────────────────────────────────────────────────
+# EPUB 格式修复接口（含支付流程）
+# ─────────────────────────────────────────────────────────────────
+import threading as _threading
+
+_REPAIR_UPLOAD_DIR = Path(os.environ.get("REPAIR_UPLOAD_DIR", "/tmp/epub-repair"))
+_REPAIR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# 修复单价（元）
+REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "5.99").strip() or "5.99"
+
+# 修复任务内存状态（轻量；不需持久化，重启后重新上传即可）
+# {job_id: {"status": "pending_payment"|"paid"|"repaired"|"failed",
+#           "out_trade_no": str, "filename": str, "qr_code": str|None}}
+_repair_jobs: dict = {}
+_repair_jobs_lock = _threading.Lock()
+
+
+def _repair_job_get(job_id: str) -> Optional[dict]:
+    with _repair_jobs_lock:
+        return _repair_jobs.get(job_id)
+
+
+def _repair_job_set(job_id: str, **kwargs) -> None:
+    with _repair_jobs_lock:
+        job = _repair_jobs.setdefault(job_id, {})
+        job.update(kwargs)
+
+
+def _do_repair_async(job_id: str) -> None:
+    """后台线程：执行实际修复，完成后更新状态。"""
+    job_dir = _REPAIR_UPLOAD_DIR / job_id
+    try:
+        epub_files = [f for f in job_dir.glob("*.epub") if "_fixed" not in f.stem]
+        if not epub_files:
+            _repair_job_set(job_id, status="failed", error="原始文件不存在")
+            return
+        input_path = epub_files[0]
+        fixed_name = input_path.stem + "_fixed.epub"
+        output_path = job_dir / fixed_name
+        if not output_path.exists():
+            from .engine.epub_repairer import repair as do_repair
+            do_repair(str(input_path), str(output_path))
+        _repair_job_set(job_id, status="repaired", download_filename=fixed_name)
+        logger.info("epub_repair done", extra={"job_id": job_id})
+    except Exception as e:
+        logger.error("epub_repair async failed", exc_info=True, extra={"job_id": job_id})
+        _repair_job_set(job_id, status="failed", error=str(e))
+
+
+@app.post("/api/v2/repair/diagnose")
+async def repair_diagnose(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """上传 EPUB，返回诊断报告（不修改文件）。免费。"""
+    if not (file.filename and file.filename.lower().endswith(".epub")):
+        raise HTTPException(status_code=400, detail="仅支持 .epub 文件")
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件超过 {MAX_FILE_SIZE_MB}MB 限制",
+        )
+
+    job_id = uuid.uuid4().hex
+    job_dir = _REPAIR_UPLOAD_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = re.sub(r'[^\w.\-]', '_', file.filename)
+    input_path = job_dir / safe_name
+    input_path.write_bytes(content)
+
+    from .engine.epub_repairer import diagnose
+    report = diagnose(str(input_path))
+
+    _repair_job_set(job_id, status="pending_payment", filename=safe_name)
+
+    return {
+        "job_id": job_id,
+        "filename": safe_name,
+        "report": report.to_dict(),
+        "price_cny": REPAIR_PRICE_CNY,
+    }
+
+
+@app.post("/api/v2/repair/{job_id}/pay")
+async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
+    """
+    发起支付宝扫码付款。
+    返回二维码内容 URL，前端用 qrcode 库或第三方渲染成二维码图片。
+    """
+    job = _repair_job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期，请重新上传")
+
+    if job.get("status") == "repaired":
+        return {"job_id": job_id, "status": "repaired"}
+    if job.get("status") == "paid":
+        return {"job_id": job_id, "status": "paid"}
+
+    _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+
+    import hmac as _hmac
+    _admin_secret = (_os.environ.get("ADMIN_SECRET") or "").strip()
+    _is_admin_test = bool(
+        _admin_secret and admin_key and
+        _hmac.compare_digest((admin_key or "").strip(), _admin_secret)
+    )
+    repair_price = "0.01" if _is_admin_test else REPAIR_PRICE_CNY
+
+    if _skip_payment:
+        # 开发模式：直接标记已付款并触发修复
+        _repair_job_set(job_id, status="paid")
+        _threading.Thread(target=_do_repair_async, args=(job_id,), daemon=True).start()
+        return {"job_id": job_id, "status": "paid", "qr_code": None}
+
+    from .infra.alipay import create_alipay_page_pay, create_alipay_precreate
+    out_trade_no = f"repair_{job_id}"
+    try:
+        disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
+        try:
+            if disable_precreate:
+                raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
+            qr_code = create_alipay_precreate(
+                out_trade_no=out_trade_no,
+                total_amount=repair_price,
+                subject="FixEpub 格式修复服务",
+            )
+            pay_url = None
+        except Exception as precreate_exc:
+            logger.warning(
+                "repair pay: precreate unavailable, fallback to page pay",
+                extra={"job_id": job_id, "error": str(precreate_exc)},
+            )
+            qr_code = None
+            pay_url = create_alipay_page_pay(
+                out_trade_no=out_trade_no,
+                total_amount=repair_price,
+                subject="FixEpub 格式修复服务",
+                return_url=f"https://fixepub.com/epub-repair.html?job_id={job_id}",
+            )
+    except Exception as e:
+        logger.error("repair pay: alipay order failed", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"支付发起失败：{e}")
+
+    _repair_job_set(job_id, status="pending_payment", out_trade_no=out_trade_no, qr_code=qr_code, pay_url=pay_url)
+    return {"job_id": job_id, "status": "pending_payment", "qr_code": qr_code, "pay_url": pay_url}
+
+
+@app.get("/api/v2/repair/{job_id}/status")
+async def repair_status(job_id: str):
+    """轮询修复进度。"""
+    job = _repair_job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "download_filename": job.get("download_filename"),
+        "error": job.get("error"),
+    }
+
+
+@app.post("/api/v2/repair/{job_id}/recover")
+async def repair_recover_payment(job_id: str):
+    """
+    修复任务的支付兜底：用户付完款回到页面时，前端立刻调这个接口。
+
+    与 /api/v2/jobs/{id}/recover 完全同源——主动调支付宝查单，
+    如果 TRADE_SUCCESS 但本地仍是 pending_payment，立刻补发 _do_repair_async。
+    """
+    job = _repair_job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if job.get("status") != "pending_payment":
+        return {"job_id": job_id, "status": job.get("status"), "recovered": False}
+
+    out_trade_no = job.get("out_trade_no") or f"repair_{job_id}"
+    from .infra.alipay import query_alipay_trade
+    trade_status = query_alipay_trade(out_trade_no)
+    logger.info(
+        "repair_recover_payment: trade query result",
+        extra={"job_id": job_id, "trade_status": trade_status or "unknown"},
+    )
+    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+        return {"job_id": job_id, "status": job.get("status"), "recovered": False, "trade_status": trade_status}
+
+    with _repair_jobs_lock:
+        current = _repair_jobs.get(job_id, {})
+        if current.get("status") != "pending_payment":
+            return {"job_id": job_id, "status": current.get("status"), "recovered": False}
+        _repair_jobs[job_id]["status"] = "paid"
+    _threading.Thread(target=_do_repair_async, args=(job_id,), daemon=True).start()
+    return {"job_id": job_id, "status": "paid", "recovered": True, "trade_status": trade_status}
+
+
+@app.get("/api/v2/repair/{job_id}/download")
+async def repair_download(job_id: str):
+    """下载修复后的 EPUB 文件（需已完成修复）。"""
+    job = _repair_job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期，请重新上传文件")
+
+    _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+    if not _skip_payment and job.get("status") not in ("repaired",):
+        raise HTTPException(status_code=402, detail="请先完成支付并等待修复完成")
+
+    job_dir = _REPAIR_UPLOAD_DIR / job_id
+    fixed_files = [f for f in job_dir.glob("*_fixed.epub")]
+    if not fixed_files:
+        raise HTTPException(status_code=404, detail="修复文件不存在，请稍后重试")
+
+    fixed_file = fixed_files[0]
+    # RFC 5987 编码处理含中文的文件名
+    import urllib.parse
+    encoded_name = urllib.parse.quote(fixed_file.name)
+    return FileResponse(
+        str(fixed_file),
+        media_type="application/epub+zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{encoded_name}; "
+                f"filename=\"{fixed_file.name.encode('ascii', 'replace').decode()}\""
+            )
+        },
+    )
+
+
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
     content = "\n".join([
@@ -1252,6 +1783,11 @@ def sitemap_xml():
     <loc>https://fixepub.com/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://fixepub.com/epub-repair.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
   </url>
 </urlset>"""
     return Response(content=content, media_type="application/xml")

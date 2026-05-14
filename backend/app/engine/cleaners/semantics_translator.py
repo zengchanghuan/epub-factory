@@ -178,9 +178,30 @@ class SemanticsTranslator:
 
         if self.glossary:
             lines = "\n".join(f"  {src} → {dst}" for src, dst in self.glossary.items())
-            prompt += f"\n\n术语对照表（必须严格遵守，遇到以下原文术语时使用指定译文）：\n{lines}"
+            prompt += (
+                "\n\n【全书共享专有名词译法表】（这是从全书抽取的，所有章节统一使用，"
+                "遇到以下原文必须严格使用对应译名；同一原文出现多次，译名必须完全一致；"
+                "若出现表中词汇的变体或大小写差异，也应使用对应译名）：\n"
+                + lines
+            )
 
         return prompt
+
+    @property
+    def _glossary_hash(self) -> str:
+        """术语库的稳定哈希，用于缓存 key 隔离，防止旧任务的译文污染新任务。"""
+        if not self.glossary:
+            return ""
+        import hashlib
+        items = sorted(self.glossary.items())
+        s = "|".join(f"{k}={v}" for k, v in items)
+        return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+
+    @property
+    def _cache_lang_key(self) -> str:
+        """缓存 key 的语言维度：附带 glossary hash 实现隔离。"""
+        gh = self._glossary_hash
+        return f"{self.target_lang}@{gh}" if gh else self.target_lang
 
     def _extract_json_from_response(self, text: str) -> dict:
         text = text.strip()
@@ -278,7 +299,7 @@ class SemanticsTranslator:
         for i in range(len(html_chunks)):
             trans = translations_map.get(i, html_chunks[i])
             results.append(trans)
-            self.cache.set(html_chunks[i], trans, self.target_lang)
+            self.cache.set(html_chunks[i], trans, self._cache_lang_key)
             self.stats.translated_chunks += 1
             self.stats.total_chunks += 1
             
@@ -286,7 +307,7 @@ class SemanticsTranslator:
 
     async def _translate_html_chunk(self, html_chunk: str) -> str:
         self.stats.total_chunks += 1
-        cached = self.cache.get(html_chunk, self.target_lang)
+        cached = self.cache.get(html_chunk, self._cache_lang_key)
         if cached:
             self.stats.cached_chunks += 1
             return cached
@@ -296,7 +317,7 @@ class SemanticsTranslator:
             translations_map, _ = await self._call_llm_json_batch(payload)
         
         translated = translations_map.get(0, html_chunk)
-        self.cache.set(html_chunk, translated, self.target_lang)
+        self.cache.set(html_chunk, translated, self._cache_lang_key)
         self.stats.translated_chunks += 1
         return translated
 
@@ -316,7 +337,7 @@ class SemanticsTranslator:
         else:
             inner_html = html.strip()
             
-        cached = self.cache.get(inner_html, self.target_lang)
+        cached = self.cache.get(inner_html, self._cache_lang_key)
         if cached:
             self.stats.cached_chunks += 1
             # Return cached inner_html directly. apply_chunk_results will handle it.
@@ -329,7 +350,7 @@ class SemanticsTranslator:
                 translations_map, meta = await self._call_llm_json_batch(payload)
             translated = translations_map.get(0, inner_html)
             latency_ms = int((time.monotonic() - t0) * 1000)
-            self.cache.set(inner_html, translated, self.target_lang)
+            self.cache.set(inner_html, translated, self._cache_lang_key)
             self.stats.translated_chunks += 1
             return SingleChunkResult(
                 translated, False,
@@ -379,7 +400,7 @@ class SemanticsTranslator:
                 cached_results: dict[int, str] = {}
                 uncached: list[tuple[int, str]] = []
                 for i, h_inner in enumerate(inner_htmls):
-                    c = self.cache.get(h_inner, self.target_lang)
+                    c = self.cache.get(h_inner, self._cache_lang_key)
                     if c:
                         cached_results[i] = c
                         self.stats.total_chunks += 1

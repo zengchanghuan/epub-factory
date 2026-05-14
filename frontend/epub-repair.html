@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EPUB 格式修复 – 一键修复 Apple Books / Kindle 无法打开的 EPUB | FixEpub</title>
+
+  <meta name="description" content="专业在线修复 EPUB 格式错误：Apple Books 无法打开、Kindle 显示异常、epubcheck 报错。自动检测并修复 DOCTYPE、mimetype、OPF 命名空间等常见问题。" />
+  <meta name="keywords" content="EPUB修复,EPUB格式错误,Apple Books打不开,Kindle EPUB异常,epubcheck修复,EPUB在线工具,epub repair" />
+  <meta name="author" content="FixEpub" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://fixepub.com/epub-repair.html" />
+
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-HYM7H4T3RG"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-HYM7H4T3RG');
+  </script>
+
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://fixepub.com/epub-repair.html" />
+  <meta property="og:title" content="EPUB 格式修复 – 专业在线修复工具 | FixEpub" />
+  <meta property="og:description" content="一键修复 Apple Books / Kindle 无法打开的 EPUB 文件，自动诊断 30+ 种常见 EPUB 格式错误。" />
+  <meta property="og:site_name" content="FixEpub" />
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #ffffff;
+      --card: #ffffff;
+      --surface: #f7f7f7;
+      --border: #e8e8e8;
+      --border-strong: #d0d0d0;
+      --text: #0f0f0f;
+      --muted: #737373;
+      --subtle: #a3a3a3;
+      --primary: #0f0f0f;
+      --primary-hover: #333333;
+      --accent: #0066ff;
+      --success: #16a34a;
+      --success-bg: #f0fdf4;
+      --success-border: #bbf7d0;
+      --error: #dc2626;
+      --error-bg: #fef2f2;
+      --error-border: #fecaca;
+      --warning-bg: #fffbeb;
+      --warning-border: #fde68a;
+      --warning-text: #92400e;
+      --radius: 10px;
+      --radius-sm: 6px;
+    }
+
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Topbar ── */
+    .topbar {
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+    }
+    .topbar-logo { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); text-decoration: none; }
+    .topbar-badge { font-size: 11px; padding: 2px 7px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; color: var(--muted); font-weight: 500; }
+    .topbar-divider { width: 1px; height: 18px; background: var(--border-strong); margin: 0 6px; flex-shrink: 0; }
+    .topbar-nav { display: flex; align-items: center; gap: 2px; }
+    .topbar-nav a { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; padding: 5px 10px; border-radius: var(--radius-sm); transition: background 0.15s, color 0.15s; white-space: nowrap; }
+    .topbar-nav a:hover { background: var(--surface); color: var(--text); }
+    .topbar-nav a.active { background: var(--text); color: #fff; }
+    .topbar-nav a.active:hover { background: var(--primary-hover); }
+
+    /* ── Layout ── */
+    .container { max-width: 680px; margin: 0 auto; padding: 48px 24px 48px; }
+
+    header { margin-bottom: 40px; }
+    header h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.8px; line-height: 1.2; margin-bottom: 10px; }
+    header p { color: var(--muted); font-size: 14px; line-height: 1.65; max-width: 520px; }
+
+    /* ── Nav tabs ── */
+    .nav-tabs { display: flex; gap: 0; margin: 28px 0 0; border-bottom: 1px solid var(--border); }
+    .nav-tabs a { padding: 9px 16px; font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s; }
+    .nav-tabs a:hover { color: var(--text); }
+    .nav-tabs a.active { color: var(--text); border-bottom-color: var(--text); }
+
+    /* ── Card ── */
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 16px; }
+    .card h2 { font-size: 13px; font-weight: 600; margin-bottom: 18px; display: flex; align-items: center; gap: 7px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+
+    /* ── Dropzone ── */
+    .dropzone {
+      border: 1.5px dashed var(--border-strong);
+      border-radius: var(--radius);
+      padding: 44px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      background: var(--surface);
+    }
+    .dropzone:hover, .dropzone.active { border-color: var(--text); background: #f0f0f0; }
+    .dropzone .drop-icon { font-size: 32px; margin-bottom: 12px; }
+    .dropzone .drop-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .dropzone .drop-hint { font-size: 13px; color: var(--muted); }
+    .dropzone input[type=file] { display: none; }
+
+    /* ── Report ── */
+    .report-block { margin-top: 20px; display: none; }
+    .report-block.visible { display: block; }
+
+    .issue-list { list-style: none; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .issue-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .issue-item.fixable { background: var(--warning-bg); border: 1px solid var(--warning-border); }
+    .issue-item.unfixable { background: var(--error-bg); border: 1px solid var(--error-border); color: var(--error); }
+    .issue-item .issue-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+    .issue-item .issue-body { flex: 1; }
+    .issue-item .issue-code { font-weight: 700; font-size: 11px; letter-spacing: 0.3px; margin-right: 6px; opacity: 0.7; }
+    .issue-item .issue-file { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: monospace; }
+    .badge-fixable { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: #f59e0b22; color: #92400e; border: 1px solid #fde68a; border-radius: 12px; padding: 1px 8px; font-weight: 600; }
+    .badge-ok { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); border-radius: 12px; padding: 1px 8px; font-weight: 600; }
+    .badge-error { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: var(--error-bg); color: var(--error); border: 1px solid var(--error-border); border-radius: 12px; padding: 1px 8px; font-weight: 600; }
+
+    .report-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 14px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      margin-bottom: 14px;
+    }
+    .report-summary .rs-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
+    .report-summary .rs-meta { font-size: 12px; color: var(--muted); }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 10px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+      border: none;
+      text-decoration: none;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover { background: #15803d; }
+    .btn-outline { background: transparent; color: var(--text); border: 1.5px solid var(--border-strong); }
+    .btn-outline:hover { background: var(--surface); }
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+
+    /* ── Progress / status ── */
+    .status-msg {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      margin-top: 16px;
+    }
+    .status-msg.loading { background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+    .status-msg.success { background: var(--success-bg); border: 1px solid var(--success-border); color: var(--success); }
+    .status-msg.error { background: var(--error-bg); border: 1px solid var(--error-border); color: var(--error); }
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid var(--border-strong);
+      border-top-color: var(--text);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Already-ok banner ── */
+    .ok-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 20px;
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
+      border-radius: var(--radius);
+      margin-top: 16px;
+    }
+    .ok-banner .ok-icon { font-size: 28px; }
+    .ok-banner .ok-text h3 { font-size: 15px; font-weight: 700; color: var(--success); }
+    .ok-banner .ok-text p { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+    /* ── QR 支付 ── */
+    .pay-box {
+      margin-top: 20px;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      display: none;
+    }
+    .pay-box.visible { display: block; }
+    .pay-box h3 { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+    .pay-price { font-size: 26px; font-weight: 700; color: var(--text); margin-bottom: 14px; letter-spacing: -0.5px; }
+    .pay-price span { font-size: 14px; font-weight: 400; color: var(--muted); }
+    .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 10px; }
+    .qr-wrap img { width: 160px; height: 160px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff; }
+    .qr-hint { font-size: 12px; color: var(--muted); text-align: center; }
+    .pay-steps { font-size: 13px; color: var(--muted); line-height: 1.8; }
+    .pay-steps li { list-style: none; padding-left: 18px; position: relative; }
+    .pay-steps li::before { content: "·"; position: absolute; left: 6px; }
+
+    /* ── Feature pills ── */
+    .feature-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .pill { font-size: 12px; padding: 4px 12px; border-radius: 20px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 28px 24px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--subtle);
+    }
+    footer a { color: var(--subtle); }
+
+    @media (max-width: 520px) {
+      header h1 { font-size: 22px; }
+      .btn-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+<nav class="topbar">
+  <a class="topbar-logo" href="/">FixEpub</a>
+  <div class="topbar-divider"></div>
+  <div class="topbar-nav">
+    <a href="/">✦ 转换 &amp; 翻译</a>
+    <a href="/epub-repair.html" class="active">🔧 格式修复</a>
+  </div>
+  <div style="flex:1"></div>
+</nav>
+
+<main class="container">
+  <header>
+    <h1>EPUB 格式修复</h1>
+    <p>上传无法在 Apple Books、Kindle 中打开的 EPUB 文件，自动检测格式问题并一键修复。文件不会被保存超过 1 小时，处理完成后自动删除。</p>
+    <div class="feature-pills">
+      <span class="pill">✓ mimetype 位置修复</span>
+      <span class="pill">✓ DOCTYPE 标准化</span>
+      <span class="pill">✓ OPF 命名空间修复</span>
+      <span class="pill">✓ Apple Books 兼容</span>
+      <span class="pill">✓ epubcheck 0 errors</span>
+    </div>
+  </header>
+
+  <!-- Upload -->
+  <div class="card">
+    <h2><span class="icon">📂</span> 上传文件</h2>
+    <div class="dropzone" id="dropzone">
+      <div class="drop-icon">📖</div>
+      <div class="drop-title">点击选择或拖放 EPUB 文件</div>
+      <div class="drop-hint" id="dropHint">仅支持 .epub，最大 20MB</div>
+      <input type="file" id="fileInput" accept=".epub" />
+    </div>
+
+    <!-- 诊断状态 -->
+    <div id="diagStatus"></div>
+
+    <!-- 诊断报告 -->
+    <div class="report-block" id="reportBlock">
+      <!-- 已修复 banner（无问题时显示） -->
+      <div class="ok-banner" id="okBanner" style="display:none">
+        <div class="ok-icon">✅</div>
+        <div class="ok-text">
+          <h3>文件格式正常</h3>
+          <p>未发现任何兼容性问题，该文件无需修复。</p>
+        </div>
+      </div>
+
+      <!-- 有问题时显示报告 -->
+        <div id="issueArea" style="display:none">
+          <div class="report-summary" id="reportSummary">
+            <div class="rs-left">
+              <span id="summaryBadge"></span>
+              <span id="summaryText"></span>
+            </div>
+            <span class="rs-meta" id="summaryMeta"></span>
+          </div>
+
+          <ul class="issue-list" id="issueList"></ul>
+
+          <div class="btn-row">
+            <button class="btn btn-primary" id="payBtn" disabled>
+              🔧 一键修复 <strong id="priceLabel" style="margin-left:6px;">¥5.99</strong>
+            </button>
+            <button class="btn btn-outline" id="resetBtn">重新上传</button>
+          </div>
+        </div>
+
+        <!-- 支付二维码 -->
+        <div class="pay-box" id="payBox">
+          <h3>扫码支付后自动开始修复</h3>
+          <div class="pay-price" id="payPrice">¥5.99 <span>/ 次</span></div>
+          <div class="qr-wrap">
+            <img id="qrImg" src="" alt="支付宝二维码" />
+            <div class="qr-hint">使用支付宝 App 扫码 · 支付完成后自动处理</div>
+          </div>
+          <ul class="pay-steps" style="margin-top:14px">
+            <li>支付成功后无需任何操作，系统自动修复</li>
+            <li>通常 5 秒内完成，完成后可直接下载</li>
+            <li>如有问题请刷新页面重新上传</li>
+          </ul>
+        </div>
+
+        <!-- 修复中状态 -->
+        <div id="fixStatus"></div>
+
+        <!-- 下载区 -->
+        <div id="downloadArea" style="display:none; margin-top:20px">
+          <div class="status-msg success">
+            <span>✅</span>
+            <span>修复完成！所有可修复的格式问题已处理。</span>
+          </div>
+          <div class="btn-row">
+            <a class="btn btn-success" id="downloadBtn" href="#">
+              ⬇︎ 下载修复后的 EPUB
+            </a>
+            <button class="btn btn-outline" id="resetBtn2">修复另一个文件</button>
+          </div>
+        </div>
+    </div>
+  </div>
+
+  <!-- 说明 -->
+  <div class="card" style="margin-top: 8px;">
+    <h2><span class="icon">🛠</span> 可修复的问题类型</h2>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left; padding:8px 10px; color:var(--muted); font-weight:600; width:100px;">错误码</th>
+          <th style="text-align:left; padding:8px 10px; color:var(--muted); font-weight:600;">说明</th>
+          <th style="text-align:left; padding:8px 10px; color:var(--muted); font-weight:600; width:80px;">修复支持</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:10px; font-family:monospace; font-size:12px; color:var(--muted);">PKG-006</td>
+          <td style="padding:10px;">mimetype 文件缺失或不是 ZIP 第一个条目（导致阅读器无法识别为 EPUB）</td>
+          <td style="padding:10px;"><span class="badge-ok">✓ 支持</span></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:10px; font-family:monospace; font-size:12px; color:var(--muted);">HTM-004</td>
+          <td style="padding:10px;">XHTML 文件使用旧版 DOCTYPE（XHTML 1.0/1.1），Apple Books / EPUB 3 不接受</td>
+          <td style="padding:10px;"><span class="badge-ok">✓ 支持</span></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:10px; font-family:monospace; font-size:12px; color:var(--muted);">RSC-005</td>
+          <td style="padding:10px;">OPF metadata 含非法 <code style="font-size:11px;background:var(--surface);padding:1px 4px;border-radius:3px;">xmlns=""</code> 属性，导致元数据解析失败</td>
+          <td style="padding:10px;"><span class="badge-ok">✓ 支持</span></td>
+        </tr>
+        <tr>
+          <td style="padding:10px; font-family:monospace; font-size:12px; color:var(--muted);">其他</td>
+          <td style="padding:10px;">内容损坏、加密保护、DRM 等结构性问题</td>
+          <td style="padding:10px;"><span class="badge-error">暂不支持</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<footer>
+  <p>
+    <a href="/">FixEpub</a> · <a href="/privacy.html">隐私政策</a> · <a href="/terms.html">服务条款</a>
+    &nbsp;|&nbsp; <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2026051457号-1</a>
+  </p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const diagStatus = document.getElementById('diagStatus');
+  const reportBlock = document.getElementById('reportBlock');
+  const okBanner = document.getElementById('okBanner');
+  const issueArea = document.getElementById('issueArea');
+  const summaryBadge = document.getElementById('summaryBadge');
+  const summaryText = document.getElementById('summaryText');
+  const summaryMeta = document.getElementById('summaryMeta');
+  const issueList = document.getElementById('issueList');
+  const payBtn = document.getElementById('payBtn');
+  const priceLabel = document.getElementById('priceLabel');
+  const payBox = document.getElementById('payBox');
+  const payPrice = document.getElementById('payPrice');
+  const qrImg = document.getElementById('qrImg');
+  const fixStatus = document.getElementById('fixStatus');
+  const downloadArea = document.getElementById('downloadArea');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const dropHint = document.getElementById('dropHint');
+
+  let currentJobId = null;
+  let pollTimer = null;
+
+  // ── Drag & drop ──────────────────────────────────────────────
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('active'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('active'));
+  dropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropzone.classList.remove('active');
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) handleFile(fileInput.files[0]);
+  });
+
+  function reset() {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    currentJobId = null;
+    reportBlock.classList.remove('visible');
+    okBanner.style.display = 'none';
+    issueArea.style.display = 'none';
+    payBox.classList.remove('visible');
+    downloadArea.style.display = 'none';
+    fixStatus.innerHTML = '';
+    diagStatus.innerHTML = '';
+    issueList.innerHTML = '';
+    payBtn.disabled = true;
+    fileInput.value = '';
+    dropHint.textContent = '仅支持 .epub，最大 20MB';
+  }
+
+  document.getElementById('resetBtn').addEventListener('click', reset);
+  document.getElementById('resetBtn2').addEventListener('click', reset);
+
+  // ── 上传 & 诊断 ────────────────────────────────────────────────
+  async function handleFile(file) {
+    if (!file.name.toLowerCase().endsWith('.epub')) {
+      showDiagStatus('error', '❌ 请选择 .epub 文件');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      showDiagStatus('error', '❌ 文件超过 20MB 限制');
+      return;
+    }
+
+    dropHint.textContent = file.name;
+    showDiagStatus('loading', '正在诊断文件格式…');
+    reportBlock.classList.remove('visible');
+    payBox.classList.remove('visible');
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const res = await fetch('/api/v2/repair/diagnose', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        showDiagStatus('error', '❌ 诊断失败：' + (d.detail || res.statusText));
+        return;
+      }
+      const data = await res.json();
+      currentJobId = data.job_id;
+      diagStatus.innerHTML = '';
+      if (data.price_cny) {
+        const _adminKey = localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key");
+        const _showPrice = _adminKey ? "0.01" : data.price_cny;
+        priceLabel.textContent = '¥' + _showPrice;
+        payPrice.innerHTML = '¥' + _showPrice + ' <span>/ 次</span>';
+      }
+      renderReport(data.report);
+    } catch (e) {
+      showDiagStatus('error', '❌ 网络错误，请重试');
+    }
+  }
+
+  function renderReport(report) {
+    reportBlock.classList.add('visible');
+    issueList.innerHTML = '';
+
+    if (report.total_issues === 0) {
+      okBanner.style.display = 'flex';
+      issueArea.style.display = 'none';
+      return;
+    }
+
+    okBanner.style.display = 'none';
+    issueArea.style.display = 'block';
+
+    if (report.fixable_count > 0 && report.unfixable_count === 0) {
+      summaryBadge.innerHTML = `<span class="badge-fixable">⚠ ${report.fixable_count} 个问题可修复</span>`;
+      summaryText.textContent = '以下问题将被自动修复';
+    } else if (report.unfixable_count > 0 && report.fixable_count === 0) {
+      summaryBadge.innerHTML = `<span class="badge-error">✗ ${report.unfixable_count} 个问题无法修复</span>`;
+      summaryText.textContent = '该文件存在无法自动修复的问题';
+    } else {
+      summaryBadge.innerHTML = `<span class="badge-fixable">⚠ ${report.total_issues} 个问题</span>`;
+      summaryText.textContent = `${report.fixable_count} 个可修复 · ${report.unfixable_count} 个无法修复`;
+    }
+    summaryMeta.textContent = `EPUB ${report.epub_version}`;
+
+    for (const issue of report.issues) {
+      const li = document.createElement('li');
+      li.className = 'issue-item ' + (issue.fixable ? 'fixable' : 'unfixable');
+      li.innerHTML = `
+        <span class="issue-icon">${issue.fixable ? '⚠' : '✗'}</span>
+        <div class="issue-body">
+          <span class="issue-code">${escHtml(issue.code)}</span>${escHtml(issue.message)}
+          ${issue.file ? `<div class="issue-file">${escHtml(issue.file)}</div>` : ''}
+        </div>
+      `;
+      issueList.appendChild(li);
+    }
+
+    payBtn.disabled = report.fixable_count === 0;
+  }
+
+  // ── 发起支付 ────────────────────────────────────────────────
+  payBtn.addEventListener('click', async () => {
+    if (!currentJobId) return;
+    payBtn.disabled = true;
+    payBtn.textContent = '正在生成支付码…';
+
+    try {
+      const _adminKey = localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key");
+      const _payForm = new FormData();
+      if (_adminKey) _payForm.append("admin_key", _adminKey);
+      const res = await fetch(`/api/v2/repair/${currentJobId}/pay`, { method: 'POST', body: _adminKey ? _payForm : undefined });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        showDiagStatus('error', '❌ 支付发起失败：' + (d.detail || res.statusText));
+        payBtn.disabled = false;
+        payBtn.innerHTML = `🔧 一键修复 <strong id="priceLabel" style="margin-left:6px;">${priceLabel.textContent}</strong>`;
+        return;
+      }
+      const data = await res.json();
+
+      if (data.status === 'repaired') {
+        // SKIP_PAYMENT_CHECK 模式
+        showDownloadReady(currentJobId);
+        return;
+      }
+
+      if (data.qr_code) {
+        // 用 qrcode.js 把字符串渲染成 base64 图片
+        const qrDataUrl = await QRCode.toDataURL(data.qr_code, { width: 200, margin: 1 });
+        qrImg.src = qrDataUrl;
+        payBox.classList.add('visible');
+        startPolling(currentJobId);
+      } else if (data.pay_url) {
+        payBox.classList.add('visible');
+        payBox.innerHTML = `
+          <h3>请完成支付宝付款</h3>
+          <div class="pay-price">${escHtml(payPrice.textContent || '¥5.99')}</div>
+          <div style="text-align:center; margin-top: 12px;">
+            <a href="${escHtml(data.pay_url)}" target="_blank" rel="noopener"
+               class="btn btn-primary" style="text-decoration:none;">前往支付宝付款</a>
+          </div>
+          <div class="qr-hint" style="margin-top:12px;">支付完成后本页会自动检测并开始修复，请不要关闭页面。</div>
+        `;
+        startPolling(currentJobId);
+      }
+    } catch (e) {
+      showDiagStatus('error', '❌ 网络错误，请重试');
+      payBtn.disabled = false;
+    }
+  });
+
+  // ── 轮询状态 ───────────────────────────────────────────────
+  function startPolling(jobId) {
+    fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>等待支付确认…</span></div>';
+    clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/v2/repair/${jobId}/status`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.status === 'paid') {
+          fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>支付成功，正在修复文件…</span></div>';
+        } else if (data.status === 'repaired') {
+          clearInterval(pollTimer);
+          payBox.classList.remove('visible');
+          showDownloadReady(jobId);
+        } else if (data.status === 'failed') {
+          clearInterval(pollTimer);
+          fixStatus.innerHTML = `<div class="status-msg error">❌ 修复失败：${escHtml(data.error || '未知错误')}</div>`;
+        }
+      } catch (e) { /* 网络抖动忽略 */ }
+    }, 3000);
+  }
+
+  function showDownloadReady(jobId) {
+    fixStatus.innerHTML = '';
+    downloadBtn.href = `/api/v2/repair/${jobId}/download`;
+    downloadArea.style.display = 'block';
+  }
+
+  // ── 工具函数 ──────────────────────────────────────────────
+  function showDiagStatus(type, msg) {
+    if (type === 'loading') {
+      diagStatus.innerHTML = `<div class="status-msg loading"><div class="spinner"></div><span>${escHtml(msg)}</span></div>`;
+    } else {
+      diagStatus.innerHTML = `<div class="status-msg ${type}">${escHtml(msg)}</div>`;
+    }
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  (function initFromQuery() {
+    const params = new URLSearchParams(location.search);
+    // 管理员测试模式：URL 带 admin_key 时存入 localStorage/sessionStorage
+    const adminKeyParam = params.get("admin_key");
+    if (adminKeyParam) {
+      sessionStorage.setItem("admin_key", adminKeyParam);
+      localStorage.setItem("admin_key", adminKeyParam);
+      params.delete("admin_key");
+      const newUrl = params.toString()
+        ? `${location.pathname}?${params.toString()}`
+        : location.pathname;
+      history.replaceState(null, "", newUrl);
+    }
+    const jobId = params.get('job_id');
+    if (!jobId) return;
+    currentJobId = jobId;
+    payBox.classList.add('visible');
+    fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>正在确认支付状态…</span></div>';
+    // 主动调一次 recover 兜底（webhook 没收到也能补救），再开始轮询。
+    fetch(`/api/v2/repair/${jobId}/recover`, { method: 'POST' })
+      .catch(() => null)
+      .finally(() => startPolling(jobId));
+  })();
+</script>
+</body>
+</html>

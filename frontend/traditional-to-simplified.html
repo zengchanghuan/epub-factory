@@ -41,7 +41,7 @@
   {
     "@context": "https://schema.org",
     "@type": "WebApplication",
-    "name": "EPUB Factory",
+    "name": "FixEpub",
     "url": "https://fixepub.com/",
     "description": "免费在线 EPUB 转换工具，支持繁简转换、Kindle/Apple Books 优化、AI 翻译",
     "applicationCategory": "UtilitiesApplication",
@@ -217,7 +217,7 @@
     .container {
       max-width: 680px;
       margin: 0 auto;
-      padding: 48px 24px 100px;
+      padding: 48px 24px 48px;
     }
 
     /* ── Header ──────────────────────────────────────────────────────────── */
@@ -752,7 +752,7 @@
 
     /* ── Responsive ──────────────────────────────────────────────────────── */
     @media (max-width: 640px) {
-      .container { padding: 32px 16px 80px; }
+      .container { padding: 32px 16px 40px; }
       header h1 { font-size: 24px; }
       .topbar { padding: 0 16px; }
     }
@@ -796,12 +796,12 @@
             <option value="traditional">横排繁体</option>
           </select>
         </div>
-        <div class="form-group" id="traditionalVariantGroup" style="display:none;">
-          <label>繁体来源 <span class="hint">（选简体时生效，用于繁→简转换）</span></label>
+        <div class="form-group" id="traditionalVariantGroup">
+          <label id="traditionalVariantLabel">繁体来源 <span class="hint">（用于繁→简转换）</span></label>
           <select id="traditionalVariant">
             <option value="auto">自动 / 通用</option>
-            <option value="tw">台湾繁体</option>
-            <option value="hk">香港繁体</option>
+            <option value="tw">台湾正体</option>
+            <option value="hk">港澳繁体</option>
           </select>
         </div>
         <div class="form-group">
@@ -982,7 +982,7 @@
     </div>
 
     <footer>
-      EPUB Factory &mdash; ExtremeCompiler Engine v2.0 &middot; EpubCheck 5.1.0
+      FixEpub &mdash; ExtremeCompiler Engine v2.0 &middot; EpubCheck 5.1.0
       &middot; <a href="/admin.html" target="_blank" rel="noopener" style="color:var(--muted);">后台 Token/费用统计</a>
     </footer>
   </div>
@@ -1307,7 +1307,11 @@
     });
 
     function syncTraditionalVariantVisibility() {
-      $("traditionalVariantGroup").style.display = $("outputMode").value === "simplified" ? "block" : "none";
+      const mode = $("outputMode").value;
+      $("traditionalVariantGroup").style.display = "block";
+      $("traditionalVariantLabel").innerHTML = mode === "simplified"
+        ? '繁体来源 <span class="hint">（用于繁→简：台湾 / 港澳词汇会转为大陆用语）</span>'
+        : '目标繁体版本 <span class="hint">（用于简→繁：输出通用繁体 / 台湾正体 / 港澳繁体）</span>';
     }
     $("outputMode").addEventListener("change", syncTraditionalVariantVisibility);
     syncTraditionalVariantVisibility();
@@ -1844,10 +1848,10 @@
   <!-- SEO 落地内容：FAQ + 功能说明（对用户可见，对搜索引擎友好） -->
   <section class="seo-section" aria-label="常见问题">
     <div class="container">
-      <h2 class="seo-title">关于 EPUB Factory 与 FixEpub 的技术优势</h2>
+      <h2 class="seo-title">关于 FixEpub 的技术优势</h2>
       <details class="faq-item">
-        <summary>EPUB Factory 是什么？它的核心竞争力在哪里？</summary>
-        <p>EPUB Factory (FixEpub) 是一款专注于电子书极致排版的免费在线工具。我们的核心优势在于自主研发的 <strong>ExtremeCompiler Engine v2.0</strong>，它能深度解析 EPUB 内部的 HTML/CSS 结构，并应用 <strong>Unicode 标准化 (Unicode Normalization)</strong>。无论是复杂的繁简转换，还是针对特定阅读器的 <strong>MOBI-KF8 转换</strong>，我们都能确保输出文件的代码纯净、兼容性极佳。</p>
+        <summary>FixEpub 是什么？它的核心竞争力在哪里？</summary>
+        <p>FixEpub 是一款专注于电子书极致排版的免费在线工具。我们的核心优势在于自主研发的 <strong>ExtremeCompiler Engine v2.0</strong>，它能深度解析 EPUB 内部的 HTML/CSS 结构，并应用 <strong>Unicode 标准化 (Unicode Normalization)</strong>。无论是复杂的繁简转换，还是针对特定阅读器的 <strong>MOBI-KF8 转换</strong>，我们都能确保输出文件的代码纯净、兼容性极佳。</p>
       </details>
       <details class="faq-item">
         <summary>如何将 EPUB 繁体转换为简体，并保持排版不乱？</summary>
@@ -2100,7 +2104,7 @@
 
     /* ── SEO section ── */
     .features-section {
-      padding: 60px 0 20px;
+      padding: 30px 0 20px;
       border-top: 1px solid var(--border);
       margin-top: 40px;
     }

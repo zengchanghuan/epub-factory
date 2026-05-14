@@ -25,10 +25,10 @@ class DeviceProfile(str, Enum):
 
 
 class TraditionalVariant(str, Enum):
-    """繁体来源，仅当 output_mode=simplified 时用于 OpenCC 繁→简配置。"""
-    auto = "auto"   # 通用 t2s
-    tw = "tw"      # 台湾 tw2s
-    hk = "hk"      # 香港 hk2s
+    """OpenCC 地区配置：简体输出时表示繁体来源，繁体输出时表示目标繁体版本。"""
+    auto = "auto"   # 通用：t2s / s2t
+    tw = "tw"      # 台湾：tw2s / s2tw
+    hk = "hk"      # 香港：hk2s / s2hk
 
 
 class ErrorCode(str, Enum):

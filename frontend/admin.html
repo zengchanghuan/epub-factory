@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>后台统计 · EPUB Factory</title>
+  <title>后台统计 · FixEpub</title>
   <meta name="robots" content="noindex, nofollow" />
   <style>
     :root { --bg:#1a1a1a; --card:#252525; --text:#e0e0e0; --muted:#888; --accent:#4a9eff; --border:#333; --error:#e57373; --warn:#ffb74d; --ok:#81c784; }
@@ -54,7 +54,7 @@
 <body>
   <!-- 管理员密钥 + 操作区 -->
   <div class="card">
-    <h1>EPUB Factory · 后台统计</h1>
+    <h1>FixEpub · 后台统计</h1>
     <div class="row-actions">
       <input type="password" id="adminKey" placeholder="管理员密钥（若已配置）" autocomplete="off" />
       <button id="loadBtn">刷新数据</button>
@@ -118,6 +118,7 @@
             <tr>
               <th>任务 ID</th><th>文件名</th><th>创建时间</th>
               <th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th>
+              <th class="num">缓存命中</th>
               <th class="num">费用 (USD)</th><th class="num">约合 (CNY)</th>
             </tr>
           </thead>
@@ -291,6 +292,10 @@
           document.getElementById("tokenTableCard").style.display = "block";
           data.by_job.forEach(function (row) {
             const cny = row.cost_usd != null ? (row.cost_usd * USD_TO_CNY).toFixed(4) : "";
+            const ratio = row.cache_hit_ratio != null ? (row.cache_hit_ratio * 100).toFixed(1) + "%" : "—";
+            const ratioStyle = row.cache_hit_ratio >= 0.5 ? "color:var(--ok);" : (row.cache_hit_ratio >= 0.2 ? "color:var(--warn);" : "");
+            const ratioCell = "<span style='" + ratioStyle + "'>" + ratio + "</span>"
+                            + (row.total_chunks ? "<br><span style='font-size:11px;color:var(--muted);'>" + (row.cached_chunks || 0) + " / " + row.total_chunks + "</span>" : "");
             const tr = document.createElement("tr");
             tr.innerHTML =
               "<td style='font-family:monospace;font-size:12px;'>" + (row.job_id || "") + "</td>" +
@@ -299,6 +304,7 @@
               "<td class=\"num\">" + (row.prompt_tokens || 0).toLocaleString() + "</td>" +
               "<td class=\"num\">" + (row.completion_tokens || 0).toLocaleString() + "</td>" +
               "<td class=\"num\">" + (row.total_tokens || 0).toLocaleString() + "</td>" +
+              "<td class=\"num\">" + ratioCell + "</td>" +
               "<td class=\"num\">" + (row.cost_usd != null ? "$" + row.cost_usd.toFixed(4) : "—") + "</td>" +
               "<td class=\"num\">" + (cny ? "¥" + cny : "—") + "</td>";
             tbody.appendChild(tr);
