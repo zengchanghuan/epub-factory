@@ -23,6 +23,7 @@ def build_celery_app() -> Celery:
             "app.tasks.job_pipeline",
             "app.tasks.translate",
             "app.tasks.reconcile",
+            "app.tasks.balance_check",
         ],
     )
 
@@ -43,7 +44,15 @@ def build_celery_app() -> Celery:
             "reconcile-payments-daily": {
                 "task": "jobs.reconcile_payments",
                 "schedule": crontab(hour=reconcile_hour, minute=reconcile_minute),
-                "options": {"expires": 3600},  # 若 beat 延迟超过 1h 则丢弃本次
+                "options": {"expires": 3600},
+            },
+            "check-balance-daily": {
+                "task": "infra.check_balance",
+                "schedule": crontab(
+                    hour=int(os.environ.get("BALANCE_CHECK_HOUR", "8")),
+                    minute=int(os.environ.get("BALANCE_CHECK_MINUTE", "0")),
+                ),
+                "options": {"expires": 3600},
             },
         },
     )
