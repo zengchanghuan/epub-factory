@@ -7,9 +7,14 @@
 
   <!-- SEO Meta -->
   <meta name="description" content="专业级 AI EPUB 电子书翻译与排版工具：一键获取极致双语对照、沉浸式译文、完美竖排转横排、繁简转换，以及针对 Kindle 和 Apple Books 的深度排版优化。" />
-  <meta name="keywords" content="EPUB翻译,AI翻译电子书,EPUB竖排转横排,EPUB繁简转换,Kindle排版优化,Apple Books优化,双语对照电子书,EPUB在线工具,英文书翻译中文" />
-  <meta name="author" content="FixEpub" />
-  <meta name="robots" content="index, follow" />
+  <meta name="keywords" content="EPUB翻译,AI翻译电子书,EPUB竖排转横排,EPUB繁简转换,Kindle排版优化,Apple Books优化,双语对照电子书,EPUB在线工具,英文书翻译中文,电子书格式转换,PDF转EPUB" />
+    <meta name="author" content="FixEpub" />
+    <meta name="baidu-site-verification" content="codeva-8TKfm9ozPI" />
+    <meta name="robots" content="index, follow" />
+  <!-- 百度及国内搜索引擎优化 -->
+  <meta name="applicable-device" content="pc,mobile" />
+  <meta http-equiv="Cache-Control" content="no-transform" />
+  <meta http-equiv="Cache-Control" content="no-siteapp" />
   <link rel="canonical" href="https://fixepub.com/" />
 
   <!-- Google tag (gtag.js) -->
@@ -19,6 +24,17 @@
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
     gtag('config', 'G-HYM7H4T3RG');
+  </script>
+
+  <!-- Baidu Analytics (百度统计) -->
+  <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?YOUR_BAIDU_TONGJI_ID"; // TODO: 请替换为实际的百度统计ID
+      var s = document.getElementsByTagName("script")[0]; 
+      s.parentNode.insertBefore(hm, s);
+    })();
   </script>
 
   <!-- Open Graph / 社交分享 -->
@@ -145,7 +161,8 @@
   }
   </script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    /* 使用国内镜像加速字体加载，避免 Google Fonts 在大陆被墙导致白屏 */
+    @import url('https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap');
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -835,6 +852,7 @@
     </div>
     <div style="flex:1"></div>
     <button id="suggestBtn" style="background:none; border:none; padding:8px; font-size:12px; color:var(--muted); cursor:pointer; font-weight:500; font-family:inherit;">功能建议</button>
+    <div id="authTopbarArea" style="margin-left:8px;"></div>
   </nav>
 
   <div class="container">
@@ -1848,7 +1866,7 @@
       <div class="guide-block">
         <h2 class="seo-title">如何转换您的电子书？</h2>
         <ol class="guide-steps">
-          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 20MB 以内）。</li>
+          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 60MB 以内）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
           <li><strong>下载使用：</strong>转换完成后，直接下载 EPUB 文件，导入 Apple Books、Kindle 或任意阅读器即可使用。</li>
@@ -1879,7 +1897,7 @@
       </details>
       <details class="faq-item">
         <summary>上传的文件安全吗？</summary>
-        <p>我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。单文件上限 20MB。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
+        <p>我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。单文件上限 60MB。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
       </details>
       <details class="faq-item">
         <summary>PDF 转 EPUB 的效果如何？</summary>
@@ -2034,5 +2052,44 @@
     .site-footer a { color: #9ca3af; text-decoration: none; }
     .site-footer a:hover { color: #fff; }
   </style>
+
+  <!-- 用户认证模块 -->
+  <script src="/auth.js"></script>
+  <script>
+    // 翻译任务登录门控：在 submitJob 之前检查是否已登录
+    document.addEventListener('DOMContentLoaded', () => {
+      const origSubmit = window._fixepubSubmitJob;
+
+      // 拦截翻译任务提交（覆盖全局 submitJob 引用，通过 enable_translation 检测）
+      const translateCheckbox = document.getElementById('enableTranslation') ||
+                                document.querySelector('[name="enable_translation"]') ||
+                                document.querySelector('#enableTranslation');
+
+      // 找到提交按钮并注入前置登录检查
+      function patchSubmitBtn() {
+        const submitBtn = document.getElementById('submitBtn');
+        if (!submitBtn || submitBtn._authPatched) return;
+        submitBtn._authPatched = true;
+
+        submitBtn.addEventListener('click', (e) => {
+          // 判断是否开启了翻译
+          const translationEnabled = translateCheckbox && translateCheckbox.checked;
+          if (!translationEnabled) return; // 纯格式转换，不拦截
+
+          if (window.fixepubAuth && !window.fixepubAuth.isLoggedIn()) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            window.fixepubAuth.openLoginModal((user) => {
+              // 登录成功后重新触发提交
+              setTimeout(() => { submitBtn.click(); }, 100);
+            });
+          }
+        }, true); // capture phase，在原有 click handler 之前
+      }
+
+      // 等待 DOM 完全 ready 后再 patch
+      setTimeout(patchSubmitBtn, 200);
+    });
+  </script>
 </body>
 </html>

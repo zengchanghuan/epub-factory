@@ -6,9 +6,13 @@
   <title>EPUB 格式修复 – 一键修复 Apple Books / Kindle 无法打开的 EPUB | FixEpub</title>
 
   <meta name="description" content="专业在线修复 EPUB 格式错误：Apple Books 无法打开、Kindle 显示异常、epubcheck 报错。自动检测并修复 DOCTYPE、mimetype、OPF 命名空间等常见问题。" />
-  <meta name="keywords" content="EPUB修复,EPUB格式错误,Apple Books打不开,Kindle EPUB异常,epubcheck修复,EPUB在线工具,epub repair" />
+  <meta name="keywords" content="EPUB修复,EPUB格式错误,Apple Books打不开,Kindle EPUB异常,epubcheck修复,EPUB在线工具,epub repair,电子书乱码修复,EPUB校验" />
   <meta name="author" content="FixEpub" />
   <meta name="robots" content="index, follow" />
+  <!-- 百度及国内搜索引擎优化 -->
+  <meta name="applicable-device" content="pc,mobile" />
+  <meta http-equiv="Cache-Control" content="no-transform" />
+  <meta http-equiv="Cache-Control" content="no-siteapp" />
   <link rel="canonical" href="https://fixepub.com/epub-repair.html" />
 
   <!-- Google tag (gtag.js) -->
@@ -20,6 +24,17 @@
     gtag('config', 'G-HYM7H4T3RG');
   </script>
 
+  <!-- Baidu Analytics (百度统计) -->
+  <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?YOUR_BAIDU_TONGJI_ID"; // TODO: 请替换为实际的百度统计ID
+      var s = document.getElementsByTagName("script")[0]; 
+      s.parentNode.insertBefore(hm, s);
+    })();
+  </script>
+
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://fixepub.com/epub-repair.html" />
   <meta property="og:title" content="EPUB 格式修复 – 专业在线修复工具 | FixEpub" />
@@ -27,7 +42,8 @@
   <meta property="og:site_name" content="FixEpub" />
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    /* 使用国内镜像加速字体加载，避免 Google Fonts 在大陆被墙导致白屏 */
+    @import url('https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap');
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -273,6 +289,7 @@
     <a href="/epub-repair.html" class="active">🔧 格式修复</a>
   </div>
   <div style="flex:1"></div>
+  <div id="authTopbarArea" style="margin-left:8px;"></div>
 </nav>
 
 <main class="container">
@@ -294,7 +311,7 @@
     <div class="dropzone" id="dropzone">
       <div class="drop-icon">📖</div>
       <div class="drop-title">点击选择或拖放 EPUB 文件</div>
-      <div class="drop-hint" id="dropHint">仅支持 .epub，最大 20MB</div>
+      <div class="drop-hint" id="dropHint">仅支持 .epub，最大 60MB</div>
       <input type="file" id="fileInput" accept=".epub" />
     </div>
 
@@ -463,7 +480,7 @@
     issueList.innerHTML = '';
     payBtn.disabled = true;
     fileInput.value = '';
-    dropHint.textContent = '仅支持 .epub，最大 20MB';
+    dropHint.textContent = '仅支持 .epub，最大 60MB';
   }
 
   document.getElementById('resetBtn').addEventListener('click', reset);
@@ -475,8 +492,8 @@
       showDiagStatus('error', '❌ 请选择 .epub 文件');
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      showDiagStatus('error', '❌ 文件超过 20MB 限制');
+    if (file.size > 60 * 1024 * 1024) {
+      showDiagStatus('error', '❌ 文件超过 60MB 限制');
       return;
     }
 
@@ -673,5 +690,8 @@
       .finally(() => startPolling(jobId));
   })();
 </script>
+
+<!-- 用户认证模块 -->
+<script src="/auth.js"></script>
 </body>
 </html>

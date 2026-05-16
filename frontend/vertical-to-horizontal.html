@@ -7,9 +7,13 @@
 
   <!-- SEO Meta -->
   <meta name="description" content="免费的 EPUB 竖排转横排转换器。一键将日文轻小说、台湾繁体书籍的竖排格式转化为符合手机/Kindle阅读习惯的横排格式，完美修复排版问题。" />
-  <meta name="keywords" content="EPUB竖排转横排, 竖排转横排, 电子书横排, epub排版修复, epubhv, 轻小说竖排转横排" />
+  <meta name="keywords" content="EPUB竖排转横排, 竖排转横排, 电子书横排, epub排版修复, epubhv, 轻小说竖排转横排, 电子书格式转换, Kindle排版" />
   <meta name="author" content="FixEpub" />
   <meta name="robots" content="index, follow" />
+  <!-- 百度及国内搜索引擎优化 -->
+  <meta name="applicable-device" content="pc,mobile" />
+  <meta http-equiv="Cache-Control" content="no-transform" />
+  <meta http-equiv="Cache-Control" content="no-siteapp" />
   <link rel="canonical" href="https://fixepub.com/vertical-to-horizontal.html" />
 
   <!-- Google tag (gtag.js) -->
@@ -19,6 +23,17 @@
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
     gtag('config', 'G-HYM7H4T3RG');
+  </script>
+
+  <!-- Baidu Analytics (百度统计) -->
+  <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?YOUR_BAIDU_TONGJI_ID"; // TODO: 请替换为实际的百度统计ID
+      var s = document.getElementsByTagName("script")[0]; 
+      s.parentNode.insertBefore(hm, s);
+    })();
   </script>
 
   <!-- Open Graph / 社交分享 -->
@@ -145,7 +160,8 @@
   }
   </script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    /* 使用国内镜像加速字体加载，避免 Google Fonts 在大陆被墙导致白屏 */
+    @import url('https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap');
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1836,7 +1852,7 @@
       <div class="guide-block">
         <h2 class="seo-title">如何转换您的电子书？</h2>
         <ol class="guide-steps">
-          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 20MB 以内）。</li>
+          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 60MB 以内）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
           <li><strong>预览结果与下载：</strong>转换完成后，您可以在线预览 <strong>可重排布局 (Reflowable Layout)</strong> 的实际效果，确认无误后点击下载。</li>
@@ -1867,7 +1883,7 @@
       </details>
       <details class="faq-item">
         <summary>免费版有哪些限制？文件安全吗？</summary>
-        <p>免费用户每天可转换 3 本电子书，单文件上限 20MB。我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
+        <p>单文件上限 60MB，可覆盖 95% 带插图电子书。我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
       </details>
       <details class="faq-item">
         <summary>PDF 转 EPUB 的效果如何？</summary>

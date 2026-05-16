@@ -31,6 +31,17 @@ def build_celery_app() -> Celery:
     reconcile_hour = int(os.environ.get("RECONCILE_CRON_HOUR", "2"))
     reconcile_minute = int(os.environ.get("RECONCILE_CRON_MINUTE", "0"))
 
+    # ── 资源约束（针对 2C2G/4G 小机型）─────────────────────────────────
+    # 1. worker_concurrency=1：单 worker 进程，防止两个翻译任务并发吃爆内存。
+    #    EPUB BS4 解析峰值可达 4× 文件大小，2GiB 内存机器并发 2 必 OOM。
+    # 2. task_time_limit / soft_time_limit：长翻译任务（>30min）硬超时兜底，
+    #    防止 Celery worker 被卡死、占住唯一并发位。soft 比 hard 早 5min 触发，
+    #    任务侧可以捕获 SoftTimeLimitExceeded 做优雅退出。
+    # 3. 升级到 4GiB+ 后，可通过环境变量把 CELERY_WORKER_CONCURRENCY 调到 2~4。
+    worker_concurrency = int(os.environ.get("CELERY_WORKER_CONCURRENCY", "1"))
+    task_time_limit = int(os.environ.get("CELERY_TASK_TIME_LIMIT", "1800"))
+    task_soft_time_limit = int(os.environ.get("CELERY_TASK_SOFT_TIME_LIMIT", "1500"))
+
     app.conf.update(
         task_serializer="json",
         result_serializer="json",
@@ -40,6 +51,9 @@ def build_celery_app() -> Celery:
         task_track_started=True,
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        worker_concurrency=worker_concurrency,
+        task_time_limit=task_time_limit,
+        task_soft_time_limit=task_soft_time_limit,
         beat_schedule={
             "reconcile-payments-daily": {
                 "task": "jobs.reconcile_payments",
