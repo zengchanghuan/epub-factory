@@ -114,6 +114,9 @@ class SemanticsTranslator:
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         self.model_fallbacks = self._parse_csv_env("OPENAI_MODEL_FALLBACKS")
+        # 模型白名单护栏：防止误用 deepseek-v4-pro 等高价模型导致成本失控
+        from app.infra.llm_guard import assert_models_allowed
+        assert_models_allowed([self.model, *self.model_fallbacks], context="translator")
         self.base_url_fallbacks = self._parse_csv_env("OPENAI_BASE_URL_FALLBACKS")
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
         self.semaphore = asyncio.Semaphore(max(1, env_concurrency))

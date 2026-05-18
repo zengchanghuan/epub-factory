@@ -269,6 +269,13 @@ async def translate_glossary(
     if not api_key or api_key == "dummy":
         logger.warning("OPENAI_API_KEY 未配置，跳过术语 LLM 翻译")
         return {}
+    # 模型白名单护栏：拒绝高价模型，命中则跳过术语抽取而非阻塞主流程
+    from app.infra.llm_guard import assert_model_allowed, ModelNotAllowedError
+    try:
+        assert_model_allowed(model, context="glossary")
+    except ModelNotAllowedError as exc:
+        logger.warning("glossary 跳过：%s", exc)
+        return {}
 
     client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0, timeout=60)
     merged: dict[str, str] = {}

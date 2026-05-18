@@ -103,7 +103,13 @@ class LLMPolisher:
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self._api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        # 与其他 LLM 模块保持一致：优先 DEEPSEEK_API_KEY，兜底 OPENAI_API_KEY
+        # （DeepSeek 走 OpenAI 兼容协议，整个项目复用同一把 key）
+        self._api_key = (
+            api_key
+            or os.environ.get("DEEPSEEK_API_KEY", "")
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
         self._risky_words: List[str] = LexiconMatcher.get_risky_words()
         self._risky_pattern: Optional[re.Pattern] = None
         if self._risky_words:
@@ -120,7 +126,15 @@ class LLMPolisher:
     def _call_deepseek(self, paragraph: str) -> Optional[str]:
         """调用 DeepSeek API 精校单段，失败返回 None。"""
         if not self._api_key:
-            logger.warning("L4: DEEPSEEK_API_KEY not set, skipping")
+            logger.warning("L4: DEEPSEEK_API_KEY / OPENAI_API_KEY not set, skipping")
+            return None
+
+        # 模型白名单护栏：禁止 deepseek-v4-pro 等高价模型
+        from app.infra.llm_guard import assert_model_allowed, ModelNotAllowedError
+        try:
+            assert_model_allowed(_DEEPSEEK_MODEL, context="polish")
+        except ModelNotAllowedError as exc:
+            logger.error("L4 skipped: %s", exc)
             return None
 
         try:
