@@ -111,6 +111,8 @@ def run_job(job_id: str) -> None:
             glossary=job.glossary or None,
             temperature=getattr(job, "temperature", None),
             traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
+            lexicon_domains=getattr(job, "lexicon_domains", None),
+            enable_proper_noun=getattr(job, "enable_proper_noun", True),
             progress_callback=on_progress,
             stage_callback=on_stage,
         )

@@ -24,14 +24,24 @@ class EpubConverter:
         glossary: dict | None = None,
         temperature: float | None = None,
         traditional_variant: str = "auto",
+        lexicon_domains: list | None = None,
+        enable_proper_noun: bool = True,
         progress_callback=None,
         stage_callback=None,
     ) -> ConversionResult:
         suffix = input_path.suffix.lower()
         if suffix == ".epub":
-            return self._convert_epub_to_horizontal(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, temperature, traditional_variant, progress_callback, stage_callback)
+            return self._convert_epub_to_horizontal(
+                input_path, output_path, output_mode, enable_translation, target_lang,
+                device, bilingual, glossary, temperature, traditional_variant,
+                lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
+            )
         if suffix == ".pdf":
-            return self._convert_pdf_to_horizontal_epub(input_path, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, temperature, traditional_variant, progress_callback, stage_callback)
+            return self._convert_pdf_to_horizontal_epub(
+                input_path, output_path, output_mode, enable_translation, target_lang,
+                device, bilingual, glossary, temperature, traditional_variant,
+                lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
+            )
         raise RuntimeError("Unsupported file type, only .epub or .pdf is allowed")
 
     def _convert_epub_to_horizontal(
@@ -46,9 +56,12 @@ class EpubConverter:
         glossary: dict | None = None,
         temperature: float | None = None,
         traditional_variant: str = "auto",
+        lexicon_domains: list | None = None,
+        enable_proper_noun: bool = True,
         progress_callback=None,
         stage_callback=None,
     ) -> ConversionResult:
+        from .models import LexiconStats
         compiler = ExtremeCompiler(
             input_path=str(input_path),
             output_path=str(output_path),
@@ -60,15 +73,35 @@ class EpubConverter:
             glossary=glossary,
             temperature=temperature,
             traditional_variant=traditional_variant,
+            lexicon_domains=lexicon_domains,
+            enable_proper_noun=enable_proper_noun,
             progress_callback=progress_callback,
             stage_callback=stage_callback,
         )
         success = compiler.run()
         if not success:
             raise RuntimeError(compiler.final_message or "ExtremeCompiler failed to convert EPUB")
+
+        # 从 CjkNormalizer 提取词典命中报告
+        lexicon_stats = LexiconStats.empty()
+        try:
+            lx_report = compiler._cjk_normalizer.get_report()
+            if lx_report:
+                lexicon_stats = LexiconStats(
+                    versions=lx_report.versions,
+                    total_replacements=lx_report.total_replacements,
+                    top_hits=[
+                        {"layer": h.layer, "tw": h.tw, "cn": h.cn, "count": h.count, "domain": h.domain}
+                        for h in lx_report.hits
+                    ],
+                )
+        except Exception:
+            pass
+
         return ConversionResult(
             quality_stats=compiler.job_stats,
             translation_stats=compiler.get_translation_stats(),
+            lexicon_stats=lexicon_stats,
             metrics_summary=compiler.metrics.summary(),
             message=compiler.final_message or "转换成功",
             error_code=compiler.error_code,
@@ -87,13 +120,19 @@ class EpubConverter:
         glossary: dict | None = None,
         temperature: float | None = None,
         traditional_variant: str = "auto",
+        lexicon_domains: list | None = None,
+        enable_proper_noun: bool = True,
         progress_callback=None,
         stage_callback=None,
     ) -> ConversionResult:
         temp_epub = Path(tempfile.mkdtemp(prefix="epub_factory_pdf_")) / "source.epub"
         try:
             self._pdf_to_epub(input_path, temp_epub)
-            return self._convert_epub_to_horizontal(temp_epub, output_path, output_mode, enable_translation, target_lang, device, bilingual, glossary, temperature, traditional_variant, progress_callback, stage_callback)
+            return self._convert_epub_to_horizontal(
+                temp_epub, output_path, output_mode, enable_translation, target_lang,
+                device, bilingual, glossary, temperature, traditional_variant,
+                lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
+            )
         finally:
             shutil.rmtree(temp_epub.parent, ignore_errors=True)
 

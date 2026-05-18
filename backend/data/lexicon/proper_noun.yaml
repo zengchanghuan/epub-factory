@@ -1,0 +1,88 @@
+version: "2026.05.18"
+license: "CC BY-SA (MediaWiki)"
+domain: "proper_noun"
+description: "人名/地名/机构/品牌专有名词，单独成层精细治理"
+entries:
+  # 政治人物
+  - {tw: "雷根", cn: "里根", type: person, note: "美国第40任总统 Ronald Reagan"}
+  - {tw: "柯林頓", cn: "克林顿", type: person, note: "美国第42任总统 Bill Clinton"}
+  - {tw: "歐巴馬", cn: "奥巴马", type: person, note: "美国第44任总统 Barack Obama"}
+  - {tw: "賓拉登", cn: "本·拉登", type: person, note: "基地组织首领"}
+  - {tw: "海珊", cn: "萨达姆·侯赛因", type: person, note: "伊拉克前总统"}
+  - {tw: "格達費", cn: "卡扎菲", type: person, note: "利比亚前领导人"}
+  - {tw: "查維茲", cn: "查韦斯", type: person, note: "委内瑞拉前总统"}
+  - {tw: "梅克爾", cn: "默克尔", type: person, note: "德国前总理 Angela Merkel"}
+  - {tw: "馬克宏", cn: "马克龙", type: person, note: "法国总统 Emmanuel Macron"}
+  - {tw: "強生", cn: "约翰逊", type: person, note: "英国前首相 Boris Johnson"}
+  - {tw: "普欽", cn: "普京", type: person, note: "俄罗斯总统 Vladimir Putin"}
+  - {tw: "澤倫斯基", cn: "泽连斯基", type: person, note: "乌克兰总统 Volodymyr Zelensky"}
+  # 科技人物
+  - {tw: "賈伯斯", cn: "乔布斯", type: person, note: "Apple 创始人 Steve Jobs"}
+  - {tw: "比爾蓋茲", cn: "比尔·盖茨", type: person, note: "Microsoft 创始人 Bill Gates"}
+  - {tw: "馬斯克", cn: "马斯克", type: person, note: "Tesla/SpaceX/X 创始人 Elon Musk"}
+  - {tw: "祖克柏", cn: "扎克伯格", type: person, note: "Meta 创始人 Mark Zuckerberg"}
+  - {tw: "貝佐斯", cn: "贝佐斯", type: person, note: "Amazon 创始人 Jeff Bezos"}
+  - {tw: "葛洛夫", cn: "格鲁夫", type: person, note: "Intel 前CEO Andy Grove"}
+  # 历史人物
+  - {tw: "甘迺迪", cn: "肯尼迪", type: person, note: "美国第35任总统 John F. Kennedy"}
+  - {tw: "尼克森", cn: "尼克松", type: person, note: "美国第37任总统 Richard Nixon"}
+  - {tw: "艾森豪", cn: "艾森豪威尔", type: person, note: "美国第34任总统 Dwight Eisenhower"}
+  - {tw: "邱吉爾", cn: "丘吉尔", type: person, note: "英国前首相 Winston Churchill"}
+  - {tw: "戴高樂", cn: "戴高乐", type: person, note: "法国前总统 Charles de Gaulle"}
+  - {tw: "希特勒", cn: "希特勒", type: person}
+  - {tw: "史達林", cn: "斯大林", type: person}
+  - {tw: "托洛斯基", cn: "托洛茨基", type: person}
+  - {tw: "甘地", cn: "甘地", type: person}
+  - {tw: "曼德拉", cn: "曼德拉", type: person}
+  # 地名
+  - {tw: "首爾", cn: "首尔", type: location, bidirectional: true}
+  - {tw: "漢城", cn: "首尔", type: location, note: "旧称，现已改名"}
+  - {tw: "釜山", cn: "釜山", type: location}
+  - {tw: "曼谷", cn: "曼谷", type: location}
+  - {tw: "吉隆坡", cn: "吉隆坡", type: location}
+  - {tw: "峇里島", cn: "巴厘岛", type: location}
+  - {tw: "雅加達", cn: "雅加达", type: location}
+  - {tw: "馬尼拉", cn: "马尼拉", type: location}
+  - {tw: "胡志明市", cn: "胡志明市", type: location}
+  - {tw: "孟買", cn: "孟买", type: location}
+  - {tw: "新德里", cn: "新德里", type: location}
+  - {tw: "開羅", cn: "开罗", type: location}
+  - {tw: "奈洛比", cn: "内罗毕", type: location}
+  - {tw: "聖保羅", cn: "圣保罗", type: location}
+  - {tw: "布宜諾斯艾利斯", cn: "布宜诺斯艾利斯", type: location}
+  - {tw: "溫哥華", cn: "温哥华", type: location}
+  - {tw: "多倫多", cn: "多伦多", type: location}
+  - {tw: "墨爾本", cn: "墨尔本", type: location}
+  - {tw: "雪梨", cn: "悉尼", type: location}
+  - {tw: "奧克蘭", cn: "奥克兰", type: location}
+  # 品牌/机构
+  - {tw: "微軟", cn: "微软", type: brand}
+  - {tw: "蘋果", cn: "苹果", type: brand, note: "指Apple公司时使用"}
+  - {tw: "亞馬遜", cn: "亚马逊", type: brand}
+  - {tw: "谷歌", cn: "谷歌", type: brand}
+  - {tw: "臉書", cn: "脸书", type: brand}
+  - {tw: "推特", cn: "推特", type: brand}
+  - {tw: "奔馳", cn: "奔驰", type: brand}
+  - {tw: "寶馬", cn: "宝马", type: brand}
+  - {tw: "保時捷", cn: "保时捷", type: brand}
+  - {tw: "福斯", cn: "大众", type: brand}
+  - {tw: "豐田", cn: "丰田", type: brand}
+  - {tw: "本田", cn: "本田", type: brand}
+  - {tw: "日產", cn: "日产", type: brand}
+  - {tw: "三星", cn: "三星", type: brand}
+  - {tw: "索尼", cn: "索尼", type: brand}
+  - {tw: "任天堂", cn: "任天堂", type: brand}
+  - {tw: "IKEA", cn: "宜家", type: brand}
+  - {tw: "麥當勞", cn: "麦当劳", type: brand}
+  - {tw: "星巴克", cn: "星巴克", type: brand}
+  - {tw: "可口可樂", cn: "可口可乐", type: brand}
+  - {tw: "百事可樂", cn: "百事可乐", type: brand}
+  # 组织/机构
+  - {tw: "聯合國", cn: "联合国", type: org}
+  - {tw: "世界衛生組織", cn: "世界卫生组织", type: org}
+  - {tw: "世界銀行", cn: "世界银行", type: org}
+  - {tw: "國際貨幣基金", cn: "国际货币基金组织", type: org}
+  - {tw: "北大西洋公約組織", cn: "北大西洋公约组织", type: org}
+  - {tw: "歐洲聯盟", cn: "欧盟", type: org}
+  - {tw: "美國聯邦調查局", cn: "美国联邦调查局", type: org}
+  - {tw: "中央情報局", cn: "中央情报局", type: org}

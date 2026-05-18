@@ -4,6 +4,20 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 
+@dataclass
+class User:
+    id: str
+    phone: Optional[str] = None
+    google_id: Optional[str] = None
+    wechat_openid: Optional[str] = None
+    wechat_unionid: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_active: bool = True
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_login_at: Optional[datetime] = None
+
+
 class JobStatus(str, Enum):
     pending_payment = "pending_payment"
     pending = "pending"
@@ -95,9 +109,29 @@ class QualityStats:
 
 
 @dataclass
+class LexiconStats:
+    """L2/L3 词典命中统计，随 ConversionResult 返回。"""
+    versions: Dict[str, str] = field(default_factory=dict)   # domain → version
+    total_replacements: int = 0
+    top_hits: list = field(default_factory=list)              # [{layer, tw, cn, count, domain}]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "versions": self.versions,
+            "total_replacements": self.total_replacements,
+            "top_hits": self.top_hits[:20],  # 最多返回 20 条
+        }
+
+    @classmethod
+    def empty(cls) -> "LexiconStats":
+        return cls()
+
+
+@dataclass
 class ConversionResult:
     quality_stats: QualityStats = field(default_factory=QualityStats)
     translation_stats: Dict[str, Any] = field(default_factory=dict)
+    lexicon_stats: LexiconStats = field(default_factory=LexiconStats)
     metrics_summary: str = ""
     message: str = ""
     error_code: Optional[str] = None
@@ -114,6 +148,7 @@ class Job:
     token_expires_at: Optional[datetime] = None  # access_token 过期时间，None 表示永久（兼容旧任务）
     creator_ip: str = ""
     creator_session: str = ""
+    user_id: Optional[str] = None  # 登录用户 ID，匿名任务为 None
     expected_amount: str = ""  # 下单时的应付金额（元），webhook 校验依据
     enable_translation: bool = False
     target_lang: str = "zh-CN"
@@ -123,6 +158,11 @@ class Job:
     output_path: Optional[str] = None
     temperature: Optional[float] = None
     traditional_variant: str = "auto"  # auto | tw | hk，仅简体输出时生效
+    lexicon_domains: list = field(default_factory=lambda: ["general", "tech", "movie"])
+    enable_proper_noun: bool = True
+    enable_precision_polish: bool = False   # L4 DeepSeek 精校开关
+    precision_polish_order_no: str = ""     # 对应支付宝订单号（开启 L4 时必填）
+    polish_char_count: int = 0              # 解析后的正文有效字数（用于阶梯计价）
     status: JobStatus = JobStatus.pending
     message: str = ""
     error_code: Optional[str] = None

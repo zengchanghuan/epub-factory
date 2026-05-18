@@ -27,6 +27,7 @@ from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_not
 from .job_runner import run_job
 from .models import DeviceProfile, Job, JobStatus, OutputMode, TraditionalVariant
 from .storage import job_store
+from .auth.deps import get_current_user_optional
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -515,6 +516,9 @@ logger = _build_logger()
 app = FastAPI(title="EPUB Factory API", version="0.1.0")
 init_alipay()
 
+from .auth.router import router as auth_router
+app.include_router(auth_router)
+
 _allowed_origins_raw = _os.environ.get("CORS_ALLOW_ORIGINS", "https://fixepub.com,https://www.fixepub.com")
 _allowed_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
 
@@ -708,6 +712,11 @@ async def create_job_v2(
     out_trade_no: Optional[str] = Form(None),
     temperature: Optional[float] = Form(None),
     admin_key: Optional[str] = Form(None),
+    # 繁简 v2 参数：词典域 + 精校开关
+    lexicon_domains_json: Optional[str] = Form(None),   # JSON 数组字符串，如 '["general","tech"]'
+    enable_proper_noun: bool = Form(True),
+    enable_precision_polish: bool = Form(False),         # L4 精校开关
+    polish_order_no: Optional[str] = Form(None),         # AI 精校支付宝订单号（开启 L4 时必填）
 ):
     """上传文件并创建后台任务，创建后立即返回（v2 契约）。temperature 不传时：翻译任务默认 1.3，纯格式转换不调用 LLM。"""
     import os as _os
@@ -742,6 +751,24 @@ async def create_job_v2(
     elif not enable_translation:
         temperature = None
 
+    # 解析 lexicon_domains
+    lexicon_domains = ["general", "tech", "movie"]
+    if lexicon_domains_json:
+        try:
+            parsed_domains = json.loads(lexicon_domains_json)
+            if isinstance(parsed_domains, list):
+                lexicon_domains = [str(d) for d in parsed_domains]
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="lexicon_domains_json 格式错误，应为 JSON 数组字符串")
+
+    # 翻译任务需要登录（免费格式转换匿名可用）
+    current_user = get_current_user_optional(request)
+    if enable_translation and not _skip_payment and not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="翻译功能需要登录后使用，请先完成登录",
+        )
+
     if enable_translation and not _skip_payment and out_trade_no:
         raise HTTPException(status_code=400, detail="不允许客户端自带订单号")
 
@@ -761,7 +788,7 @@ async def create_job_v2(
             rate_limiter.reset_ip(client_ip)
         raise HTTPException(
             status_code=413,
-            detail=f"文件过大（约 {declared_len // 1024 // 1024}MB），免费转换最大支持 {MAX_FILE_SIZE_MB}MB。",
+            detail=f"文件过大（约 {declared_len // 1024 // 1024}MB），单文件最大支持 {MAX_FILE_SIZE_MB}MB。",
         )
 
     # ── 写盘 + 流式大小校验：边读边数，超阈值立刻中断 ─────────────────
@@ -865,6 +892,11 @@ async def create_job_v2(
         device=device,
         temperature=temperature,
         traditional_variant=traditional_variant.value,
+        lexicon_domains=lexicon_domains,
+        enable_proper_noun=enable_proper_noun,
+        enable_precision_polish=enable_precision_polish,
+        precision_polish_order_no=polish_order_no or "",
+        user_id=current_user.id if current_user else None,
         status=job_status,
     )
     job_store.add(job)
@@ -897,18 +929,71 @@ async def create_job_v2(
     }
 
 
+@app.post("/api/v2/estimate-polish")
+async def estimate_polish_price(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    上传 EPUB 文件，解析正文有效字数并返回 AI 精校报价。
+    前端在用户勾选「AI 精校」时调用此接口，支付前先告知费用。
+    文件仅用于解析字数，不落盘保存。
+    """
+    from .engine.cleaners.llm_polish import count_effective_chars, calculate_polish_price
+    import tempfile
+
+    if not (file.filename and file.filename.lower().endswith(".epub")):
+        raise HTTPException(status_code=400, detail="AI 精校仅支持 .epub 文件")
+
+    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+        tmp_path = tmp.name
+        content = await file.read()
+        tmp.write(content)
+
+    try:
+        char_count = count_effective_chars(tmp_path)
+        price = calculate_polish_price(char_count)
+    finally:
+        import os as _os
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    return {
+        "char_count": char_count,
+        "price_cny": f"{price:.2f}",
+        "tier": _get_polish_tier_label(char_count),
+    }
+
+
+def _get_polish_tier_label(char_count: int) -> str:
+    if char_count <= 150_000:
+        return "≤15万字"
+    if char_count <= 300_000:
+        return "15-30万字"
+    if char_count <= 600_000:
+        return "30-60万字"
+    if char_count <= 1_000_000:
+        return "60-100万字"
+    return ">100万字"
+
+
 @app.get("/api/v2/jobs")
 def list_jobs_v2(request: Request, limit: int = 100):
-    """获取任务中心列表（v2）。"""
+    """获取任务中心列表（v2）：登录用户按 user_id 查，匿名用户按 session/IP 查。"""
+    current_user = get_current_user_optional(request)
+    user_list_fn = getattr(job_store, "list_jobs_by_user_id", None)
     session_list_fn = getattr(job_store, "list_jobs_by_creator_session", None)
     ip_list_fn = getattr(job_store, "list_jobs_by_creator_ip", None)
     all_list_fn = getattr(job_store, "list_jobs", None)
-    list_fn = session_list_fn or ip_list_fn or all_list_fn
-    if not list_fn:
+    if not (user_list_fn or session_list_fn or ip_list_fn or all_list_fn):
         return {"items": []}
     client_ip = get_real_ip(request)
     client_session = _get_client_session(request)
-    if session_list_fn and client_session:
+    if current_user and user_list_fn:
+        jobs = user_list_fn(current_user.id, limit=limit)
+    elif session_list_fn and client_session:
         jobs = session_list_fn(client_session, limit=limit)
     elif ip_list_fn:
         jobs = ip_list_fn(client_ip, limit=limit)

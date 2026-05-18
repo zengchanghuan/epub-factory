@@ -32,6 +32,7 @@ from .models import (
     OutputMode,
     QualityStats,
     StageStatus,
+    User,
 )
 
 
@@ -39,6 +40,21 @@ from .models import (
 
 class Base(DeclarativeBase):
     pass
+
+
+class UserRecord(Base):
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True)  # UUID
+    phone = Column(String(20), unique=True, nullable=True, index=True)
+    google_id = Column(String(255), unique=True, nullable=True, index=True)
+    wechat_openid = Column(String(128), unique=True, nullable=True, index=True)
+    wechat_unionid = Column(String(128), nullable=True, index=True)
+    display_name = Column(String(128), nullable=True)
+    avatar_url = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class JobRecord(Base):
@@ -66,6 +82,14 @@ class JobRecord(Base):
     translation_stats_json = Column(Text, nullable=True)
     metrics_summary = Column(Text, nullable=True)
     traditional_variant = Column(String(16), nullable=True)  # auto | tw | hk
+    lexicon_domains = Column(Text, nullable=True)             # JSON 数组，如 ["general","tech"]
+    enable_proper_noun = Column(Boolean, nullable=False, default=True)
+    lexicon_versions = Column(Text, nullable=True)            # JSON dict，词典版本快照
+    enable_precision_polish = Column(Boolean, nullable=False, default=False)
+    precision_polish_order_no = Column(String(64), nullable=True)
+    precision_polish_status = Column(String(32), nullable=True, default="not_used")
+    polish_char_count = Column(String(16), nullable=True, default="0")
+    user_id = Column(String(36), nullable=True, index=True)   # 关联到 users.id，匿名任务为 NULL
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
@@ -181,6 +205,22 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN expected_amount VARCHAR(16)")
     if "token_expires_at" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN token_expires_at DATETIME")
+    if "user_id" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN user_id VARCHAR(36)")
+    if "lexicon_domains" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN lexicon_domains TEXT")
+    if "enable_proper_noun" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN enable_proper_noun BOOLEAN DEFAULT 1")
+    if "lexicon_versions" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN lexicon_versions TEXT")
+    if "enable_precision_polish" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN enable_precision_polish BOOLEAN DEFAULT 0")
+    if "precision_polish_order_no" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN precision_polish_order_no VARCHAR(64)")
+    if "precision_polish_status" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN precision_polish_status VARCHAR(32) DEFAULT 'not_used'")
+    if "polish_char_count" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN polish_char_count VARCHAR(16) DEFAULT '0'")
     if not migrations:
         return
     with engine.begin() as conn:
@@ -206,6 +246,14 @@ def _record_to_job(r: JobRecord) -> Job:
         except Exception:
             translation_stats = {}
 
+    lexicon_domains = ["general", "tech", "movie"]
+    raw_domains = getattr(r, "lexicon_domains", None)
+    if raw_domains:
+        try:
+            lexicon_domains = json.loads(raw_domains)
+        except Exception:
+            pass
+
     return Job(
         id=r.id,
         trace_id=r.trace_id,
@@ -224,6 +272,12 @@ def _record_to_job(r: JobRecord) -> Job:
         device=DeviceProfile(r.device),
         temperature=None,
         traditional_variant=getattr(r, "traditional_variant", None) or "auto",
+        lexicon_domains=lexicon_domains,
+        enable_proper_noun=bool(getattr(r, "enable_proper_noun", True)),
+        enable_precision_polish=bool(getattr(r, "enable_precision_polish", False)),
+        precision_polish_order_no=getattr(r, "precision_polish_order_no", None) or "",
+        polish_char_count=int(getattr(r, "polish_char_count", None) or 0),
+        user_id=getattr(r, "user_id", None),
         status=JobStatus(r.status),
         message=r.message or "",
         error_code=r.error_code,
@@ -384,6 +438,36 @@ def _notification_to_record(notification: JobNotification) -> NotificationRecord
         created_at=notification.created_at,
     )
 
+def _record_to_user(r: UserRecord) -> User:
+    return User(
+        id=r.id,
+        phone=r.phone,
+        google_id=r.google_id,
+        wechat_openid=r.wechat_openid,
+        wechat_unionid=r.wechat_unionid,
+        display_name=r.display_name,
+        avatar_url=r.avatar_url,
+        is_active=r.is_active,
+        created_at=r.created_at,
+        last_login_at=r.last_login_at,
+    )
+
+
+def _user_to_record(user: User) -> UserRecord:
+    return UserRecord(
+        id=user.id,
+        phone=user.phone,
+        google_id=user.google_id,
+        wechat_openid=user.wechat_openid,
+        wechat_unionid=user.wechat_unionid,
+        display_name=user.display_name,
+        avatar_url=user.avatar_url,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login_at=user.last_login_at,
+    )
+
+
 def _job_to_record(job: Job) -> JobRecord:
     import json
     return JobRecord(
@@ -409,6 +493,13 @@ def _job_to_record(job: Job) -> JobRecord:
         translation_stats_json=json.dumps(job.translation_stats or {}),
         metrics_summary=job.metrics_summary or "",
         traditional_variant=getattr(job, "traditional_variant", None) or "auto",
+        lexicon_domains=json.dumps(getattr(job, "lexicon_domains", ["general", "tech", "movie"])),
+        enable_proper_noun=bool(getattr(job, "enable_proper_noun", True)),
+        enable_precision_polish=bool(getattr(job, "enable_precision_polish", False)),
+        precision_polish_order_no=getattr(job, "precision_polish_order_no", None) or None,
+        precision_polish_status="not_used",
+        polish_char_count=str(getattr(job, "polish_char_count", 0) or 0),
+        user_id=getattr(job, "user_id", None),
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
@@ -654,3 +745,79 @@ class PersistentJobStore:
                 query = query.filter_by(job_id=job_id)
             rows = query.order_by(NotificationRecord.created_at).all()
             return [_record_to_notification(r) for r in rows]
+
+    def list_jobs_by_user_id(self, user_id: str, limit: int = 100) -> list:
+        with self._Session() as session:
+            from sqlalchemy import desc
+            rows = (
+                session.query(JobRecord)
+                .filter_by(user_id=user_id)
+                .order_by(desc(JobRecord.created_at))
+                .limit(limit)
+                .all()
+            )
+            return [_record_to_job(r) for r in rows]
+
+    def claim_jobs_by_session(self, creator_session: str, user_id: str) -> int:
+        """将指定 session 下所有未归属的匿名任务批量绑定到 user_id，返回影响行数。"""
+        from sqlalchemy import update, and_
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(
+                    and_(
+                        JobRecord.creator_session == creator_session,
+                        JobRecord.user_id == None,  # noqa: E711
+                    )
+                )
+                .values(user_id=user_id, updated_at=datetime.now(timezone.utc))
+            )
+            session.commit()
+            return result.rowcount or 0
+
+    # ─── 用户账户 CRUD ─────────────────────────────────────────────────────────
+
+    def get_user(self, user_id: str) -> Optional[User]:
+        with self._Session() as session:
+            r = session.get(UserRecord, user_id)
+            return _record_to_user(r) if r else None
+
+    def get_user_by_phone(self, phone: str) -> Optional[User]:
+        with self._Session() as session:
+            r = session.query(UserRecord).filter_by(phone=phone).first()
+            return _record_to_user(r) if r else None
+
+    def get_user_by_google_id(self, google_id: str) -> Optional[User]:
+        with self._Session() as session:
+            r = session.query(UserRecord).filter_by(google_id=google_id).first()
+            return _record_to_user(r) if r else None
+
+    def get_user_by_wechat_openid(self, openid: str) -> Optional[User]:
+        with self._Session() as session:
+            r = session.query(UserRecord).filter_by(wechat_openid=openid).first()
+            return _record_to_user(r) if r else None
+
+    def create_user(self, user: User) -> User:
+        with self._Session() as session:
+            record = _user_to_record(user)
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return _record_to_user(record)
+
+    def update_user(self, user: User) -> User:
+        with self._Session() as session:
+            r = session.get(UserRecord, user.id)
+            if not r:
+                raise ValueError(f"User {user.id} not found")
+            r.phone = user.phone
+            r.google_id = user.google_id
+            r.wechat_openid = user.wechat_openid
+            r.wechat_unionid = user.wechat_unionid
+            r.display_name = user.display_name
+            r.avatar_url = user.avatar_url
+            r.is_active = user.is_active
+            r.last_login_at = user.last_login_at
+            session.commit()
+            session.refresh(r)
+            return _record_to_user(r)

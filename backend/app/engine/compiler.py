@@ -62,6 +62,8 @@ class ExtremeCompiler:
                  device: str = "generic", bilingual: bool = False,
                  glossary: dict | None = None, temperature: float | None = None,
                  traditional_variant: str = "auto",
+                 lexicon_domains: list | None = None,
+                 enable_proper_noun: bool = True,
                  progress_callback=None, stage_callback=None):
         self.input_path = input_path
         self.output_path = output_path
@@ -81,9 +83,17 @@ class ExtremeCompiler:
         from app.models import QualityStats, ErrorCode  # noqa: F401 – ErrorCode 供下方使用
         self.job_stats = QualityStats()
         self._ErrorCode = ErrorCode
-        
+
+        _lexicon_domains = lexicon_domains if lexicon_domains is not None else ["general", "tech", "movie"]
+        self._cjk_normalizer = CjkNormalizer(
+            output_mode=self.output_mode,
+            traditional_variant=self.traditional_variant,
+            lexicon_domains=_lexicon_domains,
+            enable_proper_noun=enable_proper_noun,
+        )
+
         self.cleaners = [
-            CjkNormalizer(output_mode=self.output_mode, traditional_variant=self.traditional_variant),
+            self._cjk_normalizer,
             CssSanitizer(),
             TypographyEnhancer(),
             StemGuard(),
