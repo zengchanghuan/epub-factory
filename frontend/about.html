@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>关于我们 – FixEpub | 深圳市长欢文化艺术有限公司</title>
+  <meta name="description" content="FixEpub 由深圳市长欢文化艺术有限公司运营，专注于为全球读者提供专业的电子书格式转换与 AI 智能翻译服务。" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://fixepub.com/about.html" />
+  <style>
+    @import url('https://fonts.loli.net/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #ffffff;
+      --card: #ffffff;
+      --surface: #f7f7f7;
+      --border: #e8e8e8;
+      --border-strong: #d0d0d0;
+      --text: #0f0f0f;
+      --muted: #737373;
+      --subtle: #a3a3a3;
+      --primary: #0f0f0f;
+      --primary-hover: #333333;
+      --accent: #0066ff;
+      --radius: 10px;
+      --radius-sm: 6px;
+    }
+
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 顶部品牌栏 */
+    .topbar {
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+    }
+    .topbar-logo {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+      text-decoration: none;
+    }
+    .topbar-divider {
+      width: 1px;
+      height: 18px;
+      background: var(--border-strong);
+      margin: 0 6px;
+      flex-shrink: 0;
+    }
+    .topbar-nav {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .topbar-nav a {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 5px 10px;
+      border-radius: var(--radius-sm);
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .topbar-nav a:hover { background: var(--surface); color: var(--text); }
+    .topbar-nav a.active { background: var(--text); color: #fff; }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 24px 64px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.6px;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 15px;
+      color: var(--muted);
+      margin-bottom: 40px;
+    }
+
+    /* 信息卡片 */
+    .info-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      margin-bottom: 20px;
+      background: var(--card);
+    }
+    .info-card h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 公司信息表格 */
+    .company-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .company-table tr {
+      border-bottom: 1px solid var(--border);
+    }
+    .company-table tr:last-child {
+      border-bottom: none;
+    }
+    .company-table td {
+      padding: 12px 0;
+      font-size: 14px;
+      vertical-align: top;
+    }
+    .company-table td:first-child {
+      color: var(--muted);
+      font-weight: 500;
+      width: 120px;
+      flex-shrink: 0;
+      padding-right: 16px;
+    }
+    .company-table td:last-child {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    /* 业务说明段落 */
+    .business-desc p {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.8;
+      margin-bottom: 12px;
+    }
+    .business-desc p:last-child { margin-bottom: 0; }
+
+    /* AI 声明 */
+    .ai-declaration {
+      background: #f0f4ff;
+      border: 1px solid #c7d7ff;
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .ai-declaration h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #1d4ed8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 14px;
+    }
+    .ai-declaration p {
+      font-size: 14px;
+      color: #1e3a8a;
+      line-height: 1.8;
+      margin-bottom: 10px;
+    }
+    .ai-declaration p:last-child { margin-bottom: 0; }
+    .ai-declaration a { color: #1d4ed8; }
+
+    /* 联系方式 */
+    .contact-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .contact-row:last-child { border-bottom: none; }
+    .contact-label { color: var(--muted); font-weight: 500; width: 80px; }
+    .contact-value { color: var(--text); font-weight: 500; }
+    .contact-value a { color: var(--accent); text-decoration: none; }
+    .contact-value a:hover { text-decoration: underline; }
+
+    /* 页脚 */
+    .site-footer {
+      background: var(--text);
+      color: #9ca3af;
+      text-align: center;
+      padding: 28px 0;
+      font-size: 12px;
+      margin-top: 40px;
+      line-height: 2;
+    }
+    .site-footer a { color: #9ca3af; text-decoration: none; }
+    .site-footer a:hover { color: #fff; }
+    .site-footer .footer-company {
+      font-size: 13px;
+      color: #d1d5db;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .site-footer .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    @media (max-width: 640px) {
+      .container { padding: 32px 16px 48px; }
+      .info-card { padding: 20px; }
+      .company-table td:first-child { width: 90px; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="topbar">
+    <a class="topbar-logo" href="/">FixEpub</a>
+    <div class="topbar-divider"></div>
+    <div class="topbar-nav">
+      <a href="/">✦ 转换 &amp; 翻译</a>
+      <a href="/epub-repair.html">🔧 格式修复</a>
+      <a href="/about.html" class="active">关于我们</a>
+    </div>
+  </nav>
+
+  <div class="container">
+    <h1>关于我们</h1>
+    <p class="subtitle">FixEpub 致力于为全球读者提供专业的电子书格式转换与 AI 智能翻译服务</p>
+
+    <!-- 公司基本信息 -->
+    <div class="info-card">
+      <h2>🏢 公司信息</h2>
+      <table class="company-table">
+        <tr>
+          <td>公司名称</td>
+          <td>深圳市长欢文化艺术有限公司</td>
+        </tr>
+        <tr>
+          <td>经营品牌</td>
+          <td>FixEpub（fixepub.com）</td>
+        </tr>
+        <tr>
+          <td>注册地区</td>
+          <td>中国广东省深圳市</td>
+        </tr>
+        <tr>
+          <td>办公地址</td>
+          <td>深圳市宝安区西乡街道固兴社区宝安大道4676号红利大厦606</td>
+        </tr>
+        <tr>
+          <td>联系电话</td>
+          <td><a href="tel:13691722710">13691722710</a></td>
+        </tr>
+        <tr>
+          <td>联系邮箱</td>
+          <td><a href="mailto:support@fixepub.com">support@fixepub.com</a></td>
+        </tr>
+        <tr>
+          <td>ICP 备案</td>
+          <td><a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">粤ICP备2026051457号-1</a></td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- 业务简介 -->
+    <div class="info-card">
+      <h2>📖 业务简介</h2>
+      <div class="business-desc">
+        <p>深圳市长欢文化艺术有限公司旗下运营 FixEpub（fixepub.com）平台，专注于为全球读者、自出版作者及数字出版从业者提供专业的电子书格式转换与 AI 智能翻译服务。</p>
+        <p>公司核心业务包括：</p>
+        <p>
+          <strong>① 电子书格式转换与排版优化</strong>：支持 EPUB、PDF、MOBI、AZW3 等主流电子书格式的在线转换，提供繁简转换（繁体中文 ↔ 简体中文）、竖排转横排、Kindle 墨水屏排版优化、Apple Books 适配优化等专业服务，确保电子书在各类阅读器上呈现最佳排版效果。
+        </p>
+        <p>
+          <strong>② AI 智能电子书翻译</strong>：基于大语言模型（LLM）技术，为用户提供高质量的英文电子书中文翻译服务，支持双语对照、沉浸式译文等多种输出模式，适用于学术阅读、文学欣赏及专业研究等场景。
+        </p>
+        <p>公司服务的用户覆盖中国大陆、港澳台及海外华人社区，致力于打破语言与格式壁垒，让每一位读者都能无障碍享受优质的电子书阅读体验。</p>
+      </div>
+    </div>
+
+    <!-- AI 技术声明 -->
+    <div class="ai-declaration">
+      <h2>🤖 AI 技术与算法声明</h2>
+      <p>
+        FixEpub 平台的 AI 翻译功能（包括电子书英译中、双语对照生成等）均通过调用
+        <strong>北京深度求索人工智能基础技术研究有限公司（DeepSeek）</strong> 开放平台 API 实现，未自研、未微调任何大语言模型。
+      </p>
+      <p>
+        公司不自行研发、训练或部署大语言模型，亦不对模型权重进行修改；推理在 DeepSeek 服务器端完成，本公司仅为 API 调用方。
+      </p>
+      <p>
+        <strong>所调用算法备案编号：</strong>网信算备110108970550101240011号（DeepSeek 大语言模型算法）<br />
+        <strong>所调用大模型备案号：</strong>Beijing-DeepseekChat-202404280016（求索对话 DeepSeek Chat）
+      </p>
+      <p>
+        调用依据：注册 DeepSeek 开放平台（<a href="https://platform.deepseek.com" target="_blank" rel="noopener">platform.deepseek.com</a>）并同意
+        <a href="https://cdn.deepseek.com/policies/zh-CN/deepseek-open-platform-terms-of-service.html" target="_blank" rel="noopener">《DeepSeek 开放平台服务协议》</a>。
+        本公司严格遵守《生成式人工智能服务管理暂行办法》《互联网信息服务深度合成管理规定》等相关法规。
+      </p>
+    </div>
+
+    <!-- 联系我们 -->
+    <div class="info-card">
+      <h2>📬 联系我们</h2>
+      <div class="contact-row">
+        <span class="contact-label">客服电话</span>
+        <span class="contact-value"><a href="tel:13691722710">13691722710</a>（工作日 9:00–18:00）</span>
+      </div>
+      <div class="contact-row">
+        <span class="contact-label">客服邮箱</span>
+        <span class="contact-value"><a href="mailto:support@fixepub.com">support@fixepub.com</a></span>
+      </div>
+      <div class="contact-row">
+        <span class="contact-label">办公地址</span>
+        <span class="contact-value">深圳市宝安区西乡街道固兴社区宝安大道4676号红利大厦606室</span>
+      </div>
+    </div>
+
+  </div>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-company">深圳市长欢文化艺术有限公司</div>
+      <div>深圳市宝安区西乡街道固兴社区宝安大道4676号红利大厦606 &nbsp;|&nbsp; 电话：13691722710</div>
+      <div style="margin-top: 6px;">
+        © 2026 <a href="/">FixEpub.com</a> · EPUB 转换与 AI 翻译工具 ·
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">粤ICP备2026051457号-1</a>
+      </div>
+      <div class="footer-links">
+        <a href="/">首页</a>
+        <a href="/privacy.html">隐私政策</a>
+        <a href="/terms.html">服务条款</a>
+        <a href="/refund.html">退款政策</a>
+        <a href="/about.html">关于我们</a>
+        <a href="/contact.html">联系我们</a>
+        <a href="/privacy-en.html">English</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
