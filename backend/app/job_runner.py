@@ -50,6 +50,35 @@ def _build_output_suffix(job) -> str:
     return "_".join(parts)
 
 
+def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditional_variant: str) -> str:
+    """
+    根据输出模式对文件名主体做繁简转换，保证下载文件名与正文方向一致。
+
+    - simplified: t2s / tw2s / hk2s
+    - traditional: s2t / s2tw / s2hk
+    """
+    if not stem:
+        return stem
+
+    variant = (traditional_variant or "auto").lower()
+    simplified_profiles = {"auto": "t2s", "tw": "tw2s", "hk": "hk2s"}
+    traditional_profiles = {"auto": "s2t", "tw": "s2tw", "hk": "s2hk"}
+
+    if output_mode == OutputMode.simplified:
+        profile = simplified_profiles.get(variant, "t2s")
+    elif output_mode == OutputMode.traditional:
+        profile = traditional_profiles.get(variant, "s2t")
+    else:
+        return stem
+
+    try:
+        from opencc import OpenCC
+        return OpenCC(profile).convert(stem)
+    except Exception as exc:
+        logger.warning("filename stem convert failed, fallback to original: %s", exc)
+        return stem
+
+
 def run_job(job_id: str) -> None:
     """从 store 加载 job 并执行整本转换，更新状态与输出路径。"""
     job = job_store.get(job_id)
@@ -60,7 +89,12 @@ def run_job(job_id: str) -> None:
     logger.info("job started", extra={"trace_id": job.trace_id, "job_id": job.id})
     job_store.update_status(job.id, JobStatus.running, "开始转换")
     try:
-        source_name = Path(job.source_filename).stem
+        source_name_raw = Path(job.source_filename).stem
+        source_name = _convert_filename_stem_for_mode(
+            source_name_raw,
+            job.output_mode,
+            getattr(job, "traditional_variant", "auto") or "auto",
+        )
         suffix = _build_output_suffix(job)
         output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
 

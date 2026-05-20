@@ -97,7 +97,7 @@ function mapV2StatusText(v2Status) {
  * @returns {string}
  */
 function formatDevice(device) {
-  const map = { generic: "通用", kindle: "Kindle", apple: "Apple Books" };
+  const map = { generic: "自动", kindle: "Kindle", apple: "Apple Books" };
   return map[device] || device;
 }
 

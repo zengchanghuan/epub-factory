@@ -895,12 +895,13 @@
           </select>
         </div>
         <div class="form-group">
-          <label>目标设备</label>
+          <label>阅读器适配</label>
           <select id="device">
-            <option value="generic">通用</option>
-            <option value="kindle">Kindle（墨水屏优化）</option>
+            <option value="generic">自动（推荐）</option>
+            <option value="kindle">Kindle</option>
             <option value="apple">Apple Books</option>
           </select>
+          <div class="hint" style="margin-top:4px;">Kindle 适合墨水屏；Apple Books 适合 iPhone/iPad 阅读。</div>
         </div>
       </div>
       <!-- 隐藏字段，供后端兼容旧参数名 -->
@@ -928,59 +929,64 @@
         </div>
       </div>
 
-      <div class="toggle-row">
-        <div>
-          <span>AI 翻译</span><br/>
-          <span class="hint">英文书籍自动翻译为中文（消耗 API Token）</span>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="enableTranslation" />
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div id="translationOptions" style="display:none;">
-        <div class="pricing-notice">
-          AI 翻译按实际字符数计费（¥0.10 / 1,000 字符），上传文件后自动估算费用，最低 ¥5.99。<br/>
-          费用在支付完成后才会扣除，本次任务不会二次扣费。
-        </div>
-
-        <div class="form-group" style="margin-top: 12px;">
-          <label>目标语言</label>
-          <select id="targetLang">
-            <option value="zh-CN">简体中文</option>
-            <option value="zh-TW">繁体中文</option>
-            <option value="ja">日语</option>
-            <option value="ko">韩语</option>
-          </select>
-        </div>
-
-        <div class="form-group" style="margin-top: 12px;">
-          <label>Temperature <span class="hint">（可选，翻译建议 1.3，纯格式/抽取可调低）</span></label>
-          <input type="number" id="temperature" min="0" max="2" step="0.1" value="1.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
-        </div>
-
-        <div class="toggle-row">
-          <div>
-            <span>双语并排</span><br/>
-            <span class="hint">原文 + 译文上下对照，便于校对</span>
+      <details id="translationDetails" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-size:13px; color:var(--muted); user-select:none;">可选：AI 翻译（仅英文书籍需要）</summary>
+        <div style="margin-top:8px;">
+          <div class="toggle-row">
+            <div>
+              <span>AI 翻译</span><br/>
+              <span class="hint">英文书籍自动翻译为中文（消耗 API Token）</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="enableTranslation" />
+              <span class="slider"></span>
+            </label>
           </div>
-          <label class="toggle">
-            <input type="checkbox" id="enableBilingual" />
-            <span class="slider"></span>
-          </label>
-        </div>
 
-        <div class="form-group" style="margin-top: 12px;">
-          <label>术语对照表 <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">（可选，每行一条）</span></label>
-          <textarea id="glossaryInput" placeholder="Harry Potter = 哈利·波特&#10;Voldemort = 伏地魔&#10;Hogwarts: 霍格沃茨"
-            style="width:100%; height:80px; padding:8px 12px; border:1px solid var(--border);
-                   border-radius:8px; font-size:13px; font-family:inherit; resize:vertical;
-                   line-height:1.6; color:var(--text);"
-          ></textarea>
-          <div id="glossaryError" style="display:none; margin-top:4px; font-size:12px; color:var(--error);"></div>
+          <div id="translationOptions" style="display:none;">
+            <div class="pricing-notice">
+              AI 翻译按实际字符数计费（¥0.10 / 1,000 字符），上传文件后自动估算费用，最低 ¥5.99。<br/>
+              费用在支付完成后才会扣除，本次任务不会二次扣费。
+            </div>
+
+            <div class="form-group" style="margin-top: 12px;">
+              <label>目标语言</label>
+              <select id="targetLang">
+                <option value="zh-CN">简体中文</option>
+                <option value="zh-TW">繁体中文</option>
+                <option value="ja">日语</option>
+                <option value="ko">韩语</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-top: 12px;">
+              <label>Temperature <span class="hint">（可选，翻译建议 1.3，纯格式/抽取可调低）</span></label>
+              <input type="number" id="temperature" min="0" max="2" step="0.1" value="1.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
+            </div>
+
+            <div class="toggle-row">
+              <div>
+                <span>双语并排</span><br/>
+                <span class="hint">原文 + 译文上下对照，便于校对</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="enableBilingual" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group" style="margin-top: 12px;">
+              <label>术语对照表 <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">（可选，每行一条）</span></label>
+              <textarea id="glossaryInput" placeholder="Harry Potter = 哈利·波特&#10;Voldemort = 伏地魔&#10;Hogwarts: 霍格沃茨"
+                style="width:100%; height:80px; padding:8px 12px; border:1px solid var(--border);
+                       border-radius:8px; font-size:13px; font-family:inherit; resize:vertical;
+                       line-height:1.6; color:var(--text);"
+              ></textarea>
+              <div id="glossaryError" style="display:none; margin-top:4px; font-size:12px; color:var(--error);"></div>
+            </div>
+          </div>
         </div>
-      </div>
+      </details>
 
       <!-- 价格提示（格式转换固定 ¥5.99） -->
       <div id="conversionPriceHint" style="font-size:13px; color:var(--muted); margin:10px 0 0; display:none;">
@@ -1168,6 +1174,7 @@
     const submitBtn = $("submitBtn");
     const enablePrecisionPolish = $("enablePrecisionPolish");
     const enableTranslation = $("enableTranslation");
+    const translationDetails = $("translationDetails");
     const statusCard = $("statusCard");
     const statusBadge = $("statusBadge");
     const statusMessage = $("statusMessage");
@@ -1516,6 +1523,16 @@
       updateSubmitButton();
       _updatePriceHint();
     });
+
+    if (translationDetails) {
+      translationDetails.addEventListener("toggle", () => {
+        if (!translationDetails.open && enableTranslation.checked) {
+          enableTranslation.checked = false;
+          $("translationOptions").style.display = "none";
+          _updatePriceHint();
+        }
+      });
+    }
 
     async function estimatePolishPrice() {
       if (!selectedFile || !enablePrecisionPolish.checked) {
