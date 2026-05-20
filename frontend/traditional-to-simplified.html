@@ -832,6 +832,27 @@
 
       <div class="toggle-row">
         <div>
+          <span>AI 精校 (处理两岸用词差异)</span><br/>
+          <span class="hint">DeepSeek大模型精校“窝心/机车”等歧义词，需按字数付费</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="enablePrecisionPolish" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div id="precisionPolishOptions" style="display:none; margin-bottom: 14px;">
+        <div class="pricing-notice">
+          AI 精校为预付费服务，上传文件后自动估算字数与附加费用。由于调用大模型，任务耗时较长。
+        </div>
+        <div id="precisionPolishPriceHint" style="font-size:13px; color:var(--muted); margin-top:10px; display:none;">
+          预估字数：<strong id="polishCharCount" style="color:var(--text);">-</strong> 字<br/>
+          精校附加费：<strong id="polishPrice" style="color:var(--text);">-</strong> 元
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <div>
           <span>AI 翻译</span><br/>
           <span class="hint">英文书籍自动翻译为中文（消耗 API Token）</span>
         </div>
@@ -1053,6 +1074,7 @@
     const fileInput = $("fileInput");
     const fileNameEl = $("fileName");
     const submitBtn = $("submitBtn");
+    const enablePrecisionPolish = $("enablePrecisionPolish");
     const enableTranslation = $("enableTranslation");
     const statusCard = $("statusCard");
     const statusBadge = $("statusBadge");
@@ -1225,6 +1247,13 @@
       if (jobId) {
         showView("tasks");
         openJobDetail(jobId);
+        setStatus("running", "正在确认付款结果...");
+        fetch(`${API}/api/v2/jobs/${jobId}/recover`, {
+          method: "POST",
+          headers: authHeaders(jobId),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null);
       }
     })();
 
@@ -1308,6 +1337,7 @@
       fileNameEl.textContent = `✅ ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
       fileNameEl.style.display = "block";
       updateSubmitButton();
+      estimatePolishPrice();
     }
 
     dropzone.addEventListener("click", () => fileInput.click());
@@ -1320,6 +1350,32 @@
     enableTranslation.addEventListener("change", () => {
       $("translationOptions").style.display = enableTranslation.checked ? "block" : "none";
       updateSubmitButton();
+    });
+
+    async function estimatePolishPrice() {
+      if (!selectedFile || !enablePrecisionPolish.checked) {
+        $("precisionPolishPriceHint").style.display = "none";
+        return;
+      }
+      $("precisionPolishPriceHint").style.display = "block";
+      $("polishCharCount").textContent = "估算中...";
+      $("polishPrice").textContent = "估算中...";
+      const form = new FormData();
+      form.append("file", selectedFile);
+      try {
+        const res = await fetch(`${API}/api/v2/estimate-polish`, { method: "POST", body: form });
+        const data = await res.json();
+        $("polishCharCount").textContent = data.char_count;
+        $("polishPrice").textContent = data.price_cny;
+      } catch (err) {
+        $("polishCharCount").textContent = "估算失败";
+        $("polishPrice").textContent = "估算失败";
+      }
+    }
+
+    enablePrecisionPolish.addEventListener("change", () => {
+      $("precisionPolishOptions").style.display = enablePrecisionPolish.checked ? "block" : "none";
+      estimatePolishPrice();
     });
 
     function syncTraditionalVariantVisibility() {
@@ -1340,7 +1396,6 @@
       statusMessage.textContent = message || "";
       errorMsg.style.display = "none";
       $("errorCodeMsg").style.display = "none";
-      downloadBtn.style.display = "none";
       $("resultActions").classList.remove("visible");
     }
 
@@ -1467,6 +1522,7 @@
       form.append("output_mode", $("outputMode").value);
       form.append("traditional_variant", $("traditionalVariant").value || "auto");
       form.append("device", $("device").value);
+      form.append("enable_precision_polish", enablePrecisionPolish.checked);
       form.append("enable_translation", enableTranslation.checked);
       if (enableTranslation.checked) {
         form.append("target_lang", $("targetLang").value);

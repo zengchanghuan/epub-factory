@@ -1,11 +1,11 @@
-import html
+import html as _html_mod
 import shutil
 import tempfile
-import zipfile
 from pathlib import Path
 
 from .models import ConversionResult, DeviceProfile, OutputMode
 from .engine import ExtremeCompiler
+from .engine.adapters import html_to_epub_builder
 
 
 class EpubConverter:
@@ -37,12 +37,34 @@ class EpubConverter:
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
             )
         if suffix == ".pdf":
-            return self._convert_pdf_to_horizontal_epub(
+            return self._convert_via_html_to_epub(
                 input_path, output_path, output_mode, enable_translation, target_lang,
                 device, bilingual, glossary, temperature, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
+                adapter="pdf",
             )
-        raise RuntimeError("Unsupported file type, only .epub or .pdf is allowed")
+        if suffix == ".docx":
+            return self._convert_via_html_to_epub(
+                input_path, output_path, output_mode, enable_translation, target_lang,
+                device, bilingual, glossary, temperature, traditional_variant,
+                lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
+                adapter="docx",
+            )
+        if suffix in (".md", ".markdown"):
+            return self._convert_via_html_to_epub(
+                input_path, output_path, output_mode, enable_translation, target_lang,
+                device, bilingual, glossary, temperature, traditional_variant,
+                lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
+                adapter="markdown",
+            )
+        raise RuntimeError(
+            f"Unsupported file type '{suffix}'. "
+            "Supported: .epub, .pdf, .docx, .md, .markdown"
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Core EPUB → EPUB pipeline
+    # ──────────────────────────────────────────────────────────────────────
 
     def _convert_epub_to_horizontal(
         self,
@@ -82,7 +104,6 @@ class EpubConverter:
         if not success:
             raise RuntimeError(compiler.final_message or "ExtremeCompiler failed to convert EPUB")
 
-        # 从 CjkNormalizer 提取词典命中报告
         lexicon_stats = LexiconStats.empty()
         try:
             lx_report = compiler._cjk_normalizer.get_report()
@@ -108,7 +129,11 @@ class EpubConverter:
             validation_passed=getattr(compiler, "validation_passed", True),
         )
 
-    def _convert_pdf_to_horizontal_epub(
+    # ──────────────────────────────────────────────────────────────────────
+    # Generic adapter path: source → HTML → minimal EPUB → ExtremeCompiler
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _convert_via_html_to_epub(
         self,
         input_path: Path,
         output_path: Path,
@@ -124,85 +149,67 @@ class EpubConverter:
         enable_proper_noun: bool = True,
         progress_callback=None,
         stage_callback=None,
+        adapter: str = "pdf",
     ) -> ConversionResult:
-        temp_epub = Path(tempfile.mkdtemp(prefix="epub_factory_pdf_")) / "source.epub"
+        html_body, metadata = self._run_adapter(input_path, adapter)
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix=f"epub_factory_{adapter}_"))
+        temp_epub = tmp_dir / "source.epub"
         try:
-            self._pdf_to_epub(input_path, temp_epub)
+            html_to_epub_builder.build(html_body, metadata, temp_epub)
             return self._convert_epub_to_horizontal(
                 temp_epub, output_path, output_mode, enable_translation, target_lang,
                 device, bilingual, glossary, temperature, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
             )
         finally:
-            shutil.rmtree(temp_epub.parent, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def _pdf_to_epub(self, input_pdf: Path, output_epub: Path) -> None:
-        try:
-            from pypdf import PdfReader
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "PDF conversion dependency missing: please install `pypdf` in current venv."
-            ) from exc
+    @staticmethod
+    def _run_adapter(input_path: Path, adapter: str) -> tuple[str, dict]:
+        """Dispatch to the correct format adapter and return (html_body, metadata)."""
+        if adapter == "pdf":
+            return _pdf_to_html(input_path)
+        if adapter == "docx":
+            from .engine.adapters.docx_adapter import docx_to_html
+            return docx_to_html(input_path)
+        if adapter == "markdown":
+            from .engine.adapters.markdown_adapter import md_to_html
+            return md_to_html(input_path)
+        raise RuntimeError(f"Unknown adapter: {adapter}")
 
-        reader = PdfReader(str(input_pdf))
-        paragraphs: list[str] = []
-        for page in reader.pages:
-            text = (page.extract_text() or "").strip()
-            if text:
-                paragraphs.extend([line.strip() for line in text.splitlines() if line.strip()])
 
-        if not paragraphs:
-            paragraphs = ["该 PDF 未提取到可读文本，已生成占位内容。"]
+# ──────────────────────────────────────────────────────────────────────────
+# PDF → HTML helper (kept here; no new dependency needed)
+# ──────────────────────────────────────────────────────────────────────────
 
-        body = "\n".join(f"<p>{html.escape(line)}</p>" for line in paragraphs)
-        chapter_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-Hant" lang="zh-Hant">
-  <head>
-    <meta charset="utf-8"/>
-    <title>Converted PDF</title>
-    <style>
-      html, body {{
-        writing-mode: horizontal-tb;
-        line-height: 1.8;
-        margin: 1rem;
-      }}
-    </style>
-  </head>
-  <body>
-{body}
-  </body>
-</html>
-"""
-        container_xml = """<?xml version="1.0" encoding="utf-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>
-"""
-        content_opf = """<?xml version="1.0" encoding="utf-8"?>
-<package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="BookId">epub-factory-pdf</dc:identifier>
-    <dc:title>Converted PDF</dc:title>
-    <dc:language>zh-Hant</dc:language>
-  </metadata>
-  <manifest>
-    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
-  </manifest>
-  <spine page-progression-direction="ltr">
-    <itemref idref="chapter1"/>
-  </spine>
-</package>
-"""
+def _pdf_to_html(input_pdf: Path) -> tuple[str, dict]:
+    """Extract plain text from a PDF and return as HTML paragraphs."""
+    try:
+        from pypdf import PdfReader
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "PDF conversion dependency missing: please install `pypdf` in current venv."
+        ) from exc
 
-        output_epub.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(output_epub, "w") as out:
-            out.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
-            out.writestr("META-INF/container.xml", container_xml, compress_type=zipfile.ZIP_DEFLATED)
-            out.writestr("OEBPS/content.opf", content_opf, compress_type=zipfile.ZIP_DEFLATED)
-            out.writestr("OEBPS/chapter1.xhtml", chapter_xhtml, compress_type=zipfile.ZIP_DEFLATED)
+    reader = PdfReader(str(input_pdf))
+    paragraphs: list[str] = []
+    for page in reader.pages:
+        text = (page.extract_text() or "").strip()
+        if text:
+            paragraphs.extend([line.strip() for line in text.splitlines() if line.strip()])
+
+    if not paragraphs:
+        paragraphs = ["该 PDF 未提取到可读文本，已生成占位内容。"]
+
+    html_body = "\n".join(f"<p>{_html_mod.escape(line)}</p>" for line in paragraphs)
+    metadata = {
+        "title": input_pdf.stem,
+        "author": "",
+        "language": "zh",
+        "identifier": "",
+    }
+    return html_body, metadata
 
 
 converter = EpubConverter()

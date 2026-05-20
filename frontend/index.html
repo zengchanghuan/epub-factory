@@ -873,10 +873,10 @@
       <div id="dropzone" class="dropzone">
         <span class="icon">📁</span>
         <div class="main-text">拖拽文件到这里，或点击选择</div>
-        <div class="sub-text">支持 .epub / .pdf / .mobi / .azw3 格式</div>
+        <div class="sub-text">支持 .epub / .pdf / .mobi / .azw3 / .docx / .md 格式</div>
         <div class="file-name" id="fileName" style="display:none;"></div>
       </div>
-      <input id="fileInput" type="file" accept=".epub,.pdf,.mobi,.azw3" />
+      <input id="fileInput" type="file" accept=".epub,.pdf,.mobi,.azw3,.docx,.md,.markdown" />
 
       <div class="form-row">
         <div class="form-group" style="flex:2;">
@@ -906,6 +906,27 @@
       <!-- 隐藏字段，供后端兼容旧参数名 -->
       <input type="hidden" id="outputMode" value="simplified">
       <input type="hidden" id="traditionalVariant" value="tw">
+
+      <div class="toggle-row">
+        <div>
+          <span>AI 精校 (处理两岸用词差异)</span><br/>
+          <span class="hint">DeepSeek大模型精校“窝心/机车”等歧义词，需按字数付费</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="enablePrecisionPolish" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div id="precisionPolishOptions" style="display:none; margin-bottom: 14px;">
+        <div class="pricing-notice">
+          AI 精校为预付费服务，上传文件后自动估算字数与附加费用。由于调用大模型，任务耗时较长。
+        </div>
+        <div id="precisionPolishPriceHint" style="font-size:13px; color:var(--muted); margin-top:10px; display:none;">
+          预估字数：<strong id="polishCharCount" style="color:var(--text);">-</strong> 字<br/>
+          精校附加费：<strong id="polishPrice" style="color:var(--text);">-</strong> 元
+        </div>
+      </div>
 
       <div class="toggle-row">
         <div>
@@ -972,7 +993,7 @@
       <!-- 格式转换扫码支付区 -->
       <div id="conversionPayArea" style="display:none; margin-top:16px; padding:20px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center;">
         <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px;">扫码支付完成后自动开始转换</div>
-        <div style="font-size:24px; font-weight:700; color:var(--text); margin-bottom:14px;">¥5.99</div>
+        <div style="font-size:24px; font-weight:700; color:var(--text); margin-bottom:14px;" id="conversionPriceDisplay">¥5.99</div>
         <img id="conversionQrImg" src="" alt="支付宝二维码" style="width:160px; height:160px; border:1px solid var(--border); border-radius:8px; background:#fff;" />
         <div style="font-size:12px; color:var(--muted); margin-top:8px;">使用支付宝 App 扫码 · 支付后自动处理</div>
       </div>
@@ -1145,6 +1166,7 @@
     const fileInput = $("fileInput");
     const fileNameEl = $("fileName");
     const submitBtn = $("submitBtn");
+    const enablePrecisionPolish = $("enablePrecisionPolish");
     const enableTranslation = $("enableTranslation");
     const statusCard = $("statusCard");
     const statusBadge = $("statusBadge");
@@ -1374,15 +1396,14 @@
       const jobId = params.get("job_id");
       if (jobId) {
         showView("tasks");
-        // 用户付完款被支付宝跳回这里：先主动调一次 recover 兜底
-        // （服务端会查询支付宝订单并补发任务），再开始正常轮询。
+        openJobDetail(jobId);
+        setStatus("running", "正在确认付款结果...");
         fetch(`${API}/api/v2/jobs/${jobId}/recover`, {
           method: "POST",
           headers: authHeaders(jobId),
         })
           .then(r => r.ok ? r.json() : null)
-          .catch(() => null)
-          .finally(() => openJobDetail(jobId));
+          .catch(() => null);
       }
     })();
 
@@ -1462,8 +1483,9 @@
     function selectFile(file) {
       if (!file) return;
       const name = file.name.toLowerCase();
-      if (!(name.endsWith(".epub") || name.endsWith(".pdf") || name.endsWith(".mobi") || name.endsWith(".azw3"))) {
-        alert("仅支持 .epub, .pdf, .mobi 或 .azw3 文件");
+      const _supported = [".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown"];
+      if (!_supported.some(ext => name.endsWith(ext))) {
+        alert("仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件");
         return;
       }
       selectedFile = file;
@@ -1471,6 +1493,7 @@
       fileNameEl.style.display = "block";
       updateSubmitButton();
       _updatePriceHint();
+      estimatePolishPrice();
     }
 
     function _updatePriceHint() {
@@ -1494,6 +1517,32 @@
       _updatePriceHint();
     });
 
+    async function estimatePolishPrice() {
+      if (!selectedFile || !enablePrecisionPolish.checked) {
+        $("precisionPolishPriceHint").style.display = "none";
+        return;
+      }
+      $("precisionPolishPriceHint").style.display = "block";
+      $("polishCharCount").textContent = "估算中...";
+      $("polishPrice").textContent = "估算中...";
+      const form = new FormData();
+      form.append("file", selectedFile);
+      try {
+        const res = await fetch(`${API}/api/v2/estimate-polish`, { method: "POST", body: form });
+        const data = await res.json();
+        $("polishCharCount").textContent = data.char_count;
+        $("polishPrice").textContent = data.price_cny;
+      } catch (err) {
+        $("polishCharCount").textContent = "估算失败";
+        $("polishPrice").textContent = "估算失败";
+      }
+    }
+
+    enablePrecisionPolish.addEventListener("change", () => {
+      $("precisionPolishOptions").style.display = enablePrecisionPolish.checked ? "block" : "none";
+      estimatePolishPrice();
+    });
+
     function syncConversionMode() {
       const [mode, variant] = ($("conversionMode").value || "simplified|tw").split("|");
       $("outputMode").value = mode;
@@ -1510,7 +1559,6 @@
       statusMessage.textContent = message || "";
       errorMsg.style.display = "none";
       $("errorCodeMsg").style.display = "none";
-      downloadBtn.style.display = "none";
       $("resultActions").classList.remove("visible");
     }
 
@@ -1637,6 +1685,7 @@
       form.append("output_mode", $("outputMode").value);
       form.append("traditional_variant", $("traditionalVariant").value || "auto");
       form.append("device", $("device").value);
+      form.append("enable_precision_polish", enablePrecisionPolish.checked);
       form.append("enable_translation", enableTranslation.checked);
       if (enableTranslation.checked) {
         form.append("target_lang", $("targetLang").value);
@@ -1686,6 +1735,7 @@
             // 格式转换：扫码支付
             const qrDataUrl = await QRCode.toDataURL(data.qr_code, { width: 200, margin: 1 });
             $("conversionQrImg").src = qrDataUrl;
+            $("conversionPriceDisplay").textContent = `¥${data.amount || "5.99"}`;
             $("conversionPayArea").style.display = "block";
             $("conversionPriceHint").style.display = "none";
           } else if (data.pay_url) {
@@ -1867,7 +1917,7 @@
       <div class="guide-block">
         <h2 class="seo-title">如何转换您的电子书？</h2>
         <ol class="guide-steps">
-          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 60MB 以内）。</li>
+          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 / .docx / .md 文件（单文件大小限制 60MB 以内）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
           <li><strong>下载使用：</strong>转换完成后，直接下载 EPUB 文件，导入 Apple Books、Kindle 或任意阅读器即可使用。</li>

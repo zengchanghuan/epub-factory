@@ -1,7 +1,14 @@
 .venv/
 __pycache__/
 .DS_Store
+# Ebook formats
 *.epub
+*.mobi
+*.azw3
+*.azw
+*.fb2
+*.djvu
+*.pdf
 backend/uploads/
 backend/outputs/
 backend/reduce_work/
@@ -37,4 +44,6 @@ test.pdf
 test[0-9]*.pdf
 test_*/
 /文化大革命人民的歷史*.pdf
+test_测试用例书
+test_测试用例书/
 

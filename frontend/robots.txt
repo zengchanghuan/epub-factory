@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /admin.html
+Disallow: /tests/
+
+Sitemap: https://fixepub.com/sitemap.xml

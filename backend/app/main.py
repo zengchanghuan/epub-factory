@@ -590,9 +590,9 @@ async def create_job(
             detail="付费翻译已下线在 v1 接口，请改用 POST /api/v2/jobs（含支付下单与回调验签）",
         )
 
-    supported_exts = (".epub", ".pdf", ".mobi", ".azw3")
+    supported_exts = (".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown")
     if not any(file.filename.lower().endswith(ext) for ext in supported_exts):
-        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi 或 .azw3 文件")
+        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件")
 
     glossary: dict = {}
     if glossary_json:
@@ -730,9 +730,9 @@ async def create_job_v2(
     )
     _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
-    supported_exts = (".epub", ".pdf", ".mobi", ".azw3")
+    supported_exts = (".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown")
     if not (file.filename and any(file.filename.lower().endswith(ext) for ext in supported_exts)):
-        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi 或 .azw3 文件")
+        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件")
 
     # 免费配额已关闭，所有转换均走付费流程
     client_ip = get_real_ip(request)
@@ -843,7 +843,14 @@ async def create_job_v2(
                 # 格式转换：固定价格。优先尝试扫码支付；若支付宝应用未开通当面付，
                 # 回退到已审核通过的电脑网站支付，避免用户看到“支付渠道不可用”。
                 from .infra.alipay import create_alipay_precreate
-                expected_amount = _TEST_PRICE if _is_admin_test else CONVERSION_PRICE_CNY
+                base_amount = float(_TEST_PRICE) if _is_admin_test else float(CONVERSION_PRICE_CNY)
+                if enable_precision_polish:
+                    from .engine.cleaners.llm_polish import count_effective_chars, calculate_polish_price
+                    char_count = count_effective_chars(str(input_path))
+                    estimated_chars = char_count
+                    polish_price = calculate_polish_price(char_count) if not _is_admin_test else 0.01
+                    base_amount += polish_price
+                expected_amount = f"{base_amount:.2f}"
                 subject = f"EPUB 格式转换服务 - {safe_name[:50]}"
                 disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
                 try:

@@ -26,4 +26,6 @@ tencentcloud-sdk-python-sms>=3.0.1000
 alembic>=1.13.0
 pyahocorasick>=2.0.0
 pyyaml>=6.0
+mammoth
+mistune>=3.0
 

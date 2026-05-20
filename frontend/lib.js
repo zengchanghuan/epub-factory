@@ -12,12 +12,14 @@
  * @param {string} filename
  * @returns {{ valid: boolean, error?: string }}
  */
+const SUPPORTED_EXTENSIONS = [".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown"];
+
 function validateFile(filename) {
   const lower = (filename || "").toLowerCase();
-  if (lower.endsWith(".epub") || lower.endsWith(".pdf") || lower.endsWith(".mobi") || lower.endsWith(".azw3")) {
+  if (SUPPORTED_EXTENSIONS.some(ext => lower.endsWith(ext))) {
     return { valid: true };
   }
-  return { valid: false, error: "仅支持 .epub, .pdf, .mobi 或 .azw3 文件" };
+  return { valid: false, error: "仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件" };
 }
 
 // ─── 表单数据构建 ──────────────────────────────────────────────────────────
@@ -203,7 +205,7 @@ const ERROR_CODE_HINTS = {
   PARTIAL_TRANSLATION: "部分段落翻译失败，结果可能不完整",
   EPUB_VALIDATION_FAILED: "EPUB 校验未通过，结果不可交付，请重试或联系支持",
   UPLOAD_TOO_LARGE: "文件超过大小限制",
-  UNSUPPORTED_TYPE: "仅支持 .epub, .pdf, .mobi 或 .azw3 文件",
+  UNSUPPORTED_TYPE: "仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件",
 };
 
 /**
@@ -338,6 +340,7 @@ function clearHistory(storage) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    SUPPORTED_EXTENSIONS,
     validateFile,
     buildFormFields,
     parseGlossaryInput,
