@@ -761,13 +761,8 @@ async def create_job_v2(
         except (json.JSONDecodeError, ValueError):
             raise HTTPException(status_code=400, detail="lexicon_domains_json 格式错误，应为 JSON 数组字符串")
 
-    # 翻译任务需要登录（免费格式转换匿名可用）
+    # 翻译任务不再强制登录：登录用户仍记录 user_id，匿名用户也可直接使用
     current_user = get_current_user_optional(request)
-    if enable_translation and not _skip_payment and not current_user:
-        raise HTTPException(
-            status_code=401,
-            detail="翻译功能需要登录后使用，请先完成登录",
-        )
 
     if enable_translation and not _skip_payment and out_trade_no:
         raise HTTPException(status_code=400, detail="不允许客户端自带订单号")

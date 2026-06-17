@@ -277,43 +277,53 @@ async def translate_glossary(
         logger.warning("glossary 跳过：%s", exc)
         return {}
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0, timeout=60)
+    # 显式传入自建 http_client：避免 openai SDK 内部向新版 httpx(>=0.28) 传递已被
+    # 移除的 proxies 参数而抛 TypeError（与 SemanticsTranslator 的构造方式保持一致）。
+    import httpx
+    http_client = httpx.AsyncClient(timeout=60)
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0, http_client=http_client)
     merged: dict[str, str] = {}
 
-    for batch_idx, batch in enumerate(batches, start=1):
+    try:
+        for batch_idx, batch in enumerate(batches, start=1):
+            try:
+                user_msg = json.dumps(batch, ensure_ascii=False)
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"目标语言：{target_lang}\n候选术语：{user_msg}"},
+                    ],
+                    temperature=0.2,  # 术语翻译要稳定，温度调低
+                    response_format={"type": "json_object"} if "gpt" in model.lower() else None,
+                )
+                raw = (resp.choices[0].message.content or "").strip()
+                # 处理 markdown 包裹
+                if raw.startswith("```"):
+                    raw = raw.split("```", 2)[1] if "```" in raw[3:] else raw[3:]
+                    raw = raw.removeprefix("json").strip()
+                    if raw.endswith("```"):
+                        raw = raw[:-3].strip()
+                parsed = json.loads(raw)
+                translations = parsed.get("translations", {}) if isinstance(parsed, dict) else {}
+                if isinstance(translations, dict):
+                    for k, v in translations.items():
+                        if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+                            # 只保留发生了语言变换的（避免把保留原文的也加入字典）
+                            if k.strip() != v.strip():
+                                merged[k.strip()] = v.strip()
+                logger.info(
+                    "glossary llm batch ok",
+                    extra={"batch": batch_idx, "in": len(batch), "out": len(translations) if isinstance(translations, dict) else 0},
+                )
+            except Exception as e:
+                logger.warning(f"glossary llm batch {batch_idx} failed: {e}")
+                continue
+    finally:
         try:
-            user_msg = json.dumps(batch, ensure_ascii=False)
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"目标语言：{target_lang}\n候选术语：{user_msg}"},
-                ],
-                temperature=0.2,  # 术语翻译要稳定，温度调低
-                response_format={"type": "json_object"} if "gpt" in model.lower() else None,
-            )
-            raw = (resp.choices[0].message.content or "").strip()
-            # 处理 markdown 包裹
-            if raw.startswith("```"):
-                raw = raw.split("```", 2)[1] if "```" in raw[3:] else raw[3:]
-                raw = raw.removeprefix("json").strip()
-                if raw.endswith("```"):
-                    raw = raw[:-3].strip()
-            parsed = json.loads(raw)
-            translations = parsed.get("translations", {}) if isinstance(parsed, dict) else {}
-            if isinstance(translations, dict):
-                for k, v in translations.items():
-                    if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
-                        # 只保留发生了语言变换的（避免把保留原文的也加入字典）
-                        if k.strip() != v.strip():
-                            merged[k.strip()] = v.strip()
-            logger.info(
-                "glossary llm batch ok",
-                extra={"batch": batch_idx, "in": len(batch), "out": len(translations) if isinstance(translations, dict) else 0},
-            )
-        except Exception as e:
-            logger.warning(f"glossary llm batch {batch_idx} failed: {e}")
-            continue
+            await http_client.aclose()
+        except Exception:
+            pass
 
     logger.info("glossary llm done", extra={"total_terms": len(terms), "translated": len(merged)})
     return merged

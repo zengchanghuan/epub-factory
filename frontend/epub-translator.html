@@ -2237,27 +2237,7 @@
     .site-footer a:hover { color: #fff; }
   </style>
 
-  <!-- 用户认证模块 -->
+  <!-- 用户认证模块（登录可选：仍展示登录入口，但不再强制登录即可提交翻译） -->
   <script src="/auth.js"></script>
-  <script>
-    // 翻译页登录门控（epub-translator 整个功能都是付费翻译，所有提交需登录）
-    document.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => {
-        const submitBtn = document.getElementById('submitBtn') ||
-                          document.getElementById('translateBtn');
-        if (!submitBtn || submitBtn._authPatched) return;
-        submitBtn._authPatched = true;
-        submitBtn.addEventListener('click', (e) => {
-          if (window.fixepubAuth && !window.fixepubAuth.isLoggedIn()) {
-            e.stopImmediatePropagation();
-            e.preventDefault();
-            window.fixepubAuth.openLoginModal((user) => {
-              setTimeout(() => { submitBtn.click(); }, 100);
-            });
-          }
-        }, true);
-      }, 200);
-    });
-  </script>
 </body>
 </html>
