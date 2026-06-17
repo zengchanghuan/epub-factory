@@ -39,6 +39,10 @@ SecretKey*
 *.p12
 *.pfx
 
+# Runtime logs
+*.log
+backend.log
+
 # Local test fixtures
 test.pdf
 test[0-9]*.pdf
