@@ -43,6 +43,10 @@ SecretKey*
 *.log
 backend.log
 
+# Deploy artifacts（deploy.sh 生成的部署包，勿提交）
+*.zip
+epub-factory.zip
+
 # Local test fixtures
 test.pdf
 test[0-9]*.pdf
