@@ -14,6 +14,8 @@
   const TOKEN_KEY = 'fixepub_auth_token';
   const USER_KEY  = 'fixepub_auth_user';
   const API       = window.FIXEPUB_API || '';
+  // 短信未真正接入前，暂时隐藏登录/注册入口（改回 true 即可恢复）
+  const AUTH_UI_ENABLED = false;
 
   // ─── token 存取 ────────────────────────────────────────────────────────────
   function saveToken(token) {
@@ -72,7 +74,21 @@
   }
 
   // ─── 初始化：处理 OAuth fragment & 验证已有 token ─────────────────────────
+  function hideAuthUi() {
+    const container = document.getElementById('authTopbarArea');
+    if (container) {
+      container.innerHTML = '';
+      container.style.display = 'none';
+    }
+  }
+
   async function init() {
+    if (!AUTH_UI_ENABLED) {
+      hideAuthUi();
+      window.__fixepubUser = null;
+      return;
+    }
+
     // OAuth 回调：URL fragment 中可能带 access_token
     const fragmentToken = extractFragmentToken();
     if (fragmentToken) {
@@ -109,6 +125,7 @@
 
   // ─── 渲染 topbar 用户区域 ──────────────────────────────────────────────────
   function renderTopbarUser(user) {
+    if (!AUTH_UI_ENABLED) { hideAuthUi(); return; }
     const container = document.getElementById('authTopbarArea');
     if (!container) return;
 
@@ -317,6 +334,7 @@
   }
 
   function openLoginModal(callback) {
+    if (!AUTH_UI_ENABLED) return;
     window.__loginCallback = callback || null;
     injectLoginModal();
     const modal = document.getElementById('authModal');

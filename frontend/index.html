@@ -2155,43 +2155,6 @@
     .site-footer a:hover { color: #fff; }
   </style>
 
-  <!-- 用户认证模块 -->
   <script src="/auth.js"></script>
-  <script>
-    // 翻译任务登录门控：在 submitJob 之前检查是否已登录
-    document.addEventListener('DOMContentLoaded', () => {
-      const origSubmit = window._fixepubSubmitJob;
-
-      // 拦截翻译任务提交（覆盖全局 submitJob 引用，通过 enable_translation 检测）
-      const translateCheckbox = document.getElementById('enableTranslation') ||
-                                document.querySelector('[name="enable_translation"]') ||
-                                document.querySelector('#enableTranslation');
-
-      // 找到提交按钮并注入前置登录检查
-      function patchSubmitBtn() {
-        const submitBtn = document.getElementById('submitBtn');
-        if (!submitBtn || submitBtn._authPatched) return;
-        submitBtn._authPatched = true;
-
-        submitBtn.addEventListener('click', (e) => {
-          // 判断是否开启了翻译
-          const translationEnabled = translateCheckbox && translateCheckbox.checked;
-          if (!translationEnabled) return; // 纯格式转换，不拦截
-
-          if (window.fixepubAuth && !window.fixepubAuth.isLoggedIn()) {
-            e.stopImmediatePropagation();
-            e.preventDefault();
-            window.fixepubAuth.openLoginModal((user) => {
-              // 登录成功后重新触发提交
-              setTimeout(() => { submitBtn.click(); }, 100);
-            });
-          }
-        }, true); // capture phase，在原有 click handler 之前
-      }
-
-      // 等待 DOM 完全 ready 后再 patch
-      setTimeout(patchSubmitBtn, 200);
-    });
-  </script>
 </body>
 </html>
