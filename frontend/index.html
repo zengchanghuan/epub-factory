@@ -1491,7 +1491,6 @@
       if (!selectedFile) {
         submitBtn.disabled = true;
         submitBtn.textContent = "开始转换";
-        $("mockPayArea").style.display = "none";
         return;
       }
       
@@ -1502,7 +1501,6 @@
       } else {
         submitBtn.textContent = "开始转换";
       }
-      $("mockPayArea").style.display = "none"; // Hide mock area, using real flow
     }
 
     function selectFile(file) {
