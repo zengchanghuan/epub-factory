@@ -1,6 +1,6 @@
 #!/bin/bash
-# EPUB Factory - AWS Deployment Script
-# Based on docs/DEPLOY-STEP-BY-STEP.md
+# EPUB Factory - Production Deployment Script
+# Deploys the Tencent Cloud production service through the `fixepub` SSH host.
 
 set -e
 

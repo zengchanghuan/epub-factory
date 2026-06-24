@@ -23,6 +23,7 @@ logger = logging.getLogger("epub_factory.llm_guard")
 # ── 默认白名单（fixepub 实际使用的便宜模型）────────────────────────────────
 _DEFAULT_ALLOWLIST = {
     "deepseek-chat",
+    "deepseek-v4-flash",
     "deepseek-reasoner",
     "deepseek-coder",
     "gpt-4o-mini",

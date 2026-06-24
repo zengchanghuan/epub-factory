@@ -84,7 +84,7 @@ class TranslationStats:
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "last_error": self.last_error,
-            "all_failed": self.total_chunks > 0 and (self.translated_chunks + self.cached_chunks) == 0 and self.failed_chunks > 0,
+            "all_failed": (self.translated_chunks + self.cached_chunks) == 0 and self.failed_chunks > 0,
         }
 
 
@@ -134,6 +134,19 @@ class SemanticsTranslator:
         raw = os.environ.get(name, "")
         values = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
         return list(dict.fromkeys(values))
+
+    @staticmethod
+    def _is_auth_error(exc: Exception) -> bool:
+        """鉴权/权限类错误（401/403、API Key 无效）不可通过重试恢复，应立即失败。"""
+        status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+        if status in (401, 403):
+            return True
+        msg = str(exc).lower()
+        if "authentication" in msg or "unauthorized" in msg or "permission" in msg:
+            return True
+        if "api key" in msg and ("invalid" in msg or "incorrect" in msg):
+            return True
+        return False
 
     def _get_client(self, base_url: str) -> AsyncOpenAI:
         if base_url not in self._clients:
@@ -268,6 +281,11 @@ class SemanticsTranslator:
             except Exception as exc:
                 last_error = exc
                 self.stats.last_error = str(exc)
+                # 鉴权/权限类错误重试也不会恢复，立即失败，避免无意义重试空耗时间与配额
+                if self._is_auth_error(exc):
+                    if self.progress_callback:
+                        self.progress_callback("模型鉴权失败：API Key 无效或无权限，已停止重试")
+                    raise
                 if "connection" in str(exc).lower() or "timeout" in str(exc).lower():
                     self.stats.connection_errors += 1
                 if self.progress_callback:
