@@ -1,0 +1,62 @@
+# 本地一键起全栈（api + worker + beat + redis），与生产同镜像。
+# 生产仍走 systemd 部署，本文件仅用于本地开发/联调。
+#   docker compose up --build           # 启动
+#   docker compose run --rm api python run_regression.py   # 跑回归
+# 需要格式转换(calibre)时： INSTALL_CALIBRE=1 docker compose build
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      args:
+        INSTALL_CALIBRE: ${INSTALL_CALIBRE:-0}
+    image: epub-factory:dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DATABASE_URL: sqlite:////app/backend/epub_jobs.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      - redis
+
+  worker:
+    image: epub-factory:dev
+    command: celery -A app.infra.celery_app:celery_app worker -l info
+    env_file:
+      - backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DATABASE_URL: sqlite:////app/backend/epub_jobs.db
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      - redis
+      - api
+
+  beat:
+    image: epub-factory:dev
+    command: celery -A app.infra.celery_app:celery_app beat -l info
+    env_file:
+      - backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      - redis
+      - api

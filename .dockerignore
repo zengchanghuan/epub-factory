@@ -1,0 +1,39 @@
+# 构建上下文裁剪：避免把本地大文件/密钥/无关产物塞进镜像
+**/.venv
+**/.venv.*
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*.pyo
+
+# 运行时数据与产物（运行时再生成/挂载）
+backend/uploads
+backend/outputs
+backend/reduce_work
+backend/*.db
+backend/*.db-*
+backend/*.sqlite*
+**/*.log
+backend/visits.jsonl
+backend/feedback.jsonl
+
+# 密钥与敏感文件（绝不进镜像；运行时用 env_file/environment 注入）
+backend/.env
+*.env
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+AWS_访问证书
+
+# epubcheck 由 Dockerfile 从 release 安装，无需进上下文
+tools/
+
+# 部署包/前端/编辑器
+*.zip
+node_modules
+.cursor
+.github
+deploy.log
