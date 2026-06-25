@@ -34,6 +34,7 @@ def test_e2e_translation_failed_must_return_failed():
         output_mode=OutputMode.simplified,
         trace_id=uuid.uuid4().hex,
         input_path=str(Path(__file__).parent / "uploads" / f"{job_id}.epub"),
+        access_token="test-token",
         enable_translation=True,
         device=DeviceProfile.generic,
     )
@@ -45,7 +46,7 @@ def test_e2e_translation_failed_must_return_failed():
         error_code="TRANSLATION_FAILED",
     )
 
-    get_res = client.get(f"/api/v2/jobs/{job_id}")
+    get_res = client.get(f"/api/v2/jobs/{job_id}", params={"token": "test-token"})
     assert get_res.status_code == 200
     out = get_res.json()
     assert out.get("status") == "failed"

@@ -6,6 +6,7 @@ Worker 使用时需配置持久化 store（DATABASE_URL），否则无法加载 
 """
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -134,22 +135,33 @@ def run_job(job_id: str) -> None:
             except FileNotFoundError:
                 raise RuntimeError("服务器未安装 ebook-convert (Calibre)，无法转换此格式。")
 
-        result = converter.convert_file_to_horizontal(
-            input_path,
-            output_path,
-            job.output_mode,
-            enable_translation=job.enable_translation,
-            target_lang=job.target_lang,
-            device=job.device.value,
-            bilingual=job.bilingual,
-            glossary=job.glossary or None,
-            temperature=getattr(job, "temperature", None),
-            traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
-            lexicon_domains=getattr(job, "lexicon_domains", None),
-            enable_proper_noun=getattr(job, "enable_proper_noun", True),
-            progress_callback=on_progress,
-            stage_callback=on_stage,
-        )
+        fast_translation_enabled = os.environ.get("EPUB_FAST_TRANSLATION", "1").lower() not in ("0", "false", "no")
+        if job.enable_translation and input_path.suffix.lower() == ".epub" and fast_translation_enabled:
+            from .domain.fast_translation_runner import run_fast_translation_job
+            result = run_fast_translation_job(
+                job=job,
+                input_path=input_path,
+                output_path=output_path,
+                progress_callback=on_progress,
+                stage_callback=on_stage,
+            )
+        else:
+            result = converter.convert_file_to_horizontal(
+                input_path,
+                output_path,
+                job.output_mode,
+                enable_translation=job.enable_translation,
+                target_lang=job.target_lang,
+                device=job.device.value,
+                bilingual=job.bilingual,
+                glossary=job.glossary or None,
+                temperature=getattr(job, "temperature", None),
+                traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
+                lexicon_domains=getattr(job, "lexicon_domains", None),
+                enable_proper_noun=getattr(job, "enable_proper_noun", True),
+                progress_callback=on_progress,
+                stage_callback=on_stage,
+            )
         status, message, error_code = resolve_after_conversion(result)
         if status == JobStatus.failed:
             job_store.update_status(job.id, status, message, error_code=error_code)

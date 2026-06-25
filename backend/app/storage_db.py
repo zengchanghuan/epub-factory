@@ -74,6 +74,7 @@ class JobRecord(Base):
     enable_translation = Column(Boolean, nullable=False, default=False)
     target_lang = Column(String(16), nullable=False, default="zh-CN")
     bilingual = Column(Boolean, nullable=False, default=False)
+    glossary_json = Column(Text, nullable=True)
     device = Column(String(16), nullable=False, default="generic")
     status = Column(String(16), nullable=False, default="pending")
     message = Column(Text, nullable=False, default="")
@@ -221,6 +222,8 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN precision_polish_status VARCHAR(32) DEFAULT 'not_used'")
     if "polish_char_count" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN polish_char_count VARCHAR(16) DEFAULT '0'")
+    if "glossary_json" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN glossary_json TEXT")
     if not migrations:
         return
     with engine.begin() as conn:
@@ -245,6 +248,15 @@ def _record_to_job(r: JobRecord) -> Job:
             translation_stats = json.loads(r.translation_stats_json)
         except Exception:
             translation_stats = {}
+    glossary = {}
+    raw_glossary = getattr(r, "glossary_json", None)
+    if raw_glossary:
+        try:
+            parsed_glossary = json.loads(raw_glossary)
+            if isinstance(parsed_glossary, dict):
+                glossary = {str(k): str(v) for k, v in parsed_glossary.items()}
+        except Exception:
+            glossary = {}
 
     lexicon_domains = ["general", "tech", "movie"]
     raw_domains = getattr(r, "lexicon_domains", None)
@@ -269,6 +281,7 @@ def _record_to_job(r: JobRecord) -> Job:
         enable_translation=r.enable_translation,
         target_lang=r.target_lang,
         bilingual=r.bilingual,
+        glossary=glossary,
         device=DeviceProfile(r.device),
         temperature=None,
         traditional_variant=getattr(r, "traditional_variant", None) or "auto",
@@ -485,6 +498,7 @@ def _job_to_record(job: Job) -> JobRecord:
         enable_translation=job.enable_translation,
         target_lang=job.target_lang,
         bilingual=job.bilingual,
+        glossary_json=json.dumps(getattr(job, "glossary", {}) or {}),
         device=job.device.value,
         status=job.status.value,
         message=job.message,

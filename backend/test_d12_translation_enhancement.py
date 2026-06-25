@@ -1,25 +1,19 @@
 """
 D12 测试：翻译链路增强
 
-- _looks_like_html / _looks_like_error_response 结果校验
+- _looks_like_error_response 结果校验
 - _candidate_routes 主/备 base_url、model 组合
 """
 
 import os
 import sys
+import asyncio
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
-
-
-def test_looks_like_html():
-    assert SemanticsTranslator._looks_like_html("<p>Hello</p>") is True
-    assert SemanticsTranslator._looks_like_html("<div>内容</div>") is True
-    assert SemanticsTranslator._looks_like_html("") is False
-    assert SemanticsTranslator._looks_like_html("   \n  ") is False
-    assert SemanticsTranslator._looks_like_html("no tags here") is False
 
 
 def test_looks_like_error_response():
@@ -41,7 +35,7 @@ def test_candidate_routes_default():
 def test_candidate_routes_with_fallbacks():
     """有 OPENAI_BASE_URL_FALLBACKS / OPENAI_MODEL_FALLBACKS 时路由含备选。"""
     os.environ["OPENAI_BASE_URL_FALLBACKS"] = "https://fallback1.com/v1,https://fallback2.com/v1"
-    os.environ["OPENAI_MODEL_FALLBACKS"] = "gpt-4o"
+    os.environ["OPENAI_MODEL_FALLBACKS"] = "deepseek-chat"
     try:
         t = SemanticsTranslator(target_lang="zh-CN")
         routes = t._candidate_routes()
@@ -51,18 +45,77 @@ def test_candidate_routes_with_fallbacks():
         assert t.base_url in bases
         assert "https://fallback1.com/v1" in bases or "https://fallback2.com/v1" in bases
         assert t.model in models
-        assert "gpt-4o" in models
+        assert "deepseek-chat" in models
     finally:
         os.environ.pop("OPENAI_BASE_URL_FALLBACKS", None)
         os.environ.pop("OPENAI_MODEL_FALLBACKS", None)
 
 
+def test_translate_many_chunks_uses_one_json_batch():
+    """多个未缓存 chunk 应合并为一次 JSON batch 请求。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+
+    async def fake_call(payload):
+        calls.append(payload)
+        return (
+            {item["id"]: f"译文:{item['html']}" for item in payload},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 30, "completion_tokens": 60},
+        )
+
+    t._call_llm_json_batch = fake_call
+    chunks = [
+        f"<p>Alice sees Smith {uuid.uuid4().hex}</p>",
+        f"<p>Bob visits London {uuid.uuid4().hex}</p>",
+    ]
+    out = asyncio.run(t.translate_many_chunks_async(chunks))
+    assert len(calls) == 1
+    assert len(calls[0]) == 2
+    assert out[0].translated_html.startswith("译文:")
+    assert out[1].translated_html.startswith("译文:")
+    assert t.stats.api_calls == 0  # fake_call 不更新 api_calls；此处只验证批处理编排
+    assert t.stats.translated_chunks == 2
+
+
+def test_translate_many_chunks_error_like_only_fails_that_chunk():
+    """批内单块返回错误响应时，只标记该块失败，其余正常译文不受连累。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+
+    async def fake_call(payload):
+        out = {}
+        for item in payload:
+            if "BAD" in item["html"]:
+                out[item["id"]] = "Sorry, I cannot translate this content."
+            else:
+                out[item["id"]] = f"译文:{item['html']}"
+        return (out, {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 30, "completion_tokens": 60})
+
+    t._call_llm_json_batch = fake_call
+    chunks = [
+        f"<p>Alice sees Smith {uuid.uuid4().hex}</p>",
+        f"<p>BAD chunk {uuid.uuid4().hex}</p>",
+        f"<p>Bob visits London {uuid.uuid4().hex}</p>",
+    ]
+    out = asyncio.run(t.translate_many_chunks_async(chunks))
+
+    assert out[0].error is None and out[0].translated_html.startswith("译文:")
+    assert out[2].error is None and out[2].translated_html.startswith("译文:")
+    # 出错块回退原文（inner_html），且被标记 error
+    assert out[1].error is not None
+    assert not out[1].translated_html.startswith("译文:")
+    # 统计：2 成功 1 失败，无双计
+    assert t.stats.translated_chunks == 2
+    assert t.stats.failed_chunks == 1
+    assert t.stats.translated_chunks + t.stats.failed_chunks == t.stats.total_chunks
+
+
 def _run():
     cases = [
-        test_looks_like_html,
         test_looks_like_error_response,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
+        test_translate_many_chunks_uses_one_json_batch,
+        test_translate_many_chunks_error_like_only_fails_that_chunk,
     ]
     passed = 0
     for fn in cases:

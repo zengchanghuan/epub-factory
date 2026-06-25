@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, Optional
 
-from .models import Job, JobChunk, JobNotification, JobStage, JobStatus, QualityStats, StageStatus
+from .models import Job, JobChapter, JobChunk, JobNotification, JobStage, JobStatus, QualityStats, StageStatus
 
 
 class JobStore:
@@ -12,6 +12,7 @@ class JobStore:
     def __init__(self) -> None:
         self._jobs: Dict[str, Job] = {}
         self._stages: Dict[str, list] = {}
+        self._chapters: Dict[str, JobChapter] = {}
         self._chunks: Dict[str, JobChunk] = {}
         self._notifications: list = []  # list[JobNotification]
         self._lock = Lock()
@@ -55,6 +56,18 @@ class JobStore:
         with self._lock:
             stages = self._stages.get(job_id, [])
             return sorted(stages, key=lambda s: s.started_at)
+
+    def upsert_chapter(self, chapter: JobChapter) -> JobChapter:
+        """写入或更新章节级任务状态（内存：按 job_id:chapter_id 覆盖）。"""
+        with self._lock:
+            self._chapters[f"{chapter.job_id}:{chapter.chapter_id}"] = chapter
+        return chapter
+
+    def list_chapters(self, job_id: str) -> list:
+        """返回该任务的章节列表，按 chapter_id 排序。"""
+        with self._lock:
+            out = [c for c in self._chapters.values() if c.job_id == job_id]
+            return sorted(out, key=lambda c: c.chapter_id)
 
     def upsert_chunk(self, chunk: JobChunk) -> JobChunk:
         """写入或更新 chunk 结果（内存：按 job_id:chunk_id 覆盖）。"""
@@ -159,4 +172,3 @@ def _build_job_store():
 
 
 job_store = _build_job_store()
-

@@ -439,7 +439,7 @@ flowchart LR
 
 - [x] EpubCheck 与状态判定：明确 `completed / partial_completed / failed` 的边界，杜绝假成功（compiler._run_epubcheck 返回 bool，validation_passed 写入 ConversionResult；job_runner 用 status_resolver 判定，校验未通过标 failed + EPUB_VALIDATION_FAILED，见 test_d10_status_resolver）
 - [x] 通知系统第一版：站内通知 + 邮件通知（domain/notification_service：notify_job_completed 写站内 + 可选邮件；job_runner 完成后调用；内存 store add/list_notifications；GET /api/v2/notifications，见 test_d11_notifications）
-- [x] 翻译链路增强：补主/备 `base_url`、模型 fallback、连接池、超时、指数退避、结果校验（SemanticsTranslator 已有 base_url/model fallback、httpx 连接池、超时与重试；本项新增退避 jitter、结果校验 _looks_like_html/_looks_like_error_response，.env.example 与 test_d12_translation_enhancement）
+- [x] 翻译链路增强：补主/备 `base_url`、模型 fallback、连接池、超时、指数退避、结果校验（SemanticsTranslator 已有 base_url/model fallback、httpx 连接池、超时与重试；本项新增退避 jitter、结果校验 _looks_like_error_response，.env.example 与 test_d12_translation_enhancement）
 - [x] 回归与压测：覆盖上传、排队、后台执行、任务中心、通知、下载、失败处理的端到端链路（test_d13_regression：E2E 翻译全失败必返 failed、任务结束后有通知；run_regression.py 跑齐 D1–D13 + C1–C6）
 
 ### 9.5 实施顺序要求

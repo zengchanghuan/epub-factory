@@ -231,6 +231,33 @@ class SemanticsTranslator:
         text = text.strip()
         return json.loads(text)
 
+    @staticmethod
+    def _looks_like_error_response(text: str) -> bool:
+        """识别模型把错误/拒答当作译文返回的常见形态。"""
+        if not text or not text.strip():
+            return False
+        low = text.strip().lower()
+        markers = (
+            "error:",
+            "rate limit",
+            "cannot translate",
+            "can't translate",
+            "unable to process",
+            "i'm unable",
+            "i am unable",
+            "sorry,",
+        )
+        return any(m in low for m in markers)
+
+    @staticmethod
+    def _extract_inner_html(html: str) -> str:
+        """提取块级标签 inner_html，保持外层属性由 Reduce 回写阶段负责。"""
+        soup = BeautifulSoup(html or "", "html.parser")
+        block_tag = soup.find()
+        if block_tag and block_tag.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']:
+            return "".join(str(c) for c in block_tag.contents).strip()
+        return (html or "").strip()
+
     async def _call_llm_json_batch(self, payload: list[dict]) -> tuple[dict[int, str], dict]:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         system_prompt = self._build_system_prompt()
@@ -352,11 +379,7 @@ class SemanticsTranslator:
         self.stats.total_chunks += 1
         
         # 提取 inner_html 传给大模型，防止破坏外层标签属性
-        block_tag = soup.find()
-        if block_tag and block_tag.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']:
-            inner_html = "".join(str(c) for c in block_tag.contents).strip()
-        else:
-            inner_html = html.strip()
+        inner_html = self._extract_inner_html(html)
             
         cached = self.cache.get(inner_html, self._cache_lang_key)
         if cached:
@@ -383,6 +406,114 @@ class SemanticsTranslator:
             self.stats.failed_chunks += 1
             self.stats.last_error = str(e)
             return SingleChunkResult(html, False, None, None, 0, 0, 0, str(e))
+
+    async def translate_many_chunks_async(self, html_chunks: list[str]) -> list["SingleChunkResult"]:
+        """
+        批量翻译多个 chunk，供快速 MapReduce 链路使用。
+
+        与 translate_single_chunk_async 相比，这里会先做缓存过滤，再按字符上限把未命中
+        的 chunk 合并成 JSON batch 并发提交，减少请求数，同时仍由全局 semaphore 控制速率。
+        返回的 translated_html 是 inner_html，Reduce 阶段会负责回写到原块级标签中。
+        """
+        results: list[SingleChunkResult | None] = [None] * len(html_chunks)
+        uncached: list[tuple[int, str]] = []
+
+        for i, html in enumerate(html_chunks):
+            soup = BeautifulSoup(html or "", "html.parser")
+            text = soup.get_text() if html else ""
+            if not self._should_translate(text):
+                results[i] = SingleChunkResult(html, True, None, None, 0, 0, 0, None)
+                continue
+
+            inner_html = self._extract_inner_html(html)
+            self.stats.total_chunks += 1
+            cached = self.cache.get(inner_html, self._cache_lang_key)
+            if cached:
+                self.stats.cached_chunks += 1
+                results[i] = SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
+            else:
+                uncached.append((i, inner_html))
+
+        batches: list[list[tuple[int, str]]] = []
+        cur_batch: list[tuple[int, str]] = []
+        cur_chars = 0
+        for idx, html in uncached:
+            if cur_chars + len(html) > self._BATCH_MAX_CHARS and cur_batch:
+                batches.append(cur_batch)
+                cur_batch = []
+                cur_chars = 0
+            cur_batch.append((idx, html))
+            cur_chars += len(html)
+        if cur_batch:
+            batches.append(cur_batch)
+
+        async def run_batch(batch: list[tuple[int, str]]) -> None:
+            payload = [{"id": local_id, "html": html} for local_id, (_, html) in enumerate(batch)]
+            t0 = time.monotonic()
+            try:
+                async with self.semaphore:
+                    translations_map, meta = await self._call_llm_json_batch(payload)
+            except Exception as exc:
+                # 整批 API/网络/鉴权失败：这批确实没有任何可用译文，全部回退原文。
+                self.stats.last_error = str(exc)
+                for idx, original_inner in batch:
+                    self.stats.errors += 1
+                    self.stats.failed_chunks += 1
+                    results[idx] = SingleChunkResult(
+                        translated_html=original_inner,
+                        cached=False,
+                        model=None,
+                        base_url=None,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        latency_ms=0,
+                        error=str(exc),
+                    )
+                return
+
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            count = max(1, len(batch))
+            prompt_each = int((meta.get("prompt_tokens", 0) or 0) / count)
+            completion_each = int((meta.get("completion_tokens", 0) or 0) / count)
+
+            # 逐块降级：单块被判为错误响应只标记该块失败，不连累同批其它正常译文。
+            for local_id, (idx, original_inner) in enumerate(batch):
+                translated = translations_map.get(local_id, original_inner)
+                if self._looks_like_error_response(translated):
+                    self.stats.errors += 1
+                    self.stats.failed_chunks += 1
+                    self.stats.last_error = f"LLM returned an error-like response for chunk {idx}"
+                    results[idx] = SingleChunkResult(
+                        translated_html=original_inner,
+                        cached=False,
+                        model=meta.get("model"),
+                        base_url=meta.get("base_url"),
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        latency_ms=latency_ms,
+                        error="error-like response",
+                    )
+                    continue
+                self.cache.set(original_inner, translated, self._cache_lang_key)
+                self.stats.translated_chunks += 1
+                results[idx] = SingleChunkResult(
+                    translated_html=translated,
+                    cached=False,
+                    model=meta.get("model"),
+                    base_url=meta.get("base_url"),
+                    prompt_tokens=prompt_each,
+                    completion_tokens=completion_each,
+                    latency_ms=latency_ms,
+                    error=None,
+                )
+
+        if batches:
+            await asyncio.gather(*(run_batch(batch) for batch in batches))
+
+        return [
+            r if r is not None else SingleChunkResult(html_chunks[i], False, None, None, 0, 0, 0, "chunk not processed")
+            for i, r in enumerate(results)
+        ]
 
     def _should_translate(self, text: str) -> bool:
         if not text.strip():
@@ -433,13 +564,24 @@ class SemanticsTranslator:
                     self.progress_callback(f"缓存命中 {len(cached_results)}/{total_blocks} 句")
 
                 uncached_results: dict[int, str] = {}
-                batch: list[tuple[int, str]] = []
-                batch_chars = 0
 
-                async def flush_batch():
-                    nonlocal batch, batch_chars
-                    if not batch:
-                        return
+                # 先把未缓存段落切成多个批次（按字符上限），再并发提交。
+                # 并发度由 self.semaphore(OPENAI_CONCURRENCY，默认 5) 在 _translate_batch
+                # 内部约束，既能把吞吐拉满，又不会击穿内存/速率限制。
+                batches: list[list[tuple[int, str]]] = []
+                cur_batch: list[tuple[int, str]] = []
+                cur_chars = 0
+                for idx, html in uncached:
+                    if cur_chars + len(html) > self._BATCH_MAX_CHARS and cur_batch:
+                        batches.append(cur_batch)
+                        cur_batch = []
+                        cur_chars = 0
+                    cur_batch.append((idx, html))
+                    cur_chars += len(html)
+                if cur_batch:
+                    batches.append(cur_batch)
+
+                async def run_batch(batch: list[tuple[int, str]]):
                     indices = [idx for idx, _ in batch]
                     htmls = [h for _, h in batch]
                     try:
@@ -452,19 +594,13 @@ class SemanticsTranslator:
                             self.stats.errors += 1
                             self.stats.failed_chunks += 1
                             uncached_results[idx] = h  # fallback to original
-                    
+
                     if self.progress_callback:
                         done = len(cached_results) + len(uncached_results)
                         self.progress_callback(f"{done}/{total_blocks} 句")
-                    batch = []
-                    batch_chars = 0
 
-                for idx, html in uncached:
-                    if batch_chars + len(html) > self._BATCH_MAX_CHARS and batch:
-                        await flush_batch()
-                    batch.append((idx, html))
-                    batch_chars += len(html)
-                await flush_batch()
+                if batches:
+                    await asyncio.gather(*(run_batch(b) for b in batches))
 
                 for i in range(total_blocks):
                     block = translatable_blocks[i]

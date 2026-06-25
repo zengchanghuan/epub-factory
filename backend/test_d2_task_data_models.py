@@ -163,12 +163,30 @@ def test_stage_and_notification_persistence():
     return True
 
 
+def test_job_glossary_persistence():
+    print("\n" + "=" * 60)
+    print("🧪 Test 5: job glossary 可持久化")
+    print("=" * 60)
+
+    store, _ = make_store()
+    job = make_job()
+    job.glossary = {"Smith": "史密斯", "London": "伦敦"}
+    store.add(job)
+    loaded = store.get(job.id)
+    assert loaded is not None
+    assert loaded.glossary == job.glossary
+    print(f"  glossary={loaded.glossary}")
+    print("  ✅ PASS")
+    return True
+
+
 if __name__ == "__main__":
     tests = [
         test_tables_created,
         test_chapter_persistence,
         test_chunk_upsert,
         test_stage_and_notification_persistence,
+        test_job_glossary_persistence,
     ]
 
     passed = 0
