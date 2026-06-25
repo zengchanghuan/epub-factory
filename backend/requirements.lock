@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# requirements.lock — 与生产环境完全一致的依赖快照（含传递依赖）
+#
+# 用途：本地/CI 复刻线上依赖树，消除「本地能跑、线上不行」类不一致。
+# 基准：腾讯云生产机 ~/epub-factory/backend/.venv 的 `pip freeze`
+# Python：3.10.12（见 .python-version；解释器版本不一致是最大坑，务必先对齐）
+# 生成：2026-06-25
+#
+# 重建本地环境（需先 `pyenv install 3.10.12`）：
+#   cd backend
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.lock
+#
+# 注意：
+# - requirements.txt 仍是「人类维护的直接依赖（部分用 >=）」；本文件是「机器锁定的完整快照」。
+# - 升级依赖时改 requirements.txt 安装后，再在生产同版本环境重新 `pip freeze > requirements.lock`。
+# - pip 管不到系统级依赖：java（epubcheck）、calibre（ebook-convert）需在机器/镜像层单独保证。
+# ─────────────────────────────────────────────────────────────────────────────
+aiofiles==24.1.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+alembic==1.18.4
+alibabacloud-credentials==1.0.8
+alibabacloud-credentials-api==1.0.0
+alibabacloud-dysmsapi20170525==4.5.1
+alibabacloud-gateway-spi==0.0.3
+alibabacloud-tea==0.4.3
+alibabacloud-tea-openapi==0.4.4
+alibabacloud-tea-util==0.3.14
+alipay-sdk-python==3.3.398
+amqp==5.3.1
+annotated-types==0.7.0
+anyio==4.13.0
+APScheduler==3.11.2
+async-timeout==5.0.1
+attrs==26.1.0
+bcrypt==5.0.0
+beautifulsoup4==4.12.3
+billiard==4.2.4
+celery==5.6.2
+certifi==2026.4.22
+cffi==2.0.0
+chardet==5.2.0
+charset-normalizer==3.4.7
+click==8.3.3
+click-didyoumean==0.3.1
+click-plugins==1.1.1.2
+click-repl==0.3.0
+cobble==0.1.4
+cryptography==46.0.7
+cssutils==2.10.2
+darabonba-core==1.0.5
+distro==1.9.0
+EbookLib==0.18
+ecdsa==0.19.2
+exceptiongroup==1.3.1
+fastapi==0.116.1
+frozenlist==1.8.0
+greenlet==3.4.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.13
+jiter==0.15.0
+kombu==5.6.2
+lxml==5.1.0
+Mako==1.3.12
+mammoth==1.12.0
+MarkupSafe==3.0.3
+mistune==3.2.1
+multidict==6.7.1
+nest-asyncio==1.6.0
+openai==2.43.0
+opencc-python-reimplemented==0.1.7
+packaging==26.1
+passlib==1.7.4
+prompt_toolkit==3.0.52
+propcache==0.5.2
+pyahocorasick==2.3.1
+pyasn1==0.6.3
+pycparser==3.0
+pycrypto==2.6.1
+pydantic==2.13.3
+pydantic_core==2.46.3
+pypdf==6.0.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.0.1
+python-jose==3.5.0
+python-multipart==0.0.20
+PyYAML==6.0.3
+redis==7.3.0
+requests==2.32.5
+rsa==4.9.1
+sentry-sdk==2.59.0
+six==1.17.0
+sniffio==1.3.1
+soupsieve==2.8.3
+SQLAlchemy==2.0.49
+starlette==0.47.3
+tenacity==8.2.3
+tencentcloud-sdk-python-common==3.1.98
+tencentcloud-sdk-python-sms==3.1.92
+tomli==2.4.1
+tqdm==4.67.3
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2026.1
+tzlocal==5.3.1
+urllib3==2.6.3
+uvicorn==0.35.0
+vine==5.1.0
+wcwidth==0.6.0
+yarl==1.23.0
