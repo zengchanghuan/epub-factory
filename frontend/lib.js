@@ -85,7 +85,24 @@ const V2_STATUS_TEXT = {
   cancelled: "已取消",
 };
 
-function mapV2StatusText(v2Status) {
+function mapV2StatusText(v2Status, enableTranslation = false) {
+  if (enableTranslation) {
+    const translationMap = {
+      queued: "排队中",
+      preprocessing: "预处理中",
+      mapping: "分析章节",
+      translating: "翻译中",
+      reducing: "回写译文",
+      packaging: "打包中",
+      validating: "校验中",
+      completed: "完成",
+      partial_completed: "部分完成",
+      failed: "失败",
+      cancelled: "已取消",
+      pending_payment: "待支付",
+    };
+    return translationMap[v2Status] || v2Status || "未知";
+  }
   return V2_STATUS_TEXT[v2Status] || v2Status || "未知";
 }
 

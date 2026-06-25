@@ -213,6 +213,7 @@ async def _translate_manifest_async(
         glossary=glossary,
         temperature=getattr(job, "temperature", None),
     )
+    translator.progress_callback = progress_callback
 
     body_chapters = [
         ch for ch in manifest.get("chapters", [])
@@ -258,7 +259,10 @@ async def _translate_manifest_async(
             ))
             progress_callback(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
 
-            translated = await translator.translate_many_chunks_async([c["html"] for c in specs])
+            translated = await translator.translate_many_chunks_async(
+                [c["html"] for c in specs],
+                progress_label=f"快速翻译 {chapter['file_path']}",
+            )
             chunk_results: list[ChunkResult] = []
             chunk_statuses: list[ChunkStatus] = []
             for spec, res in zip(specs, translated):

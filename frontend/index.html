@@ -1027,7 +1027,7 @@
 
     <!-- Status Card -->
     <div class="card status-card" id="statusCard">
-      <h2><span class="icon">⚡</span> 转换进度</h2>
+      <h2><span class="icon">⚡</span> <span id="statusCardTitle">转换进度</span></h2>
 
       <div class="status-header">
         <span class="status-badge" id="statusBadge">等待中</span>
@@ -1046,7 +1046,7 @@
         <div class="pay-spinner"></div>
         <div>
           <div style="font-size:13px; font-weight:600; color:#92400e;">正在等待支付结果确认…</div>
-          <div style="font-size:12px; color:#b45309; margin-top:3px;">支付成功后将自动开始转换，请勿关闭页面</div>
+          <div id="paymentWaitText" style="font-size:12px; color:#b45309; margin-top:3px;">支付成功后将自动开始处理，请勿关闭页面</div>
         </div>
       </div>
 
@@ -1057,7 +1057,7 @@
 
       <div id="resultActions" style="gap:10px; flex-wrap:wrap; margin-top:16px;">
         <a class="download-btn" id="downloadBtn" href="#">
-          ↓ 下载转换结果
+          ↓ 下载处理结果
         </a>
       </div>
 
@@ -1201,6 +1201,31 @@
     let jobStartMs = null;
     let lastProgressMessage = "";
     let currentJobId = null;
+    let currentJobIsTranslation = false;
+
+    function taskVerb(isTranslation = currentJobIsTranslation) {
+      return isTranslation ? "翻译" : "转换";
+    }
+
+    function setTaskUiMode(isTranslation) {
+      currentJobIsTranslation = !!isTranslation;
+      const verb = taskVerb();
+      $("statusCardTitle").textContent = `${verb}进度`;
+      downloadBtn.textContent = `↓ 下载${verb}结果`;
+      $("paymentWaitText").textContent = `支付成功后将自动开始${verb}，请勿关闭页面`;
+      const queueNotice = $("queueNotice");
+      if (queueNotice && queueNotice.querySelector("#goToTasksBtn")) {
+        queueNotice.innerHTML = `
+          任务已进入后台队列。您可以关闭本页，稍后在「任务中心」查看${verb}结果与下载。
+          <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
+        `;
+        $("goToTasksBtn").addEventListener("click", (e) => {
+          e.preventDefault();
+          showView("tasks");
+          if (currentJobId) openJobDetail(currentJobId);
+        });
+      }
+    }
 
     // ─── 视图切换：上传 / 任务中心 ────────────────────────────────────────────
     const uploadCard = $("uploadCard");
@@ -1233,11 +1258,12 @@
           listEl.style.display = "block";
           listEl.innerHTML = items.map(j => {
             const statusClass = String(j.status || "").replace(/[^a-zA-Z0-9_-]/g, "_");
-            const statusText = escapeHtml(typeof mapV2StatusText === "function" ? mapV2StatusText(j.status) : j.status);
+            const statusText = escapeHtml(typeof mapV2StatusText === "function" ? mapV2StatusText(j.status, j.enable_translation) : j.status);
             const time = j.created_at ? new Date(j.created_at).toLocaleString() : "";
             const safeFilename = escapeHtml(j.source_filename || "-");
             const safeMessage = escapeHtml(j.message || "");
-            const metaParts = [time, safeMessage].filter(Boolean).join(" · ");
+            const taskKind = j.enable_translation ? "翻译" : "转换";
+            const metaParts = [taskKind, time, safeMessage].filter(Boolean).join(" · ");
             return `<li class="tasks-item" data-job-id="${j.job_id}">
               <div class="tasks-info">
                 <div class="tasks-filename" title="${safeFilename}">${safeFilename}</div>
@@ -1302,6 +1328,7 @@
       fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId) })
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
+          setTaskUiMode(!!data.enable_translation);
           const s = data.status || "";
           let legacy = "running";
           if (s === "completed" || s === "partial_completed") legacy = "success";
@@ -1317,7 +1344,7 @@
             statusLineMessage = "[" + data.error_code + "] " + (statusLineMessage || "任务失败");
           }
           setStatus(legacy, statusLineMessage);
-          statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s) : s;
+          statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s, data.enable_translation) : s;
           // 付款等待 loading 态
           if (s === "pending_payment") {
             $("paymentWaitNotice").classList.add("visible");
@@ -1341,7 +1368,7 @@
           if (s !== "pending_payment" && s !== "failed" && s !== "cancelled") {
             if (!$("queueNotice").querySelector("#goToTasksBtn")) {
               $("queueNotice").innerHTML = `
-                任务已进入后台队列。您可以关闭本页，稍后在「任务中心」查看结果与下载。
+                任务已进入后台队列。您可以关闭本页，稍后在「任务中心」查看${taskVerb(data.enable_translation)}结果与下载。
                 <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
               `;
               $("goToTasksBtn").addEventListener("click", (e) => {
@@ -1586,7 +1613,7 @@
 
     function setStatus(status, message) {
       statusCard.classList.add("visible");
-      statusBadge.textContent = { pending: "等待中", running: "转换中...", success: "完成", failed: "失败" }[status] || status;
+      statusBadge.textContent = { pending: "等待中", running: `${taskVerb()}中...`, success: "完成", failed: "失败" }[status] || status;
       statusBadge.className = "status-badge " + status;
       progressBar.className = "progress-bar " + status;
       statusMessage.textContent = message || "";
@@ -1643,6 +1670,7 @@
         if (!res.ok) throw new Error("查询失败");
         const data = await res.json();
 
+        setTaskUiMode(!!data.enable_translation);
         setStatus(data.status, data.message);
         appendProgressLog(data.message);
         $("metaFilename").textContent = data.source_filename;
@@ -1707,6 +1735,7 @@
     async function submitJob() {
       if (!selectedFile) return;
 
+      setTaskUiMode(enableTranslation.checked);
       submitBtn.disabled = true;
       setStatus("pending", "正在上传...");
       progressLogEl.innerHTML = "";

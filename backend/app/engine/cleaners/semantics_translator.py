@@ -109,6 +109,7 @@ class SemanticsTranslator:
         self.glossary: dict[str, str] = glossary or {}
         self.cache = TranslationCache()
         self.progress_callback = None
+        self.batch_max_chars = max(1000, int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS", self._BATCH_MAX_CHARS)))
 
         self.api_key = os.environ.get("OPENAI_API_KEY", "dummy")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -339,7 +340,7 @@ class SemanticsTranslator:
         meta = {"model": model, "base_url": base_url, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
         return (translations, meta)
 
-    _BATCH_MAX_CHARS = 2500
+    _BATCH_MAX_CHARS = 6000
 
     async def _translate_batch(self, html_chunks: list[str]) -> list[str]:
         payload = [{"id": i, "html": html} for i, html in enumerate(html_chunks)]
@@ -410,7 +411,11 @@ class SemanticsTranslator:
             self.stats.last_error = str(e)
             return SingleChunkResult(html, False, None, None, 0, 0, 0, str(e))
 
-    async def translate_many_chunks_async(self, html_chunks: list[str]) -> list["SingleChunkResult"]:
+    async def translate_many_chunks_async(
+        self,
+        html_chunks: list[str],
+        progress_label: str | None = None,
+    ) -> list["SingleChunkResult"]:
         """
         批量翻译多个 chunk，供快速 MapReduce 链路使用。
 
@@ -441,7 +446,7 @@ class SemanticsTranslator:
         cur_batch: list[tuple[int, str]] = []
         cur_chars = 0
         for idx, html in uncached:
-            if cur_chars + len(html) > self._BATCH_MAX_CHARS and cur_batch:
+            if cur_chars + len(html) > self.batch_max_chars and cur_batch:
                 batches.append(cur_batch)
                 cur_batch = []
                 cur_chars = 0
@@ -449,6 +454,19 @@ class SemanticsTranslator:
             cur_chars += len(html)
         if cur_batch:
             batches.append(cur_batch)
+
+        completed_batches = 0
+        completed_chunks = 0
+        total_batches = len(batches)
+
+        def report_batch_progress(batch_size: int) -> None:
+            nonlocal completed_batches, completed_chunks
+            completed_batches += 1
+            completed_chunks += batch_size
+            if self.progress_callback and progress_label and total_batches:
+                self.progress_callback(
+                    f"{progress_label}：{completed_batches}/{total_batches} 批，{completed_chunks}/{len(html_chunks)} 段"
+                )
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
             payload = [{"id": local_id, "html": html} for local_id, (_, html) in enumerate(batch)]
@@ -472,6 +490,7 @@ class SemanticsTranslator:
                         latency_ms=0,
                         error=str(exc),
                     )
+                report_batch_progress(len(batch))
                 return
 
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -509,6 +528,7 @@ class SemanticsTranslator:
                     latency_ms=latency_ms,
                     error=None,
                 )
+            report_batch_progress(len(batch))
 
         if batches:
             await asyncio.gather(*(run_batch(batch) for batch in batches))
@@ -575,7 +595,7 @@ class SemanticsTranslator:
                 cur_batch: list[tuple[int, str]] = []
                 cur_chars = 0
                 for idx, html in uncached:
-                    if cur_chars + len(html) > self._BATCH_MAX_CHARS and cur_batch:
+                    if cur_chars + len(html) > self.batch_max_chars and cur_batch:
                         batches.append(cur_batch)
                         cur_batch = []
                         cur_chars = 0
