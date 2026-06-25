@@ -197,6 +197,9 @@ class JobChunk:
     sequence: int
     locator: str
     source_hash: str
+    source_text: str = ""
+    translated_text: str = ""
+    audit_json: Dict[str, Any] = field(default_factory=dict)
     status: ChunkStatus = ChunkStatus.pending
     cached: bool = False
     model: Optional[str] = None

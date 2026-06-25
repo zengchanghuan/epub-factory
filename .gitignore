@@ -15,6 +15,10 @@ backend/reduce_work/
 backend/temp/
 backend/.env
 backend/translation_cache.db
+epub_jobs.db
+epub_jobs.db-shm
+epub_jobs.db-wal
+translation_cache.db
 backend/epub_jobs.db
 backend/epub_jobs.db-shm
 backend/epub_jobs.db-wal

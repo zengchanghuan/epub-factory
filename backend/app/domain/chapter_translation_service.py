@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from app.storage import job_store
 from app.domain.manifest_service import build_manifest
 from app.domain.chapter_reduce_service import apply_chunk_results
+from app.domain.translation_quality_audit import audit_translation_chunk
 from app.engine.unpacker import EpubUnpacker
 from app.models import ChapterKind, ChunkStatus, JobChunk
 from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult
@@ -30,6 +31,7 @@ class ChunkResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: int = 0
+    audit_json: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -109,6 +111,13 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
         if isinstance(res, Exception):
             translator.stats.failed_chunks += 1
             translator.stats.last_error = str(res)
+            audit = audit_translation_chunk(
+                original_html=spec["html"],
+                translated_html=spec["html"],
+                glossary=job.glossary or {},
+            ).to_dict()
+            audit["flags"] = list(dict.fromkeys([*audit.get("flags", []), "translation_error"]))
+            audit["risk_level"] = "fail"
             chunk_results.append(
                 ChunkResult(
                     chunk_id=spec["chunk_id"],
@@ -118,10 +127,20 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                     translated_html=spec["html"],
                     cached=False,
                     error=str(res),
+                    audit_json=audit,
                 )
             )
             continue
         assert isinstance(res, SingleChunkResult)
+        audit = audit_translation_chunk(
+            original_html=spec["html"],
+            translated_html=res.translated_html,
+            glossary=job.glossary or {},
+            error_like_checker=translator._looks_like_error_response,
+        ).to_dict()
+        if res.error:
+            audit["flags"] = list(dict.fromkeys([*audit.get("flags", []), "translation_error"]))
+            audit["risk_level"] = "fail"
         chunk_results.append(
             ChunkResult(
                 chunk_id=spec["chunk_id"],
@@ -136,6 +155,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 prompt_tokens=res.prompt_tokens,
                 completion_tokens=res.completion_tokens,
                 latency_ms=res.latency_ms,
+                audit_json=audit,
             )
         )
     # 持久化到 job_chunks（若 store 支持）
@@ -152,6 +172,9 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 sequence=cr.sequence,
                 locator=cr.locator,
                 source_hash=source_hash,
+                source_text=(cr.audit_json or {}).get("source_text", ""),
+                translated_text=(cr.audit_json or {}).get("translated_text", ""),
+                audit_json=cr.audit_json or {},
                 status=status,
                 cached=cr.cached,
                 model=cr.model,

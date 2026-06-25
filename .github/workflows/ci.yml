@@ -40,6 +40,7 @@ jobs:
                 test_d12_translation_enhancement
                 test_d13_regression
                 test_d14_fast_translation_runner
+                test_d15_translation_quality_audit
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard

@@ -114,12 +114,18 @@ def test_chunk_upsert():
     chunk.prompt_tokens = 12
     chunk.completion_tokens = 18
     chunk.latency_ms = 320
+    chunk.source_text = "Smith met 42 readers."
+    chunk.translated_text = "史密斯见到了 42 位读者。"
+    chunk.audit_json = {"risk_level": "ok", "flags": [], "length_ratio": 0.9}
     store.upsert_chunk(chunk)
     rows = store.list_chunks(job.id, "chap_01")
     assert len(rows) == 1
     assert rows[0].status == ChunkStatus.translated
     assert rows[0].prompt_tokens == 12
     assert rows[0].completion_tokens == 18
+    assert rows[0].source_text == "Smith met 42 readers."
+    assert rows[0].translated_text == "史密斯见到了 42 位读者。"
+    assert rows[0].audit_json["risk_level"] == "ok"
     print(f"  chunk={rows[0]}")
     print("  ✅ PASS")
     return True

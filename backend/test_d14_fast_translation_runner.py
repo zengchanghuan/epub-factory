@@ -19,6 +19,7 @@ import app.domain.fast_translation_runner as fast_runner
 from app.domain.fast_translation_runner import run_fast_translation_job
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.models import DeviceProfile, Job, OutputMode
+from app.storage import job_store
 
 
 def _make_epub(path: Path, marker: str) -> None:
@@ -81,6 +82,14 @@ def test_fast_translation_runner_glossary_audit():
             assert out.is_file()
             assert result.translation_stats["translated_chunks"] >= 1
             assert result.translation_stats["glossary_fixed_count"] >= 2
+            assert "audit_warn_chunks" in result.translation_stats
+            assert "audit_failed_chunks" in result.translation_stats
+            assert "audit_flags_count" in result.translation_stats
+            chunks = job_store.list_chunks(job.id)
+            assert chunks
+            assert any(c.source_text for c in chunks)
+            assert any(c.translated_text for c in chunks)
+            assert all(isinstance(c.audit_json, dict) for c in chunks)
             out_book = epub.read_epub(str(out))
             combined = []
             for item in out_book.get_items():

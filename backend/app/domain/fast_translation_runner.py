@@ -28,6 +28,7 @@ from app.domain.book_reduce_service import make_get_chapter_content, reduce_and_
 from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
 from app.domain.manifest_service import build_manifest
+from app.domain.translation_quality_audit import audit_translation_chunk
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.engine.compiler import EPUBCHECK_JAR
 from app.engine.glossary_extractor import build_auto_glossary, merge_glossaries, verify_and_fix
@@ -50,18 +51,17 @@ StageCallback = Callable[[str, str, int | None], None]
 logger = logging.getLogger("epub.fast_translation")
 
 
-def _log_stage(job, stage: str, latency_ms: float | None = None, **fields: Any) -> None:
-    """结构化阶段日志：统一带上 job_id / trace_id，便于线上链路追溯。"""
-    parts = [
-        f"job_id={getattr(job, 'id', None)}",
-        f"trace_id={getattr(job, 'trace_id', None)}",
-        f"stage={stage}",
-    ]
+def _log_stage(stage: str, latency_ms: float | None = None, **fields: Any) -> None:
+    """结构化阶段日志。
+
+    trace_id / job_id 由 run_job 设置的 contextvar 自动注入（见 infra.logging._JsonFormatter），
+    这里不再手动拼接；阶段名与耗时等业务字段通过 extra 传入，作为 JSON 字段输出，便于检索。
+    """
+    extra_fields: dict[str, Any] = {"stage": stage}
     if latency_ms is not None:
-        parts.append(f"latency_ms={latency_ms:.0f}")
-    for key, value in fields.items():
-        parts.append(f"{key}={value}")
-    logger.info("[fast-translation] " + " ".join(parts))
+        extra_fields["latency_ms"] = round(latency_ms)
+    extra_fields.update(fields)
+    logger.info(f"fast-translation {stage}", extra={"_extra_fields": extra_fields})
 
 
 def _now() -> datetime:
@@ -128,6 +128,8 @@ def _upsert_chunk(job_id: str, chapter_id: str, cr: ChunkResult, status: ChunkSt
         return
     now = _now()
     source_hash = hashlib.sha256(cr.original_html.encode("utf-8", errors="replace")).hexdigest()
+    source_text = BeautifulSoup(cr.original_html or "", "html.parser").get_text(" ", strip=True)
+    translated_text = BeautifulSoup(cr.translated_html or "", "html.parser").get_text(" ", strip=True)
     upsert(JobChunk(
         job_id=job_id,
         chapter_id=chapter_id,
@@ -135,6 +137,9 @@ def _upsert_chunk(job_id: str, chapter_id: str, cr: ChunkResult, status: ChunkSt
         sequence=cr.sequence,
         locator=cr.locator,
         source_hash=source_hash,
+        source_text=source_text,
+        translated_text=translated_text,
+        audit_json=cr.audit_json or {},
         status=status,
         cached=cr.cached,
         model=cr.model,
@@ -219,6 +224,10 @@ async def _translate_manifest_async(
         "glossary_fixed_count": 0,
         "glossary_fixed_terms": {},
         "glossary_unfixable_examples": [],
+        "audit_warn_chunks": 0,
+        "audit_failed_chunks": 0,
+        "audit_flags_count": {},
+        "audit_examples": [],
     }
 
     for ch in manifest.get("chapters", []):
@@ -270,6 +279,32 @@ async def _translate_manifest_async(
                         if len(audit["glossary_unfixable_examples"]) < 20:
                             audit["glossary_unfixable_examples"].append(item)
 
+                quality = audit_translation_chunk(
+                    original_html=spec["html"],
+                    translated_html=translated_html,
+                    glossary=glossary if status != ChunkStatus.skipped else {},
+                    error_like_checker=translator._looks_like_error_response,
+                ).to_dict()
+                if res.error:
+                    quality["flags"] = list(dict.fromkeys([*quality.get("flags", []), "translation_error"]))
+                    quality["risk_level"] = "fail"
+                risk_level = quality.get("risk_level")
+                if risk_level == "warn":
+                    audit["audit_warn_chunks"] += 1
+                elif risk_level == "fail":
+                    audit["audit_failed_chunks"] += 1
+                for flag in quality.get("flags", []):
+                    audit["audit_flags_count"][flag] = audit["audit_flags_count"].get(flag, 0) + 1
+                if risk_level in ("warn", "fail") and len(audit["audit_examples"]) < 20:
+                    audit["audit_examples"].append({
+                        "chapter_id": chapter["chapter_id"],
+                        "chunk_id": spec["chunk_id"],
+                        "risk_level": risk_level,
+                        "flags": quality.get("flags", []),
+                        "source_text": quality.get("source_text", "")[:160],
+                        "translated_text": quality.get("translated_text", "")[:160],
+                    })
+
                 cr = ChunkResult(
                     chunk_id=spec["chunk_id"],
                     sequence=spec["sequence"],
@@ -283,6 +318,7 @@ async def _translate_manifest_async(
                     prompt_tokens=res.prompt_tokens,
                     completion_tokens=res.completion_tokens,
                     latency_ms=res.latency_ms,
+                    audit_json=quality,
                 )
                 chunk_results.append(cr)
                 chunk_statuses.append(status)
@@ -340,7 +376,7 @@ def run_fast_translation_job(
     """
     timings: list[tuple[str, float]] = []
     started_all = time.monotonic()
-    _log_stage(job, "start", input=str(input_path))
+    _log_stage("start", input=str(input_path))
 
     with tempfile.TemporaryDirectory(prefix="epub_fast_translate_") as tmp:
         preprocessed = Path(tmp) / "preprocessed.epub"
@@ -364,17 +400,17 @@ def run_fast_translation_job(
             stage_callback=stage_callback,
         )
         timings.append(("Preprocess", (time.monotonic() - t) * 1000))
-        _log_stage(job, "preprocessing", timings[-1][1])
+        _log_stage("preprocessing", timings[-1][1])
 
         t = time.monotonic()
         stage_callback("mapping", "生成章节 Manifest", None)
         manifest = build_manifest(str(preprocessed), job.id)
         if manifest.get("error"):
-            _log_stage(job, "mapping_failed", error=manifest["error"])
+            _log_stage("mapping_failed", error=manifest["error"])
             raise RuntimeError(manifest["error"])
         content_by_file = _load_content_by_file(str(preprocessed))
         timings.append(("Manifest", (time.monotonic() - t) * 1000))
-        _log_stage(job, "mapping", timings[-1][1], chapters=len(manifest.get("chapters", [])))
+        _log_stage("mapping", timings[-1][1], chapters=len(manifest.get("chapters", [])))
 
         t = time.monotonic()
         stage_callback("glossary", "构建全书术语表", None)
@@ -382,7 +418,7 @@ def run_fast_translation_job(
         auto_glossary = build_auto_glossary(texts, target_lang=job.target_lang, min_count=2, max_terms=200)
         glossary = merge_glossaries(getattr(job, "glossary", None) or {}, auto_glossary)
         timings.append(("Glossary", (time.monotonic() - t) * 1000))
-        _log_stage(job, "glossary", timings[-1][1], auto=len(auto_glossary), total=len(glossary))
+        _log_stage("glossary", timings[-1][1], auto=len(auto_glossary), total=len(glossary))
         stage_callback(
             "glossary",
             f"术语表就绪：自动 {len(auto_glossary)} 条，用户 {len(getattr(job, 'glossary', {}) or {})} 条",
@@ -400,7 +436,7 @@ def run_fast_translation_job(
         ))
         timings.append(("TranslateMap", (time.monotonic() - t) * 1000))
         _log_stage(
-            job, "translating", timings[-1][1],
+            "translating", timings[-1][1],
             translated=translation_stats.get("translated_chunks"),
             cached=translation_stats.get("cached_chunks"),
             failed=translation_stats.get("failed_chunks"),
@@ -409,7 +445,7 @@ def run_fast_translation_job(
 
         if translation_stats.get("all_failed"):
             last_error = translation_stats.get("last_error") or "上游模型调用失败"
-            _log_stage(job, "translating_failed", error=last_error)
+            _log_stage("translating_failed", error=last_error)
             raise RuntimeError(f"AI 翻译失败：未成功写入任何译文。最后错误：{last_error}")
 
         t = time.monotonic()
@@ -420,24 +456,27 @@ def run_fast_translation_job(
             make_get_chapter_content(job.id),
         )
         timings.append(("ReducePackage", (time.monotonic() - t) * 1000))
-        _log_stage(job, "reducing", timings[-1][1])
+        _log_stage("reducing", timings[-1][1])
         if not ok:
-            _log_stage(job, "reducing_failed")
+            _log_stage("reducing_failed")
             raise RuntimeError("快速翻译 Reduce/打包失败")
 
     t = time.monotonic()
     stage_callback("validating", "校验 EPUB", None)
     validation_passed = _run_epubcheck(output_path)
     timings.append(("EpubCheck", (time.monotonic() - t) * 1000))
-    _log_stage(job, "validating", timings[-1][1], passed=validation_passed)
+    _log_stage("validating", timings[-1][1], passed=validation_passed)
 
     failed = int(translation_stats.get("failed_chunks") or 0)
     done = int(translation_stats.get("translated_chunks") or 0) + int(translation_stats.get("cached_chunks") or 0)
+    audit_review = int(translation_stats.get("audit_warn_chunks") or 0) + int(translation_stats.get("audit_failed_chunks") or 0)
     message = "转换成功"
     error_code = None
     if failed:
         message = f"转换成功，但有 {failed} 个段落翻译失败，成功写入 {done} 个段落。"
         error_code = ErrorCode.PARTIAL_TRANSLATION.value
+    elif audit_review:
+        message = f"转换成功，但有 {audit_review} 个段落需要复核。"
     if not validation_passed:
         message = "打包成功但 EPUB 校验未通过，结果不可交付"
         error_code = ErrorCode.EPUB_VALIDATION_FAILED.value
@@ -445,7 +484,7 @@ def run_fast_translation_job(
     total_ms = (time.monotonic() - started_all) * 1000
     timings.append(("Total", total_ms))
     metrics = _metrics_summary(timings)
-    _log_stage(job, "done", total_ms, error_code=error_code, validation_passed=validation_passed)
+    _log_stage("done", total_ms, error_code=error_code, validation_passed=validation_passed)
 
     return ConversionResult(
         quality_stats=pre_result.quality_stats,

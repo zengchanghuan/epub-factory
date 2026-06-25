@@ -26,6 +26,7 @@ D_SUITE = [
     "test_d12_translation_enhancement.py",
     "test_d13_regression.py",
     "test_d14_fast_translation_runner.py",
+    "test_d15_translation_quality_audit.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

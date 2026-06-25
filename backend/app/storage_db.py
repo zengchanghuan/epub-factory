@@ -123,6 +123,9 @@ class ChunkRecord(Base):
     sequence = Column(String(16), nullable=False, default="0")
     locator = Column(Text, nullable=False)
     source_hash = Column(String(128), nullable=False)
+    source_text = Column(Text, nullable=True)
+    translated_text = Column(Text, nullable=True)
+    audit_json = Column(Text, nullable=True)
     status = Column(String(32), nullable=False, default="pending")
     cached = Column(Boolean, nullable=False, default=False)
     model = Column(String(64), nullable=True)
@@ -224,6 +227,13 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN polish_char_count VARCHAR(16) DEFAULT '0'")
     if "glossary_json" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN glossary_json TEXT")
+    chunk_columns = {col["name"] for col in inspector.get_columns("job_chunks")}
+    if "source_text" not in chunk_columns:
+        migrations.append("ALTER TABLE job_chunks ADD COLUMN source_text TEXT")
+    if "translated_text" not in chunk_columns:
+        migrations.append("ALTER TABLE job_chunks ADD COLUMN translated_text TEXT")
+    if "audit_json" not in chunk_columns:
+        migrations.append("ALTER TABLE job_chunks ADD COLUMN audit_json TEXT")
     if not migrations:
         return
     with engine.begin() as conn:
@@ -338,6 +348,16 @@ def _chapter_to_record(chapter: JobChapter) -> ChapterRecord:
 
 
 def _record_to_chunk(r: ChunkRecord) -> JobChunk:
+    import json
+    audit_json = {}
+    raw_audit = getattr(r, "audit_json", None)
+    if raw_audit:
+        try:
+            parsed = json.loads(raw_audit)
+            if isinstance(parsed, dict):
+                audit_json = parsed
+        except Exception:
+            audit_json = {}
     return JobChunk(
         job_id=r.job_id,
         chapter_id=r.chapter_id,
@@ -345,6 +365,9 @@ def _record_to_chunk(r: ChunkRecord) -> JobChunk:
         sequence=int(r.sequence),
         locator=r.locator,
         source_hash=r.source_hash,
+        source_text=getattr(r, "source_text", None) or "",
+        translated_text=getattr(r, "translated_text", None) or "",
+        audit_json=audit_json,
         status=ChunkStatus(r.status),
         cached=r.cached,
         model=r.model,
@@ -360,6 +383,7 @@ def _record_to_chunk(r: ChunkRecord) -> JobChunk:
 
 
 def _chunk_to_record(chunk: JobChunk) -> ChunkRecord:
+    import json
     return ChunkRecord(
         id=f"{chunk.job_id}:{chunk.chunk_id}",
         job_id=chunk.job_id,
@@ -368,6 +392,9 @@ def _chunk_to_record(chunk: JobChunk) -> ChunkRecord:
         sequence=str(chunk.sequence),
         locator=chunk.locator,
         source_hash=chunk.source_hash,
+        source_text=getattr(chunk, "source_text", "") or "",
+        translated_text=getattr(chunk, "translated_text", "") or "",
+        audit_json=json.dumps(getattr(chunk, "audit_json", {}) or {}, ensure_ascii=False),
         status=chunk.status.value,
         cached=chunk.cached,
         model=chunk.model,
@@ -704,6 +731,10 @@ class PersistentJobStore:
                 existing.sequence = str(chunk.sequence)
                 existing.locator = chunk.locator
                 existing.source_hash = chunk.source_hash
+                existing.source_text = getattr(chunk, "source_text", "") or ""
+                existing.translated_text = getattr(chunk, "translated_text", "") or ""
+                import json
+                existing.audit_json = json.dumps(getattr(chunk, "audit_json", {}) or {}, ensure_ascii=False)
                 existing.status = chunk.status.value
                 existing.cached = chunk.cached
                 existing.model = chunk.model

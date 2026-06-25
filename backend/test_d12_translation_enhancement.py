@@ -24,6 +24,19 @@ def test_looks_like_error_response():
     assert SemanticsTranslator._looks_like_error_response("") is False
 
 
+def test_faithful_translation_prompt_constraints():
+    """系统 prompt 必须锁定忠实翻译，不鼓励信达雅式改写。"""
+    t = SemanticsTranslator(target_lang="zh-CN", glossary={"Smith": "史密斯"})
+    prompt = t._build_system_prompt()
+    assert "忠实翻译" in prompt
+    assert "不得删减" in prompt
+    assert "不得删减、总结、解释、本土化、审查、弱化或替作者表达" in prompt
+    assert "政治性、宗教性、争议性内容" in prompt
+    assert "不追求“信达雅”式改写" in prompt
+    assert "禁止译名漂移" in prompt
+    assert "Smith → 史密斯" in prompt
+
+
 def test_candidate_routes_default():
     """无 fallback 时仅返回主 base_url + 主 model。"""
     t = SemanticsTranslator(target_lang="zh-CN")
@@ -112,6 +125,7 @@ def test_translate_many_chunks_error_like_only_fails_that_chunk():
 def _run():
     cases = [
         test_looks_like_error_response,
+        test_faithful_translation_prompt_constraints,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
         test_translate_many_chunks_uses_one_json_batch,
