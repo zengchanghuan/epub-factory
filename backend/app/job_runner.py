@@ -7,6 +7,7 @@ Worker 使用时需配置持久化 store（DATABASE_URL），否则无法加载 
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,7 @@ from typing import Optional
 from .converter import converter
 from .domain.notification_service import notify_job_completed
 from .domain.status_resolver import resolve_after_conversion
+from .domain.translation_qa_service import attach_translation_qa_report
 from .error_reporter import report_error
 from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
 from .storage import job_store
@@ -49,6 +51,39 @@ def _build_output_suffix(job) -> str:
         if job.bilingual:
             parts.append("双语")
     return "_".join(parts)
+
+
+def _safe_output_stem(stem: str) -> str:
+    stem = re.sub(r'[\\/:*?"<>|]+', "_", (stem or "").strip())
+    stem = re.sub(r"\s+", " ", stem).strip(" ._")
+    return stem[:80] or "output"
+
+
+def _unique_output_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    base = path.with_suffix("")
+    suffix = path.suffix
+    for i in range(2, 100):
+        candidate = Path(f"{base}_{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    return Path(f"{base}_{datetime.now().strftime('%Y%m%d%H%M%S')}{suffix}")
+
+
+def _rename_output_with_translated_title(job, result, output_path: Path, suffix: str) -> Path:
+    if not getattr(job, "enable_translation", False):
+        return output_path
+    stats = getattr(result, "translation_stats", None) or {}
+    translated_title = (stats.get("book_title_translated") or "").strip()
+    original_title = (stats.get("book_title_original") or "").strip()
+    if not translated_title or translated_title == original_title:
+        return output_path
+    new_path = _unique_output_path(OUTPUT_DIR / f"{_safe_output_stem(translated_title)}_{suffix}.epub")
+    if output_path.exists() and new_path != output_path:
+        output_path.replace(new_path)
+        return new_path
+    return output_path
 
 
 def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditional_variant: str) -> str:
@@ -163,6 +198,13 @@ def run_job(job_id: str) -> None:
                 stage_callback=on_stage,
             )
         status, message, error_code = resolve_after_conversion(result)
+        output_path = _rename_output_with_translated_title(job, result, output_path, suffix)
+        if job.enable_translation:
+            result.translation_stats = attach_translation_qa_report(
+                result.translation_stats,
+                output_path=output_path,
+                error_code=error_code,
+            )
         if status == JobStatus.failed:
             job_store.update_status(job.id, status, message, error_code=error_code)
             report_error(

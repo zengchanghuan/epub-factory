@@ -3,9 +3,11 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urldefrag, urlparse
 
 import ebooklib
 from ebooklib import epub
+from bs4 import BeautifulSoup
 
 # ebooklib 的已知 Bug：它的 XML 解析器会把所有属性名强制小写，
 # 但 SVG 规范中的 preserveAspectRatio、viewBox 等属性是大小写敏感的。
@@ -123,6 +125,9 @@ class EpubPackager:
 
             fixes_applied = []
 
+            if self._sync_serialized_toc_files(temp_dir):
+                fixes_applied.append("toc files")
+
             # Fix 1: SVG 大小写敏感属性
             for xhtml_path in temp_dir.rglob("*.xhtml"):
                 content = xhtml_path.read_text(encoding="utf-8", errors="ignore")
@@ -188,6 +193,123 @@ class EpubPackager:
                 self._repack(temp_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _flatten_toc(items) -> list[tuple[str, str]]:
+        """Return (href, title) pairs from ebooklib's mixed TOC structures."""
+        pairs: list[tuple[str, str]] = []
+
+        def walk(nodes) -> None:
+            for node in nodes or []:
+                if isinstance(node, tuple):
+                    section, children = node
+                    href = getattr(section, "href", None)
+                    title = getattr(section, "title", None)
+                    if href and title:
+                        pairs.append((href, title))
+                    walk(children)
+                    continue
+                href = getattr(node, "href", None)
+                title = getattr(node, "title", None)
+                if href and title:
+                    pairs.append((href, title))
+
+        walk(items)
+        return pairs
+
+    @staticmethod
+    def _normalized_href_key(href: str) -> str:
+        path, _fragment = urldefrag(unquote(href or ""))
+        return path.replace("\\", "/").lstrip("./")
+
+    @classmethod
+    def _serialized_href_candidates(cls, temp_dir: Path, toc_file: Path, href: str) -> list[str]:
+        if not href:
+            return []
+        parsed = urlparse(href)
+        if parsed.scheme or parsed.netloc:
+            return []
+
+        href_path, fragment = urldefrag(unquote(href))
+        normalized = cls._normalized_href_key(href)
+        candidates = [normalized]
+        if fragment:
+            candidates.append(cls._normalized_href_key(href_path))
+
+        if href_path:
+            try:
+                toc_dir = toc_file.parent.relative_to(temp_dir)
+            except ValueError:
+                toc_dir = Path()
+            resolved = (toc_dir / href_path).as_posix()
+            resolved = cls._normalized_href_key(resolved)
+            candidates.append(resolved)
+            if fragment:
+                candidates.insert(0, f"{resolved}#{fragment}")
+
+        return list(dict.fromkeys(candidates))
+
+    def _toc_title_map(self) -> dict[str, str]:
+        title_map: dict[str, str] = {}
+        for href, title in self._flatten_toc(getattr(self.book, "toc", [])):
+            text = str(title or "").strip()
+            if not text:
+                continue
+            title_map[self._normalized_href_key(href)] = text
+            path, fragment = urldefrag(unquote(href or ""))
+            if fragment:
+                title_map[f"{self._normalized_href_key(path)}#{fragment}"] = text
+        return title_map
+
+    def _sync_serialized_toc_files(self, temp_dir: Path) -> bool:
+        """
+        Keep physical nav.xhtml/toc.ncx labels aligned with book.toc.
+
+        Some readers prefer the serialized navigation files over the in-memory
+        TOC metadata written by ebooklib. After translation/rebuild, stale nav
+        files can therefore show the original English directory.
+        """
+        title_map = self._toc_title_map()
+        if not title_map:
+            return False
+
+        changed = False
+        for nav_path in temp_dir.rglob("*.xhtml"):
+            raw = nav_path.read_text(encoding="utf-8", errors="ignore")
+            if "<nav" not in raw.lower():
+                continue
+            soup = BeautifulSoup(raw, "xml")
+            local_changed = False
+            for a in soup.find_all("a", href=True):
+                candidates = self._serialized_href_candidates(temp_dir, nav_path, a.get("href", ""))
+                title = next((title_map[c] for c in candidates if c in title_map), None)
+                if title and a.get_text(strip=True) != title:
+                    a.clear()
+                    a.append(title)
+                    local_changed = True
+            if local_changed:
+                nav_path.write_text(str(soup), encoding="utf-8")
+                changed = True
+
+        for ncx_path in temp_dir.rglob("*.ncx"):
+            raw = ncx_path.read_text(encoding="utf-8", errors="ignore")
+            soup = BeautifulSoup(raw, "xml")
+            local_changed = False
+            for nav_point in soup.find_all("navPoint"):
+                content = nav_point.find("content")
+                label_text = nav_point.find("text")
+                if not content or not label_text:
+                    continue
+                candidates = self._serialized_href_candidates(temp_dir, ncx_path, content.get("src", ""))
+                title = next((title_map[c] for c in candidates if c in title_map), None)
+                if title and label_text.get_text(strip=True) != title:
+                    label_text.string = title
+                    local_changed = True
+            if local_changed:
+                ncx_path.write_text(str(soup), encoding="utf-8")
+                changed = True
+
+        return changed
 
     def _repack(self, temp_dir: Path):
         """将修复后的目录重新打包为 EPUB"""

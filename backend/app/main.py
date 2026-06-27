@@ -25,9 +25,10 @@ from .converter import converter
 from .infra.rate_limiter import MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, get_real_ip, rate_limiter
 from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_notification
 from .job_runner import run_job
-from .models import DeviceProfile, Job, JobStatus, OutputMode, TraditionalVariant
+from .models import DeviceProfile, ErrorCode, Job, JobStatus, OutputMode, TraditionalVariant
 from .storage import job_store
 from .auth.deps import get_current_user_optional
+from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -274,7 +275,7 @@ def _job_to_v2_status(job: Job) -> str:
     if job.status == JobStatus.running:
         return "running"
     if job.status == JobStatus.success:
-        return "partial_completed" if job.error_code == "PARTIAL_TRANSLATION" else "completed"
+        return "qa_failed" if job.error_code == ErrorCode.PARTIAL_TRANSLATION.value else "completed"
     if job.status == JobStatus.failed:
         return "failed"
     if job.status == JobStatus.cancelled:
@@ -282,9 +283,38 @@ def _job_to_v2_status(job: Job) -> str:
     return "running"
 
 
+def _job_can_download(job: Job) -> bool:
+    """只有完整成功的任务才允许下载，部分翻译失败不交付。"""
+    return (
+        job.status == JobStatus.success
+        and bool(job.output_path)
+        and job.error_code != ErrorCode.PARTIAL_TRANSLATION.value
+    )
+
+
+def _download_unavailable_detail(job: Job) -> str:
+    if job.error_code == ErrorCode.PARTIAL_TRANSLATION.value:
+        return "部分段落翻译失败，结果不可下载，请重新翻译"
+    return "任务未完成，无法下载"
+
+
+def _job_qa_report(job: Job) -> dict | None:
+    if not job.enable_translation:
+        return None
+    stats = job.translation_stats or {}
+    report = stats.get("qa_report")
+    if isinstance(report, dict):
+        return report
+    return build_translation_qa_report(
+        translation_stats=stats,
+        output_path=job.output_path,
+        error_code=job.error_code,
+    )
+
+
 def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     """构建 v2 任务详情响应。"""
-    download_url = _attach_download_sig(job.id, download_url_path) if job.output_path else None
+    download_url = _attach_download_sig(job.id, download_url_path) if _job_can_download(job) else None
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -300,6 +330,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "translation_stats": job.translation_stats or None,
+        "qa_report": _job_qa_report(job),
         "metrics_summary": job.metrics_summary or None,
         "stage_summary": _v2_stage_summary(job),
         "created_at": job.created_at.isoformat(),
@@ -669,7 +700,7 @@ def get_job(job_id: str, request: Request):
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "translation_stats": job.translation_stats or None,
         "metrics_summary": job.metrics_summary or None,
-        "download_url": _attach_download_sig(job.id, f"/api/v1/jobs/{job.id}/download") if job.output_path else None,
+        "download_url": _attach_download_sig(job.id, f"/api/v1/jobs/{job.id}/download") if _job_can_download(job) else None,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
     }
@@ -687,8 +718,8 @@ def download_result(
         raise HTTPException(status_code=404, detail="任务不存在")
     if not (_verify_download_sig(job_id, exp, sig) or _authorize_job_access(request, job)):
         raise HTTPException(status_code=403, detail="无权访问该任务（链接可能已过期，请回任务中心重新获取下载链接）")
-    if job.status != JobStatus.success or not job.output_path:
-        raise HTTPException(status_code=400, detail="任务未完成，无法下载")
+    if not _job_can_download(job):
+        raise HTTPException(status_code=400, detail=_download_unavailable_detail(job))
     output_path = Path(job.output_path)
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在")
@@ -1008,6 +1039,8 @@ def list_jobs_v2(request: Request, limit: int = 100):
             "status": _job_to_v2_status(j),
             "message": j.message,
             "source_filename": j.source_filename,
+            "enable_translation": j.enable_translation,
+            "error_code": j.error_code,
             "created_at": j.created_at.isoformat(),
             "updated_at": j.updated_at.isoformat(),
         }
@@ -1024,7 +1057,7 @@ def get_job_v2(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="任务不存在")
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
-    download_path = f"/api/v2/jobs/{job.id}/download" if job.output_path else None
+    download_path = f"/api/v2/jobs/{job.id}/download" if _job_can_download(job) else None
     return _job_to_v2_detail(job, download_path)
 
 
@@ -1046,8 +1079,8 @@ def download_result_v2(
         raise HTTPException(status_code=404, detail="任务不存在")
     if not (_verify_download_sig(job_id, exp, sig) or _authorize_job_access(request, job)):
         raise HTTPException(status_code=403, detail="无权访问该任务（链接可能已过期，请回任务中心重新获取下载链接）")
-    if job.status != JobStatus.success or not job.output_path:
-        raise HTTPException(status_code=400, detail="任务未完成，无法下载")
+    if not _job_can_download(job):
+        raise HTTPException(status_code=400, detail=_download_unavailable_detail(job))
     output_path = Path(job.output_path)
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在")
@@ -1131,6 +1164,67 @@ def get_job_events_v2(job_id: str, request: Request):
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
     return {"items": _v2_job_events(job_id)}
+
+
+def _enqueue_conversion(job: Job, background_tasks: BackgroundTasks | None = None) -> None:
+    if _use_celery():
+        from app.tasks.job_pipeline import run_conversion
+        run_conversion.delay(job.id)
+        return
+    if background_tasks is not None:
+        background_tasks.add_task(process_job, job)
+        return
+    import threading
+    threading.Thread(target=run_job, args=(job.id,), daemon=True).start()
+
+
+@app.post("/api/v2/jobs/{job_id}/retry-translation")
+def retry_translation_v2(job_id: str, request: Request, background_tasks: BackgroundTasks):
+    """质检不通过后免费重译：复用原上传文件、原参数、原支付权益。"""
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not job.enable_translation:
+        raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
+    if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
+        raise HTTPException(status_code=400, detail="任务正在处理中，不能重复重译")
+    if job.error_code != ErrorCode.PARTIAL_TRANSLATION.value:
+        raise HTTPException(status_code=400, detail="当前任务未处于质检失败状态")
+    if not Path(job.input_path).exists():
+        raise HTTPException(status_code=410, detail="原始上传文件已过期，无法免费重译")
+
+    stats = dict(job.translation_stats or {})
+    free_retry_count = int(stats.get("free_retry_count") or 0)
+    max_retries = max_free_retries()
+    if free_retry_count >= max_retries:
+        raise HTTPException(status_code=400, detail="免费重译次数已用完，请联系客服处理")
+
+    stats["free_retry_count"] = free_retry_count + 1
+    stats["translation_attempt"] = int(stats.get("translation_attempt") or 1) + 1
+    stats["qa_report"] = {
+        "status": "retrying",
+        "summary": "免费重译已排队",
+        "retryable": False,
+        "free_retry_count": stats["free_retry_count"],
+        "max_free_retries": max_retries,
+        "translation_attempt": stats["translation_attempt"],
+        "flags": [],
+        "checks": [],
+        "score": 0,
+    }
+
+    updated = job_store.update_status(
+        job.id,
+        JobStatus.pending,
+        f"免费重译已排队（第 {stats['translation_attempt']} 次尝试）",
+        error_code=None,
+        translation_stats=stats,
+    )
+    refreshed = updated or job_store.get(job.id) or job
+    _enqueue_conversion(refreshed, background_tasks)
+    return _job_to_v2_detail(refreshed, None)
 
 
 @app.post("/api/v2/jobs/{job_id}/recover")
@@ -1895,4 +1989,3 @@ def _favicon():
 
 if _FRONTEND_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
-

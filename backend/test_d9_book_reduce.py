@@ -8,6 +8,7 @@ D9 测试：全书 Reduce 与打包
 
 import tempfile
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -19,6 +20,7 @@ from app.domain.book_reduce_service import (
     make_get_chapter_content,
     reduce_and_package,
 )
+from app.engine.packager import EpubPackager
 
 
 def test_set_and_get_chapter_output():
@@ -117,6 +119,78 @@ def test_reduce_and_package_overrides_chapter():
             assert False, "chap_01.xhtml not found in output"
 
 
+def test_reduce_and_package_syncs_translated_toc_files():
+    """章节标题被翻译后，实体 nav.xhtml / toc.ncx 也应同步为译文目录。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        inp = Path(tmp) / "in.epub"
+        out = Path(tmp) / "out.epub"
+        book = epub.EpubBook()
+        book.set_identifier("d9-toc-sync")
+        book.set_title("D9 Toc Sync")
+        book.set_language("en")
+        c1 = epub.EpubHtml(title="Chapter 1", file_name="chap_01.xhtml", lang="en")
+        c1.content = "<html><body><h1>Chapter 1</h1><p>Original</p></body></html>"
+        book.add_item(c1)
+        book.spine.append(c1)
+        book.toc = (epub.Link("chap_01.xhtml", "Chapter 1", "ch1"),)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        epub.write_epub(str(inp), book, {})
+
+        replacement = "<html><body><h1>第一章</h1><p>已翻译</p></body></html>".encode("utf-8")
+
+        ok = reduce_and_package(
+            str(inp),
+            str(out),
+            lambda file_path: replacement if file_path == "chap_01.xhtml" else None,
+        )
+
+        assert ok is True
+        with zipfile.ZipFile(out, "r") as zf:
+            files = zf.namelist()
+            nav_name = next(name for name in files if name.endswith("nav.xhtml"))
+            ncx_name = next(name for name in files if name.endswith("toc.ncx"))
+            nav_text = zf.read(nav_name).decode("utf-8", errors="ignore")
+            ncx_text = zf.read(ncx_name).decode("utf-8", errors="ignore")
+
+        assert "第一章" in nav_text
+        assert "Chapter 1" not in nav_text
+        assert "第一章" in ncx_text
+        assert "Chapter 1" not in ncx_text
+
+
+def test_packager_syncs_stale_serialized_toc_files():
+    """阅读器读取旧 nav/ncx 时，打包后处理应按 book.toc 同步标题。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        oebps = root / "OEBPS"
+        oebps.mkdir()
+        (oebps / "nav.xhtml").write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<nav epub:type="toc"><ol><li><a href="xhtml/chap_01.xhtml#h1">Chapter 1</a></li></ol></nav>
+</body></html>""",
+            encoding="utf-8",
+        )
+        (oebps / "toc.ncx").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+<navPoint id="h1" playOrder="1"><navLabel><text>Chapter 1</text></navLabel><content src="xhtml/chap_01.xhtml#h1"/></navPoint>
+</navMap></ncx>""",
+            encoding="utf-8",
+        )
+
+        book = epub.EpubBook()
+        book.toc = (epub.Link("OEBPS/xhtml/chap_01.xhtml#h1", "第一章", "h1"),)
+        packager = EpubPackager(book, root / "out.epub")
+
+        assert packager._sync_serialized_toc_files(root) is True
+        assert "第一章" in (oebps / "nav.xhtml").read_text(encoding="utf-8")
+        assert "Chapter 1" not in (oebps / "nav.xhtml").read_text(encoding="utf-8")
+        assert "第一章" in (oebps / "toc.ncx").read_text(encoding="utf-8")
+        assert "Chapter 1" not in (oebps / "toc.ncx").read_text(encoding="utf-8")
+
+
 def _run():
     cases = [
         test_set_and_get_chapter_output,
@@ -124,6 +198,8 @@ def _run():
         test_reduce_and_package_invalid_path_returns_false,
         test_reduce_and_package_with_minimal_epub,
         test_reduce_and_package_overrides_chapter,
+        test_reduce_and_package_syncs_translated_toc_files,
+        test_packager_syncs_stale_serialized_toc_files,
     ]
     passed = 0
     for fn in cases:

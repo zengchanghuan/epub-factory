@@ -199,7 +199,7 @@ class SemanticsTranslator:
         if self.glossary:
             lines = "\n".join(f"  {src} → {dst}" for src, dst in self.glossary.items())
             prompt += (
-                "\n\n【全书共享术语表】（所有章节统一使用，禁止译名漂移；"
+                "\n\n【全书共享术语对照表】（所有章节统一使用，禁止译名漂移；"
                 "遇到以下原文必须严格使用对应译名；同一原文出现多次，译名必须完全一致；"
                 "若出现表中词汇的变体或大小写差异，也应尽量使用对应译名）：\n"
                 + lines
@@ -254,6 +254,64 @@ class SemanticsTranslator:
         return any(m in low for m in markers)
 
     @staticmethod
+    def _visible_text(html: str) -> str:
+        return BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True)
+
+    @staticmethod
+    def _latin_words(text: str) -> list[str]:
+        return re.findall(r"[A-Za-z][A-Za-z'\-]{2,}", text or "")
+
+    @staticmethod
+    def _latin_char_count(text: str) -> int:
+        return sum(1 for ch in text or "" if ch.isascii() and ch.isalpha())
+
+    @staticmethod
+    def _cjk_char_count(text: str) -> int:
+        return len(re.findall(r"[\u3400-\u9fff]", text or ""))
+
+    def _looks_untranslated(self, source_html: str, translated_html: str) -> bool:
+        """识别“看起来成功返回、实际仍是英文原文”的译文。
+
+        只在中文目标语言下启用，避免其它目标语言误判。阈值故意保守，允许 DNA、
+        journal title、专名等少量拉丁字符残留，但会拦住整段英文或大段英文夹少量中文。
+        """
+        if not str(self.target_lang or "").lower().startswith("zh"):
+            return False
+        source_text = self._visible_text(source_html)
+        translated_text = self._visible_text(translated_html)
+        if not source_text or not translated_text:
+            return False
+
+        source_words = self._latin_words(source_text)
+        if len(source_words) < 6:
+            return False
+
+        translated_words = self._latin_words(translated_text)
+        translated_cjk = self._cjk_char_count(translated_text)
+        translated_latin = self._latin_char_count(translated_text)
+
+        normalize = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()
+        if normalize(source_text) == normalize(translated_text):
+            return True
+
+        # 译文几乎没有中文，且英文词数量接近原文，基本就是漏译。
+        if (
+            len(translated_words) >= max(6, int(len(source_words) * 0.7))
+            and translated_cjk < max(6, int(translated_latin * 0.15))
+        ):
+            return True
+
+        # 中英混杂但英文主体仍占绝对优势，常见于失败批次只做了专名替换后回写。
+        if (
+            translated_cjk > 0
+            and len(translated_words) >= 12
+            and translated_latin > max(120, translated_cjk * 2.5)
+        ):
+            return True
+
+        return False
+
+    @staticmethod
     def _extract_inner_html(html: str) -> str:
         """提取块级标签 inner_html，保持外层属性由 Reduce 回写阶段负责。"""
         soup = BeautifulSoup(html or "", "html.parser")
@@ -294,7 +352,17 @@ class SemanticsTranslator:
                     
                     translations = {}
                     for item in results_list:
-                        translations[item["id"]] = item.get("translation", "")
+                        try:
+                            item_id = int(item["id"])
+                        except (KeyError, TypeError, ValueError) as id_err:
+                            raise ValueError(f"JSON result id invalid: {item!r}") from id_err
+                        translations[item_id] = item.get("translation", "")
+
+                    expected_ids = {item["id"] for item in payload}
+                    if set(translations.keys()) != expected_ids:
+                        raise ValueError(
+                            f"JSON result ids mismatch: expected {sorted(expected_ids)}, got {sorted(translations.keys())}"
+                        )
                     
                     if model != self.model or base_url != self.base_url:
                         print(f"⚠️ LLM fallback route succeeded: model={model}, base_url={base_url}")
@@ -387,16 +455,29 @@ class SemanticsTranslator:
             
         cached = self.cache.get(inner_html, self._cache_lang_key)
         if cached:
-            self.stats.cached_chunks += 1
-            # Return cached inner_html directly. apply_chunk_results will handle it.
-            return SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
+            if not self._looks_like_error_response(cached) and not self._looks_untranslated(inner_html, cached):
+                self.stats.cached_chunks += 1
+                # Return cached inner_html directly. apply_chunk_results will handle it.
+                return SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
             
         try:
             t0 = time.monotonic()
             payload = [{"id": 0, "html": inner_html}]
             async with self.semaphore:
                 translations_map, meta = await self._call_llm_json_batch(payload)
-            translated = translations_map.get(0, inner_html)
+            translated = translations_map.get(0, "")
+            if not translated:
+                raise ValueError("LLM response missing translation for chunk")
+            if self._looks_like_error_response(translated) or self._looks_untranslated(inner_html, translated):
+                async with self.semaphore:
+                    translations_map, meta = await self._call_llm_json_batch(payload)
+                translated = translations_map.get(0, "")
+            if (
+                not translated
+                or self._looks_like_error_response(translated)
+                or self._looks_untranslated(inner_html, translated)
+            ):
+                raise ValueError("LLM returned untranslated or invalid content")
             latency_ms = int((time.monotonic() - t0) * 1000)
             self.cache.set(inner_html, translated, self._cache_lang_key)
             self.stats.translated_chunks += 1
@@ -437,8 +518,11 @@ class SemanticsTranslator:
             self.stats.total_chunks += 1
             cached = self.cache.get(inner_html, self._cache_lang_key)
             if cached:
-                self.stats.cached_chunks += 1
-                results[i] = SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
+                if not self._looks_like_error_response(cached) and not self._looks_untranslated(inner_html, cached):
+                    self.stats.cached_chunks += 1
+                    results[i] = SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
+                else:
+                    uncached.append((i, inner_html))
             else:
                 uncached.append((i, inner_html))
 
@@ -465,8 +549,54 @@ class SemanticsTranslator:
             completed_chunks += batch_size
             if self.progress_callback and progress_label and total_batches:
                 self.progress_callback(
-                    f"{progress_label}：{completed_batches}/{total_batches} 批，{completed_chunks}/{len(html_chunks)} 段"
+                    f"{progress_label}：{completed_chunks}/{len(html_chunks)} 段"
                 )
+
+        def mark_failed(idx: int, original_inner: str, error: str, meta: dict | None = None, latency_ms: int = 0) -> None:
+            self.stats.errors += 1
+            self.stats.failed_chunks += 1
+            self.stats.last_error = error
+            results[idx] = SingleChunkResult(
+                translated_html=original_inner,
+                cached=False,
+                model=(meta or {}).get("model"),
+                base_url=(meta or {}).get("base_url"),
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=latency_ms,
+                error=error,
+            )
+
+        async def retry_one(idx: int, original_inner: str, reason: str) -> bool:
+            t0 = time.monotonic()
+            try:
+                async with self.semaphore:
+                    translations_map, meta = await self._call_llm_json_batch([{"id": 0, "html": original_inner}])
+                translated = translations_map.get(0, "")
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                if (
+                    not translated
+                    or self._looks_like_error_response(translated)
+                    or self._looks_untranslated(original_inner, translated)
+                ):
+                    mark_failed(idx, original_inner, f"{reason}; retry still untranslated", meta, latency_ms)
+                    return False
+                self.cache.set(original_inner, translated, self._cache_lang_key)
+                self.stats.translated_chunks += 1
+                results[idx] = SingleChunkResult(
+                    translated_html=translated,
+                    cached=False,
+                    model=meta.get("model"),
+                    base_url=meta.get("base_url"),
+                    prompt_tokens=meta.get("prompt_tokens", 0),
+                    completion_tokens=meta.get("completion_tokens", 0),
+                    latency_ms=latency_ms,
+                    error=None,
+                )
+                return True
+            except Exception as exc:
+                mark_failed(idx, original_inner, f"{reason}; retry failed: {exc}")
+                return False
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
             payload = [{"id": local_id, "html": html} for local_id, (_, html) in enumerate(batch)]
@@ -475,22 +605,15 @@ class SemanticsTranslator:
                 async with self.semaphore:
                     translations_map, meta = await self._call_llm_json_batch(payload)
             except Exception as exc:
-                # 整批 API/网络/鉴权失败：这批确实没有任何可用译文，全部回退原文。
+                # 整批 API/网络/JSON 失败时，先拆小重试，避免一个坏 chunk 连累整批。
                 self.stats.last_error = str(exc)
-                for idx, original_inner in batch:
-                    self.stats.errors += 1
-                    self.stats.failed_chunks += 1
-                    results[idx] = SingleChunkResult(
-                        translated_html=original_inner,
-                        cached=False,
-                        model=None,
-                        base_url=None,
-                        prompt_tokens=0,
-                        completion_tokens=0,
-                        latency_ms=0,
-                        error=str(exc),
-                    )
-                report_batch_progress(len(batch))
+                if len(batch) > 1:
+                    mid = max(1, len(batch) // 2)
+                    await asyncio.gather(run_batch(batch[:mid]), run_batch(batch[mid:]))
+                else:
+                    idx, original_inner = batch[0]
+                    mark_failed(idx, original_inner, str(exc))
+                    report_batch_progress(1)
                 return
 
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -500,21 +623,12 @@ class SemanticsTranslator:
 
             # 逐块降级：单块被判为错误响应只标记该块失败，不连累同批其它正常译文。
             for local_id, (idx, original_inner) in enumerate(batch):
-                translated = translations_map.get(local_id, original_inner)
+                translated = translations_map.get(local_id, "")
                 if self._looks_like_error_response(translated):
-                    self.stats.errors += 1
-                    self.stats.failed_chunks += 1
-                    self.stats.last_error = f"LLM returned an error-like response for chunk {idx}"
-                    results[idx] = SingleChunkResult(
-                        translated_html=original_inner,
-                        cached=False,
-                        model=meta.get("model"),
-                        base_url=meta.get("base_url"),
-                        prompt_tokens=0,
-                        completion_tokens=0,
-                        latency_ms=latency_ms,
-                        error="error-like response",
-                    )
+                    await retry_one(idx, original_inner, "error-like response")
+                    continue
+                if not translated or self._looks_untranslated(original_inner, translated):
+                    await retry_one(idx, original_inner, "untranslated response")
                     continue
                 self.cache.set(original_inner, translated, self._cache_lang_key)
                 self.stats.translated_chunks += 1

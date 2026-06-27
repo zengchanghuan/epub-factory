@@ -81,6 +81,7 @@ const V2_STATUS_TEXT = {
   validating: "校验中",
   completed: "完成",
   partial_completed: "部分完成",
+  qa_failed: "质检未通过",
   failed: "失败",
   cancelled: "已取消",
 };
@@ -97,6 +98,7 @@ function mapV2StatusText(v2Status, enableTranslation = false) {
       validating: "校验中",
       completed: "完成",
       partial_completed: "部分完成",
+      qa_failed: "质检未通过",
       failed: "失败",
       cancelled: "已取消",
       pending_payment: "待支付",
@@ -219,7 +221,7 @@ function isSafeMode(summaryText) {
 const ERROR_CODE_HINTS = {
   CONVERT_FAILED: "引擎转换失败，可能是文件格式不兼容",
   TRANSLATION_FAILED: "AI 翻译未成功写入任何译文，请检查模型服务连接或稍后重试",
-  PARTIAL_TRANSLATION: "部分段落翻译失败，结果可能不完整",
+  PARTIAL_TRANSLATION: "部分段落翻译失败，结果不可下载，可直接免费重新翻译",
   EPUB_VALIDATION_FAILED: "EPUB 校验未通过，结果不可交付，请重试或联系支持",
   UPLOAD_TOO_LARGE: "文件超过大小限制",
   UNSUPPORTED_TYPE: "仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件",

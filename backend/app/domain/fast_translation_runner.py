@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import os
@@ -29,9 +30,11 @@ from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
 from app.domain.manifest_service import build_manifest
 from app.domain.translation_quality_audit import audit_translation_chunk
+from app.domain.translation_qa_service import attach_translation_qa_report
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.engine.compiler import EPUBCHECK_JAR
-from app.engine.glossary_extractor import build_auto_glossary, merge_glossaries, verify_and_fix
+from app.engine.glossary_extractor import verify_and_fix
+from app.engine.glossary_service import build_consistent_glossary
 from app.engine.unpacker import EpubUnpacker
 from app.models import (
     ChapterKind,
@@ -102,6 +105,43 @@ def _load_content_by_file(epub_path: str) -> dict[str, bytes]:
             continue
         out[name] = _as_bytes(item.get_content())
     return out
+
+
+def _extract_book_title(epub_path: str) -> str:
+    unpacker = EpubUnpacker(epub_path)
+    book = unpacker.load_book()
+    if not book:
+        return ""
+    try:
+        titles = book.get_metadata("DC", "title")
+        if titles:
+            return str(titles[0][0] or "").strip()
+    except Exception:
+        pass
+    return str(getattr(book, "title", "") or "").strip()
+
+
+async def _translate_book_title_async(
+    *,
+    title: str,
+    target_lang: str,
+    glossary: dict[str, str],
+    temperature: float | None,
+) -> str:
+    title = (title or "").strip()
+    if not title or not any(ch.isalpha() for ch in title):
+        return title
+    translator = SemanticsTranslator(
+        target_lang=target_lang,
+        bilingual=False,
+        glossary=glossary,
+        temperature=temperature,
+    )
+    result = await translator.translate_single_chunk_async(f"<p>{html.escape(title)}</p>")
+    if result.error:
+        return title
+    translated = BeautifulSoup(result.translated_html or "", "html.parser").get_text(" ", strip=True)
+    return translated.strip() or title
 
 
 def _chapter_status(chunk_results: list[ChunkResult]) -> ChapterStatus:
@@ -197,6 +237,17 @@ def _metrics_summary(timings: list[tuple[str, float]]) -> str:
         lines.append(f"  ✅ {name:<28} {ms:>7.1f} ms")
     lines.append("────────────────────────────────────────────────────")
     return "\n".join(lines)
+
+
+def _translation_failures_exceed_delivery_gate(stats: dict[str, Any]) -> bool:
+    """大量翻译失败时停止交付，避免生成中英混杂的 EPUB。"""
+    failed = int(stats.get("failed_chunks") or 0)
+    total = int(stats.get("total_chunks") or 0)
+    if failed <= 0 or total <= 0:
+        return False
+    max_failed = max(0, int(os.environ.get("EPUB_TRANSLATION_MAX_DELIVERABLE_FAILED_CHUNKS", "20")))
+    max_ratio = max(0.0, float(os.environ.get("EPUB_TRANSLATION_MAX_DELIVERABLE_FAILED_RATIO", "0.02")))
+    return failed > max_failed and (failed / total) > max_ratio
 
 
 async def _translate_manifest_async(
@@ -413,20 +464,46 @@ def run_fast_translation_job(
             _log_stage("mapping_failed", error=manifest["error"])
             raise RuntimeError(manifest["error"])
         content_by_file = _load_content_by_file(str(preprocessed))
+        original_book_title = _extract_book_title(str(preprocessed))
         timings.append(("Manifest", (time.monotonic() - t) * 1000))
         _log_stage("mapping", timings[-1][1], chapters=len(manifest.get("chapters", [])))
 
         t = time.monotonic()
         stage_callback("glossary", "构建全书术语表", None)
         texts = _extract_texts_from_manifest(manifest)
-        auto_glossary = build_auto_glossary(texts, target_lang=job.target_lang, min_count=2, max_terms=200)
-        glossary = merge_glossaries(getattr(job, "glossary", None) or {}, auto_glossary)
+        glossary_result = build_consistent_glossary(
+            texts,
+            target_lang=job.target_lang,
+            user_glossary=getattr(job, "glossary", None) or {},
+            min_count=2,
+            max_terms=160,
+        )
+        glossary = glossary_result.glossary
         timings.append(("Glossary", (time.monotonic() - t) * 1000))
-        _log_stage("glossary", timings[-1][1], auto=len(auto_glossary), total=len(glossary))
+        _log_stage("glossary", timings[-1][1], **glossary_result.stats)
         stage_callback(
             "glossary",
-            f"术语表就绪：自动 {len(auto_glossary)} 条，用户 {len(getattr(job, 'glossary', {}) or {})} 条",
+            (
+                f"术语表就绪：全局 {len(glossary_result.global_glossary)} 条，"
+                f"自动 {len(glossary_result.auto_glossary)} 条，"
+                f"用户 {len(getattr(job, 'glossary', {}) or {})} 条"
+            ),
             int(timings[-1][1]),
+        )
+
+        t = time.monotonic()
+        stage_callback("metadata", "翻译书名元数据", None)
+        translated_book_title = asyncio.run(_translate_book_title_async(
+            title=original_book_title,
+            target_lang=job.target_lang,
+            glossary=glossary,
+            temperature=getattr(job, "temperature", None),
+        ))
+        timings.append(("BookTitle", (time.monotonic() - t) * 1000))
+        _log_stage(
+            "metadata", timings[-1][1],
+            original_title=original_book_title,
+            translated_title=translated_book_title,
         )
 
         t = time.monotonic()
@@ -438,6 +515,12 @@ def run_fast_translation_job(
             glossary=glossary,
             progress_callback=progress_callback,
         ))
+        translation_stats.update({
+            "glossary_stats": glossary_result.stats,
+            "glossary_terms_total": len(glossary),
+            "book_title_original": original_book_title,
+            "book_title_translated": translated_book_title,
+        })
         timings.append(("TranslateMap", (time.monotonic() - t) * 1000))
         _log_stage(
             "translating", timings[-1][1],
@@ -451,6 +534,16 @@ def run_fast_translation_job(
             last_error = translation_stats.get("last_error") or "上游模型调用失败"
             _log_stage("translating_failed", error=last_error)
             raise RuntimeError(f"AI 翻译失败：未成功写入任何译文。最后错误：{last_error}")
+        if _translation_failures_exceed_delivery_gate(translation_stats):
+            failed = int(translation_stats.get("failed_chunks") or 0)
+            total = int(translation_stats.get("total_chunks") or 0)
+            last_error = translation_stats.get("last_error") or "部分段落重试后仍未成功翻译"
+            _log_stage("translation_quality_gate_failed", failed=failed, total=total, error=last_error)
+            raise RuntimeError(
+                f"AI 翻译失败：仍有 {failed}/{total} 个段落未成功翻译。"
+                "为避免生成中英混杂的 EPUB，已停止打包；请稍后重试或降低并发后重试。"
+                f"最后错误：{last_error}"
+            )
 
         t = time.monotonic()
         stage_callback("reducing", "回写译文并打包 EPUB", None)
@@ -458,6 +551,8 @@ def run_fast_translation_job(
             str(preprocessed),
             str(output_path),
             make_get_chapter_content(job.id),
+            book_title=translated_book_title if translated_book_title != original_book_title else None,
+            original_book_title=original_book_title,
         )
         timings.append(("ReducePackage", (time.monotonic() - t) * 1000))
         _log_stage("reducing", timings[-1][1])
@@ -484,6 +579,11 @@ def run_fast_translation_job(
     if not validation_passed:
         message = "打包成功但 EPUB 校验未通过，结果不可交付"
         error_code = ErrorCode.EPUB_VALIDATION_FAILED.value
+    translation_stats = attach_translation_qa_report(
+        translation_stats,
+        output_path=output_path,
+        error_code=error_code,
+    )
 
     total_ms = (time.monotonic() - started_all) * 1000
     timings.append(("Total", total_ms))

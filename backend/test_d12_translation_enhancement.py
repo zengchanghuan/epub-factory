@@ -122,6 +122,63 @@ def test_translate_many_chunks_error_like_only_fails_that_chunk():
     assert t.stats.translated_chunks + t.stats.failed_chunks == t.stats.total_chunks
 
 
+def test_translate_many_chunks_splits_failed_batch():
+    """整批失败时应自动拆小重试，避免一批原文全部回写。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+
+    async def fake_call(payload):
+        calls.append(len(payload))
+        if len(payload) > 1:
+            raise ValueError("batch JSON parse failed")
+        return (
+            {0: "译文：这是一段已经翻译完成的中文内容。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    chunks = [
+        f"<p>Alice sees Smith {uuid.uuid4().hex}</p>",
+        f"<p>Bob visits London {uuid.uuid4().hex}</p>",
+    ]
+    out = asyncio.run(t.translate_many_chunks_async(chunks))
+
+    assert calls[0] == 2
+    assert calls.count(1) == 2
+    assert all(item.error is None for item in out)
+    assert all(item.translated_html.startswith("译文") for item in out)
+    assert t.stats.translated_chunks == 2
+    assert t.stats.failed_chunks == 0
+
+
+def test_translate_many_chunks_retries_untranslated_response():
+    """模型若返回英文原文，不应缓存为成功译文，应单段补译。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    original_inner = "This account of the discovery of DNA is unique in several important ways."
+    calls = []
+
+    async def fake_call(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            return (
+                {0: original_inner},
+                {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+            )
+        return (
+            {0: "这段关于 DNA 发现过程的记述在几个重要方面都很独特。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([f"<p>{original_inner}</p>"]))
+
+    assert len(calls) == 2
+    assert out[0].error is None
+    assert "独特" in out[0].translated_html
+    assert t.stats.translated_chunks == 1
+    assert t.stats.failed_chunks == 0
+
+
 def _run():
     cases = [
         test_looks_like_error_response,
@@ -130,6 +187,8 @@ def _run():
         test_candidate_routes_with_fallbacks,
         test_translate_many_chunks_uses_one_json_batch,
         test_translate_many_chunks_error_like_only_fails_that_chunk,
+        test_translate_many_chunks_splits_failed_batch,
+        test_translate_many_chunks_retries_untranslated_response,
     ]
     passed = 0
     for fn in cases:

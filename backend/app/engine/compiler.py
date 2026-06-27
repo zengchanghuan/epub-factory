@@ -121,7 +121,7 @@ class ExtremeCompiler:
         log = logging.getLogger("epub_factory.compiler")
         try:
             from bs4 import BeautifulSoup
-            from .glossary_extractor import build_auto_glossary, merge_glossaries
+            from .glossary_service import build_consistent_glossary
 
             t0 = time.monotonic()
             self.stage_callback("glossary", "正在抽取专有名词…")
@@ -145,30 +145,34 @@ class ExtremeCompiler:
                     target_lang = cleaner.target_lang
                     break
 
-            auto = build_auto_glossary(
+            glossary_result = build_consistent_glossary(
                 texts,
                 target_lang=target_lang,
+                user_glossary=self.glossary,
                 min_count=2,
-                max_terms=200,
+                max_terms=160,
             )
             elapsed_ms = int((time.monotonic() - t0) * 1000)
-            if not auto:
+            if not glossary_result.glossary:
                 self.stage_callback("glossary", "未识别到需要统一的术语，跳过", elapsed_ms)
                 return
 
-            merged = merge_glossaries(self.glossary, auto)
             # 注入到翻译器
             for cleaner in self.cleaners:
                 if isinstance(cleaner, SemanticsTranslator):
-                    cleaner.glossary = merged
-            self.glossary = merged
+                    cleaner.glossary = glossary_result.glossary
+            self.glossary = glossary_result.glossary
             log.info(
                 "auto_glossary built",
-                extra={"size": len(auto), "merged_size": len(merged), "elapsed_ms": elapsed_ms},
+                extra={**glossary_result.stats, "elapsed_ms": elapsed_ms},
             )
             self.stage_callback(
                 "glossary",
-                f"已抽取 {len(auto)} 条全书共享术语（用户手填 {len(self.glossary) - len(auto)} 条）",
+                (
+                    f"术语表就绪：全局 {len(glossary_result.global_glossary)} 条，"
+                    f"自动 {len(glossary_result.auto_glossary)} 条，"
+                    f"用户 {len(glossary_result.user_glossary)} 条"
+                ),
                 elapsed_ms,
             )
         except Exception as e:

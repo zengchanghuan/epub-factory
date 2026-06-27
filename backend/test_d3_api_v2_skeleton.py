@@ -9,12 +9,17 @@ D3 API v2 骨架测试：验证 v2 路由存在且返回约定结构。
 import os
 import sys
 import unittest
+import uuid
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from app import main as main_module
 from fastapi.testclient import TestClient
-from app.main import app
+from app.main import _job_can_download, _job_to_v2_detail, app
+from app.models import ErrorCode, Job, JobStatus, OutputMode
+from app.storage import job_store
 
 # 最小化 payload：仅用于触发「创建任务」并校验响应，不要求真实 EPUB 内容
 MINIMAL_EPUB_BYTES = b"PK\x03\x04"  # 任意短内容，满足 .epub 后缀校验即可
@@ -82,7 +87,7 @@ class TestApiV2Skeleton(unittest.TestCase):
         data = res.json()
         self.assertEqual(data["job_id"], job_id)
         self.assertIn("status", data)
-        self.assertIn(data["status"], ("queued", "running", "completed", "failed", "partial_completed", "cancelled"))
+        self.assertIn(data["status"], ("queued", "running", "completed", "qa_failed", "failed", "partial_completed", "cancelled"))
         self.assertIn("message", data)
         self.assertIn("source_filename", data)
         self.assertIn("output_mode", data)
@@ -95,6 +100,68 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertIn("translation_stats", data)
         self.assertIn("metrics_summary", data)
         self.assertIn("stage_summary", data)
+
+    def test_v2_partial_translation_has_no_download_url(self):
+        """部分翻译失败即使有 output_path，也不应暴露下载链接。"""
+        job = Job(
+            id="d3_partial_download_guard",
+            trace_id="trace",
+            source_filename="partial.epub",
+            input_path="/tmp/partial.epub",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.success,
+            output_path="/tmp/partial_out.epub",
+            enable_translation=True,
+            error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+            message="转换成功，但有 546 个段落翻译失败，成功写入 1868 个段落。",
+        )
+        detail = _job_to_v2_detail(job, f"/api/v2/jobs/{job.id}/download")
+        self.assertFalse(_job_can_download(job))
+        self.assertEqual(detail["status"], "qa_failed")
+        self.assertIsNone(detail["download_url"])
+        self.assertEqual(detail["qa_report"]["status"], "failed")
+        self.assertTrue(detail["qa_report"]["retryable"])
+
+    def test_v2_retry_translation_reuses_original_job_without_payment(self):
+        """质检失败后可复用原上传文件和 token 免费重译。"""
+        suffix = uuid.uuid4().hex[:8]
+        tmp_input = Path(f"/tmp/d3_retry_translation_source_{suffix}.epub")
+        tmp_input.write_bytes(MINIMAL_EPUB_BYTES)
+        job = Job(
+            id=f"d3_retry_translation_{suffix}",
+            trace_id="trace_retry",
+            source_filename="retry.epub",
+            input_path=str(tmp_input),
+            access_token="retry-token",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.success,
+            output_path="/tmp/retry_out.epub",
+            enable_translation=True,
+            error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+            message="翻译未完成：有 2 个段落翻译失败",
+            translation_stats={
+                "total_chunks": 10,
+                "failed_chunks": 2,
+                "free_retry_count": 0,
+                "translation_attempt": 1,
+            },
+        )
+        job_store.add(job)
+
+        with patch.object(main_module, "_enqueue_conversion") as enqueue:
+            res = self.client.post(
+                f"/api/v2/jobs/{job.id}/retry-translation",
+                headers={"X-Job-Token": "retry-token"},
+            )
+
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["status"], "queued")
+        self.assertIsNone(data["download_url"])
+        self.assertEqual(data["translation_stats"]["free_retry_count"], 1)
+        self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
+        self.assertEqual(data["qa_report"]["status"], "retrying")
+        enqueue.assert_called_once()
 
     def test_v2_list_jobs_after_create(self):
         """GET /api/v2/jobs 创建后列表含至少一项。"""

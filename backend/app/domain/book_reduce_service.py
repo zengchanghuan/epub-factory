@@ -6,6 +6,8 @@ import ebooklib
 from pathlib import Path
 from typing import Callable, Optional
 
+from bs4 import BeautifulSoup
+
 from app.domain.manifest_service import build_manifest
 from app.engine.unpacker import EpubUnpacker
 from app.engine.toc_rebuilder import TocRebuilder
@@ -42,11 +44,48 @@ def make_get_chapter_content(job_id: str) -> Callable[[str], Optional[bytes]]:
     return lambda file_path: get_chapter_output(job_id, file_path)
 
 
+def _sync_book_title_metadata(book, title: str) -> None:
+    title = (title or "").strip()
+    if not title:
+        return
+    book.title = title
+    dc_ns = "http://purl.org/dc/elements/1.1/"
+    book.metadata.setdefault(dc_ns, {})
+    book.metadata[dc_ns]["title"] = [(title, {})]
+
+
+def _sync_document_title_text(content: bytes, original_title: str, translated_title: str) -> bytes:
+    original_title = (original_title or "").strip()
+    translated_title = (translated_title or "").strip()
+    if not translated_title:
+        return content
+
+    text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else str(content)
+    soup = BeautifulSoup(text, "html.parser")
+    changed = False
+
+    for title_tag in soup.find_all("title"):
+        if title_tag.get_text(strip=True) != translated_title:
+            title_tag.clear()
+            title_tag.append(translated_title)
+            changed = True
+
+    if original_title:
+        for node in soup.find_all(string=True):
+            if original_title in str(node):
+                node.replace_with(str(node).replace(original_title, translated_title))
+                changed = True
+
+    return soup.encode(formatter="html", encoding="utf-8") if changed else content
+
+
 def reduce_and_package(
     input_epub_path: str,
     output_epub_path: str,
     get_chapter_content: Callable[[str], Optional[bytes]],
     direction: str = "ltr",
+    book_title: str | None = None,
+    original_book_title: str | None = None,
 ) -> bool:
     """
     加载 EPUB，用回调提供的章节内容覆盖对应文档，再 TOC 重建并打包。
@@ -65,6 +104,8 @@ def reduce_and_package(
         book.direction = direction
     elif hasattr(book, "set_direction"):
         book.set_direction(direction)
+    if book_title:
+        _sync_book_title_metadata(book, book_title)
 
     manifest = build_manifest(input_epub_path, "reduce")
     if manifest.get("error"):
@@ -90,6 +131,9 @@ def reduce_and_package(
             continue
         if name in file_path_to_content:
             item.set_content(file_path_to_content[name])
+            continue
+        if book_title and "titlepage" in Path(name).name.lower():
+            item.set_content(_sync_document_title_text(item.get_content(), original_book_title or "", book_title))
 
     rebuilder = TocRebuilder()
     book = rebuilder.rebuild(book)

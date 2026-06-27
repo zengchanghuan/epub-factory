@@ -85,6 +85,17 @@ def test_audit_glossary_terms_missing():
     assert audit.latin_terms_missing == ["Smith", "London"]
 
 
+def test_audit_likely_untranslated_english_is_fail():
+    audit = audit_translation_chunk(
+        original_html="<p>This account of the events which led to the solution of DNA is unique in several ways.</p>",
+        translated_html="This account of the events which led to the solution of DNA is unique in several ways.",
+        glossary={},
+    )
+    assert audit.risk_level == "fail"
+    assert audit.likely_untranslated is True
+    assert "likely_untranslated" in audit.flags
+
+
 def _run():
     cases = [
         test_audit_ok_translation,
@@ -93,6 +104,7 @@ def _run():
         test_audit_html_tag_mismatch_is_fail,
         test_audit_error_like_response_is_fail,
         test_audit_glossary_terms_missing,
+        test_audit_likely_untranslated_english_is_fail,
     ]
     passed = 0
     for fn in cases:

@@ -33,6 +33,7 @@ class TranslationQualityAudit:
     latin_terms_missing: list[str] = field(default_factory=list)
     html_tag_mismatch: bool = False
     error_like_response: bool = False
+    likely_untranslated: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -45,6 +46,7 @@ class TranslationQualityAudit:
             "latin_terms_missing": self.latin_terms_missing,
             "html_tag_mismatch": self.html_tag_mismatch,
             "error_like_response": self.error_like_response,
+            "likely_untranslated": self.likely_untranslated,
         }
 
 
@@ -61,13 +63,58 @@ def _extract_inner_html(html: str) -> str:
 
 
 def _tag_counter(html: str) -> Counter[str]:
-    soup = BeautifulSoup(_extract_inner_html(html), "html.parser")
+    inner_html = _extract_inner_html(html)
+    if "<" not in inner_html or ">" not in inner_html:
+        return Counter()
+    soup = BeautifulSoup(inner_html, "html.parser")
     return Counter(tag.name for tag in soup.find_all(True) if isinstance(tag, Tag))
 
 
 def _numbers(text: str) -> list[str]:
     # 覆盖 3, 3.14, 1,000, 2024-06-25, 12:30 等常见形态。
     return re.findall(r"\d+(?:[,\.\-:/]\d+)*", text or "")
+
+
+def _latin_words(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z][A-Za-z'\-]{2,}", text or "")
+
+
+def _latin_char_count(text: str) -> int:
+    return sum(1 for ch in text or "" if ch.isascii() and ch.isalpha())
+
+
+def _cjk_char_count(text: str) -> int:
+    return len(re.findall(r"[\u3400-\u9fff]", text or ""))
+
+
+def _likely_untranslated_english(source_text: str, translated_text: str) -> bool:
+    """保守识别英文源段落在中文译文中大量原样残留的情况。"""
+    source_words = _latin_words(source_text)
+    if len(source_words) < 6 or not translated_text:
+        return False
+
+    normalize = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()
+    if normalize(source_text) == normalize(translated_text):
+        return True
+
+    translated_words = _latin_words(translated_text)
+    translated_latin = _latin_char_count(translated_text)
+    translated_cjk = _cjk_char_count(translated_text)
+
+    if (
+        len(translated_words) >= max(6, int(len(source_words) * 0.7))
+        and translated_cjk < max(6, int(translated_latin * 0.15))
+    ):
+        return True
+
+    if (
+        translated_cjk > 0
+        and len(translated_words) >= 12
+        and translated_latin > max(120, translated_cjk * 2.5)
+    ):
+        return True
+
+    return False
 
 
 def _set_risk(current: str, new: str) -> str:
@@ -97,6 +144,11 @@ def audit_translation_chunk(
 
     if source_text and not translated_text:
         audit.flags.append("empty_translation")
+        audit.risk_level = _set_risk(audit.risk_level, "fail")
+
+    if _likely_untranslated_english(source_text, translated_text):
+        audit.likely_untranslated = True
+        audit.flags.append("likely_untranslated")
         audit.risk_level = _set_risk(audit.risk_level, "fail")
 
     if error_like_checker and error_like_checker(translated_html):

@@ -15,8 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from ebooklib import epub
 
-import app.domain.fast_translation_runner as fast_runner
-from app.domain.fast_translation_runner import run_fast_translation_job
+import app.engine.glossary_service as glossary_service
+from app.domain.fast_translation_runner import (
+    _translation_failures_exceed_delivery_gate,
+    run_fast_translation_job,
+)
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.models import DeviceProfile, Job, OutputMode
 from app.storage import job_store
@@ -25,15 +28,22 @@ from app.storage import job_store
 def _make_epub(path: Path, marker: str) -> None:
     book = epub.EpubBook()
     book.set_identifier(f"d14-{marker}")
-    book.set_title("D14 Fast Translation")
+    book.set_title("The Annotated and Illustrated Double Helix")
     book.set_language("en")
+    titlepage = epub.EpubHtml(title="Title Page", file_name="titlepage.xhtml", lang="en")
+    titlepage.content = (
+        "<html><head><title>The Annotated and Illustrated Double Helix</title></head>"
+        "<body><h1>The Annotated and Illustrated Double Helix</h1></body></html>"
+    )
     chapter = epub.EpubHtml(title="Chapter 1", file_name="chap_01.xhtml", lang="en")
     chapter.content = (
         "<html><body>"
         f"<h1>Chapter 1</h1><p>Mr. Smith travels to London {marker}.</p>"
         "</body></html>"
     )
+    book.add_item(titlepage)
     book.add_item(chapter)
+    book.spine.append(titlepage)
     book.spine.append(chapter)
     book.toc = (epub.Link("chap_01.xhtml", "Chapter 1", "chap1"),)
     book.add_item(epub.EpubNcx())
@@ -43,13 +53,21 @@ def _make_epub(path: Path, marker: str) -> None:
 
 def test_fast_translation_runner_glossary_audit():
     marker = uuid.uuid4().hex[:10]
-    old_auto = fast_runner.build_auto_glossary
+    old_translate_glossary = glossary_service.translate_glossary
     old_call = SemanticsTranslator._call_llm_json_batch
 
-    fast_runner.build_auto_glossary = lambda *args, **kwargs: {}
+    async def fake_translate_glossary(*args, **kwargs):
+        return {}
+
+    glossary_service.translate_glossary = fake_translate_glossary
 
     async def fake_call(self, payload):
         # 故意保留 Smith/London，验证 verify_and_fix 会按 glossary 修正。
+        if any("Annotated and Illustrated Double Helix" in item["html"] for item in payload):
+            return (
+                {item["id"]: "注释图解版《双螺旋》" for item in payload},
+                {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 20, "completion_tokens": 30},
+            )
         return (
             {item["id"]: item["html"].replace("travels to", "到访") for item in payload},
             {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 20, "completion_tokens": 30},
@@ -85,12 +103,16 @@ def test_fast_translation_runner_glossary_audit():
             assert "audit_warn_chunks" in result.translation_stats
             assert "audit_failed_chunks" in result.translation_stats
             assert "audit_flags_count" in result.translation_stats
+            assert result.translation_stats["book_title_original"] == "The Annotated and Illustrated Double Helix"
+            assert result.translation_stats["book_title_translated"] == "注释图解版《双螺旋》"
             chunks = job_store.list_chunks(job.id)
             assert chunks
             assert any(c.source_text for c in chunks)
             assert any(c.translated_text for c in chunks)
             assert all(isinstance(c.audit_json, dict) for c in chunks)
             out_book = epub.read_epub(str(out))
+            titles = out_book.get_metadata("DC", "title")
+            assert titles and titles[0][0] == "注释图解版《双螺旋》"
             combined = []
             for item in out_book.get_items():
                 if item.get_type() == 9:
@@ -99,18 +121,41 @@ def test_fast_translation_runner_glossary_audit():
                         content = content.decode("utf-8", errors="ignore")
                     combined.append(str(content))
             text = "\n".join(combined)
+            assert "注释图解版《双螺旋》" in text
             assert "史密斯" in text
             assert "伦敦" in text
     finally:
-        fast_runner.build_auto_glossary = old_auto
+        glossary_service.translate_glossary = old_translate_glossary
         SemanticsTranslator._call_llm_json_batch = old_call
 
 
+def test_translation_failure_delivery_gate():
+    assert _translation_failures_exceed_delivery_gate({
+        "failed_chunks": 546,
+        "total_chunks": 2414,
+    }) is True
+    assert _translation_failures_exceed_delivery_gate({
+        "failed_chunks": 3,
+        "total_chunks": 2414,
+    }) is False
+    assert _translation_failures_exceed_delivery_gate({
+        "failed_chunks": 30,
+        "total_chunks": 10000,
+    }) is False
+
+
 if __name__ == "__main__":
-    try:
-        test_fast_translation_runner_glossary_audit()
-        print("  ✅ test_fast_translation_runner_glossary_audit")
-        print("\n📊 1 passed, 0 failed")
-    except Exception as exc:
-        print(f"  ❌ test_fast_translation_runner_glossary_audit: {exc}")
-        raise
+    tests = [
+        test_fast_translation_runner_glossary_audit,
+        test_translation_failure_delivery_gate,
+    ]
+    passed = 0
+    for fn in tests:
+        try:
+            fn()
+            print(f"  ✅ {fn.__name__}")
+            passed += 1
+        except Exception as exc:
+            print(f"  ❌ {fn.__name__}: {exc}")
+            raise
+    print(f"\n📊 {passed} passed, 0 failed")
