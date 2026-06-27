@@ -122,6 +122,34 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(detail["qa_report"]["status"], "failed")
         self.assertTrue(detail["qa_report"]["retryable"])
 
+    def test_v2_failed_partial_translation_is_qa_failed(self):
+        """交付门槛失败没有产物时，也应展示为可重译的质检失败。"""
+        job = Job(
+            id=f"d3_failed_partial_{uuid.uuid4().hex[:8]}",
+            trace_id="trace_failed_partial",
+            source_filename="partial_failed.epub",
+            input_path="/tmp/partial_failed.epub",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.failed,
+            enable_translation=True,
+            error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+            message="AI 翻译失败：仍有 98/2414 个段落未成功翻译。",
+            translation_stats={
+                "total_chunks": 2414,
+                "translated_chunks": 2300,
+                "cached_chunks": 16,
+                "failed_chunks": 98,
+                "delivery_gate_failed": True,
+            },
+        )
+        detail = _job_to_v2_detail(job, f"/api/v2/jobs/{job.id}/download")
+
+        self.assertFalse(_job_can_download(job))
+        self.assertEqual(detail["status"], "qa_failed")
+        self.assertIsNone(detail["download_url"])
+        self.assertEqual(detail["qa_report"]["status"], "failed")
+        self.assertTrue(detail["qa_report"]["retryable"])
+
     def test_v2_retry_translation_reuses_original_job_without_payment(self):
         """质检失败后可复用原上传文件和 token 免费重译。"""
         suffix = uuid.uuid4().hex[:8]
@@ -161,6 +189,45 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(data["translation_stats"]["free_retry_count"], 1)
         self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
         self.assertEqual(data["qa_report"]["status"], "retrying")
+        enqueue.assert_called_once()
+
+    def test_v2_retry_translation_accepts_failed_delivery_gate_job(self):
+        """超过交付门槛被拦截的失败任务，也能免费重译。"""
+        suffix = uuid.uuid4().hex[:8]
+        tmp_input = Path(f"/tmp/d3_retry_failed_delivery_gate_{suffix}.epub")
+        tmp_input.write_bytes(MINIMAL_EPUB_BYTES)
+        job = Job(
+            id=f"d3_retry_failed_delivery_gate_{suffix}",
+            trace_id="trace_retry_failed_delivery_gate",
+            source_filename="retry_failed.epub",
+            input_path=str(tmp_input),
+            access_token="retry-token",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.failed,
+            enable_translation=True,
+            error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+            message="AI 翻译失败：仍有 98/2414 个段落未成功翻译。",
+            translation_stats={
+                "total_chunks": 2414,
+                "failed_chunks": 98,
+                "free_retry_count": 0,
+                "translation_attempt": 1,
+                "delivery_gate_failed": True,
+            },
+        )
+        job_store.add(job)
+
+        with patch.object(main_module, "_enqueue_conversion") as enqueue:
+            res = self.client.post(
+                f"/api/v2/jobs/{job.id}/retry-translation",
+                headers={"X-Job-Token": "retry-token"},
+            )
+
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(data["translation_stats"]["free_retry_count"], 1)
+        self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
         enqueue.assert_called_once()
 
     def test_v2_translation_diagnostics_exposes_failed_chunks(self):

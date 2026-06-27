@@ -250,6 +250,51 @@ def _translation_failures_exceed_delivery_gate(stats: dict[str, Any]) -> bool:
     return failed > max_failed and (failed / total) > max_ratio
 
 
+def _translation_delivery_gate_result(
+    *,
+    pre_result: ConversionResult,
+    translation_stats: dict[str, Any],
+    timings: list[tuple[str, float]],
+    started_all: float,
+    failed: int,
+    total: int,
+    last_error: str,
+) -> ConversionResult:
+    message = (
+        f"AI 翻译失败：仍有 {failed}/{total} 个段落未成功翻译。"
+        "为避免生成中英混杂的 EPUB，已停止打包；请稍后重试或降低并发后重试。"
+        f"最后错误：{last_error}"
+    )
+    stats = dict(translation_stats)
+    stats["delivery_gate_failed"] = True
+    stats["deliverable"] = False
+    stats = attach_translation_qa_report(
+        stats,
+        output_path=None,
+        error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+    )
+
+    total_ms = (time.monotonic() - started_all) * 1000
+    timings.append(("Total", total_ms))
+    metrics = _metrics_summary(timings)
+    _log_stage(
+        "translation_quality_gate_failed",
+        failed=failed,
+        total=total,
+        error=last_error,
+        error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+    )
+    return ConversionResult(
+        quality_stats=pre_result.quality_stats,
+        translation_stats=stats,
+        lexicon_stats=pre_result.lexicon_stats,
+        metrics_summary=metrics,
+        message=message,
+        error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+        validation_passed=False,
+    )
+
+
 async def _translate_manifest_async(
     *,
     job,
@@ -542,11 +587,14 @@ def run_fast_translation_job(
             failed = int(translation_stats.get("failed_chunks") or 0)
             total = int(translation_stats.get("total_chunks") or 0)
             last_error = translation_stats.get("last_error") or "部分段落重试后仍未成功翻译"
-            _log_stage("translation_quality_gate_failed", failed=failed, total=total, error=last_error)
-            raise RuntimeError(
-                f"AI 翻译失败：仍有 {failed}/{total} 个段落未成功翻译。"
-                "为避免生成中英混杂的 EPUB，已停止打包；请稍后重试或降低并发后重试。"
-                f"最后错误：{last_error}"
+            return _translation_delivery_gate_result(
+                pre_result=pre_result,
+                translation_stats=translation_stats,
+                timings=timings,
+                started_all=started_all,
+                failed=failed,
+                total=total,
+                last_error=last_error,
             )
 
         t = time.monotonic()

@@ -132,6 +132,7 @@ class SemanticsTranslator:
         env_concurrency = min(env_concurrency, max(1, concurrency_cap))
         self.semaphore = asyncio.Semaphore(max(1, env_concurrency))
         self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "4")))
+        self.quality_retries = max(1, int(os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES", "2")))
         self.timeout_extra_retries = max(0, int(os.environ.get("OPENAI_TIMEOUT_EXTRA_RETRIES", "2")))
         self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "90"))
         if temperature is not None:
@@ -669,31 +670,49 @@ class SemanticsTranslator:
             )
 
         async def retry_one(idx: int, original_inner: str, reason: str) -> bool:
-            t0 = time.monotonic()
-            try:
-                async with self.semaphore:
-                    translations_map, meta = await self._call_llm_json_batch([{"id": 0, "html": original_inner}])
-                translated = translations_map.get(0, "")
-                latency_ms = int((time.monotonic() - t0) * 1000)
-                if (
+            reason_detail = reason
+            last_meta: dict | None = None
+            last_latency_ms = 0
+            retry_count = 0
+            for quality_attempt in range(1, self.quality_retries + 1):
+                t0 = time.monotonic()
+                try:
+                    self.stats.retry_attempts += 1
+                    async with self.semaphore:
+                        translations_map, meta = await self._call_llm_json_batch([{"id": 0, "html": original_inner}])
+                    last_meta = meta
+                    retry_count += max(1, int(meta.get("attempts") or 1))
+                    translated = translations_map.get(0, "")
+                    last_latency_ms = int((time.monotonic() - t0) * 1000)
+                except Exception as exc:
+                    reason_detail = f"{reason}; retry failed: {exc}"
+                    if self._is_auth_error(exc) or quality_attempt >= self.quality_retries:
+                        break
+                    if self.progress_callback:
+                        self.progress_callback(
+                            f"单段补译失败，继续重试 ({quality_attempt}/{self.quality_retries})"
+                        )
+                    await asyncio.sleep(min(quality_attempt, 3) + random.uniform(0, 0.5))
+                    continue
+
+                tag_mismatch = translated and not self._preserves_inline_tags(original_inner, translated)
+                invalid = (
                     not translated
                     or self._looks_like_error_response(translated)
                     or self._looks_untranslated(original_inner, translated)
-                    or not self._preserves_inline_tags(original_inner, translated)
-                ):
-                    reason_detail = reason
-                    if translated and not self._preserves_inline_tags(original_inner, translated):
-                        reason_detail = f"{reason}; html tag mismatch"
-                    retry_count = max(1, int(meta.get("attempts") or 1))
-                    mark_failed(
-                        idx,
-                        original_inner,
-                        f"{reason_detail}; retry still invalid",
-                        meta,
-                        latency_ms,
-                        retry_count=retry_count,
-                    )
-                    return False
+                    or tag_mismatch
+                )
+                if invalid:
+                    reason_detail = f"{reason}; html tag mismatch" if tag_mismatch else reason
+                    if quality_attempt < self.quality_retries:
+                        if self.progress_callback:
+                            self.progress_callback(
+                                f"单段补译未通过，继续重试 ({quality_attempt}/{self.quality_retries})"
+                            )
+                        await asyncio.sleep(min(quality_attempt, 3) + random.uniform(0, 0.5))
+                        continue
+                    break
+
                 self.cache.set(original_inner, translated, self._cache_lang_key)
                 self.stats.translated_chunks += 1
                 results[idx] = SingleChunkResult(
@@ -703,19 +722,21 @@ class SemanticsTranslator:
                     base_url=meta.get("base_url"),
                     prompt_tokens=meta.get("prompt_tokens", 0),
                     completion_tokens=meta.get("completion_tokens", 0),
-                    latency_ms=latency_ms,
+                    latency_ms=last_latency_ms,
                     error=None,
-                    retry_count=max(1, int(meta.get("attempts") or 1)),
+                    retry_count=max(1, retry_count),
                 )
                 return True
-            except Exception as exc:
-                mark_failed(
-                    idx,
-                    original_inner,
-                    f"{reason}; retry failed: {exc}",
-                    retry_count=self.max_retries + 1,
-                )
-                return False
+
+            mark_failed(
+                idx,
+                original_inner,
+                f"{reason_detail}; retry still invalid",
+                last_meta,
+                last_latency_ms,
+                retry_count=max(1, retry_count),
+            )
+            return False
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
             payload = [{"id": local_id, "html": html} for local_id, (_, html) in enumerate(batch)]

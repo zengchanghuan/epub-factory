@@ -8,6 +8,7 @@ D14 测试：快速翻译主链路
 
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -17,11 +18,12 @@ from ebooklib import epub
 
 import app.engine.glossary_service as glossary_service
 from app.domain.fast_translation_runner import (
+    _translation_delivery_gate_result,
     _translation_failures_exceed_delivery_gate,
     run_fast_translation_job,
 )
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
-from app.models import DeviceProfile, Job, OutputMode
+from app.models import ConversionResult, DeviceProfile, ErrorCode, Job, OutputMode
 from app.storage import job_store
 
 
@@ -144,10 +146,42 @@ def test_translation_failure_delivery_gate():
     }) is False
 
 
+def test_delivery_gate_result_keeps_retryable_qa_report():
+    stats = {
+        "model": "deepseek-v4-flash",
+        "total_chunks": 2414,
+        "translated_chunks": 2300,
+        "cached_chunks": 16,
+        "failed_chunks": 98,
+        "last_error": "untranslated response; retry still invalid",
+        "audit_flags_count": {"likely_untranslated": 98},
+    }
+
+    result = _translation_delivery_gate_result(
+        pre_result=ConversionResult(),
+        translation_stats=stats,
+        timings=[],
+        started_all=time.monotonic(),
+        failed=98,
+        total=2414,
+        last_error=stats["last_error"],
+    )
+
+    assert result.validation_passed is False
+    assert result.error_code == ErrorCode.PARTIAL_TRANSLATION.value
+    assert result.translation_stats["delivery_gate_failed"] is True
+    assert result.translation_stats["deliverable"] is False
+    assert result.translation_stats["qa_report"]["status"] == "failed"
+    assert result.translation_stats["qa_report"]["retryable"] is True
+    assert "output_missing" not in result.translation_stats["qa_report"]["flags"]
+    assert "98/2414" in result.message
+
+
 if __name__ == "__main__":
     tests = [
         test_fast_translation_runner_glossary_audit,
         test_translation_failure_delivery_gate,
+        test_delivery_gate_result_keeps_retryable_qa_report,
     ]
     passed = 0
     for fn in tests:

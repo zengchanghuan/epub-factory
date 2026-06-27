@@ -81,6 +81,7 @@ def test_translation_stability_caps_env_concurrency_and_batch_size():
         assert t.semaphore._value == 3
         assert t.batch_max_chars == 5000
         assert t.max_retries >= 4
+        assert t.quality_retries >= 1
         assert t.request_timeout >= 90
     finally:
         for key, value in old_values.items():
@@ -205,6 +206,44 @@ def test_translate_many_chunks_retries_untranslated_response():
     assert t.stats.failed_chunks == 0
 
 
+def test_translate_many_chunks_uses_multiple_quality_retries():
+    """单段补译第一次仍返回原文时，应继续质量重试。"""
+    old_value = os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES")
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "2"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    finally:
+        if old_value is None:
+            os.environ.pop("EPUB_TRANSLATION_QUALITY_RETRIES", None)
+        else:
+            os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = old_value
+
+    original_inner = "This account of the discovery of DNA is unique in several important ways."
+    calls = []
+
+    async def fake_call(payload):
+        calls.append(payload)
+        if len(calls) < 3:
+            return (
+                {0: original_inner},
+                {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+            )
+        return (
+            {0: "这段关于 DNA 发现过程的记述在几个重要方面都很独特。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([f"<p>{original_inner}</p>"]))
+
+    assert len(calls) == 3
+    assert out[0].error is None
+    assert "独特" in out[0].translated_html
+    assert out[0].retry_count == 2
+    assert t.stats.translated_chunks == 1
+    assert t.stats.failed_chunks == 0
+
+
 def test_extract_json_tolerates_preamble_and_trailing_commas():
     """模型偶尔会包一层说明或留下尾随逗号，解析器应尽量容错。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -252,6 +291,7 @@ def _run():
         test_translate_many_chunks_error_like_only_fails_that_chunk,
         test_translate_many_chunks_splits_failed_batch,
         test_translate_many_chunks_retries_untranslated_response,
+        test_translate_many_chunks_uses_multiple_quality_retries,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,
     ]

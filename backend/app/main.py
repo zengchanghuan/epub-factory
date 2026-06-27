@@ -274,8 +274,13 @@ def _job_to_v2_status(job: Job) -> str:
         return "queued"
     if job.status == JobStatus.running:
         return "running"
+    if (
+        job.error_code == ErrorCode.PARTIAL_TRANSLATION.value
+        and job.status in (JobStatus.success, JobStatus.failed)
+    ):
+        return "qa_failed"
     if job.status == JobStatus.success:
-        return "qa_failed" if job.error_code == ErrorCode.PARTIAL_TRANSLATION.value else "completed"
+        return "completed"
     if job.status == JobStatus.failed:
         return "failed"
     if job.status == JobStatus.cancelled:

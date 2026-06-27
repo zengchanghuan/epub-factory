@@ -200,13 +200,26 @@ def run_job(job_id: str) -> None:
         status, message, error_code = resolve_after_conversion(result)
         output_path = _rename_output_with_translated_title(job, result, output_path, suffix)
         if job.enable_translation:
+            qa_output_path = (
+                None
+                if error_code == ErrorCode.PARTIAL_TRANSLATION.value and status == JobStatus.failed
+                else output_path
+            )
             result.translation_stats = attach_translation_qa_report(
                 result.translation_stats,
-                output_path=output_path,
+                output_path=qa_output_path,
                 error_code=error_code,
             )
         if status == JobStatus.failed:
-            job_store.update_status(job.id, status, message, error_code=error_code)
+            job_store.update_status(
+                job.id,
+                status,
+                message,
+                error_code=error_code,
+                quality_stats=result.quality_stats,
+                translation_stats=result.translation_stats,
+                metrics_summary=result.metrics_summary,
+            )
             report_error(
                 error_code=error_code or ErrorCode.CONVERT_FAILED,
                 message=message,
