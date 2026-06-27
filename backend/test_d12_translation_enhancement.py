@@ -205,6 +205,42 @@ def test_translate_many_chunks_retries_untranslated_response():
     assert t.stats.failed_chunks == 0
 
 
+def test_extract_json_tolerates_preamble_and_trailing_commas():
+    """模型偶尔会包一层说明或留下尾随逗号，解析器应尽量容错。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    parsed = t._extract_json_from_response(
+        'Here is the JSON:\\n{"results":[{"id":0,"translation":"译文"},],}\\n'
+    )
+    assert parsed["results"][0]["translation"] == "译文"
+
+
+def test_translate_many_chunks_retries_html_tag_mismatch():
+    """模型若丢掉内联标签，应单段重试，而不是把坏 HTML 写入结果。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+
+    async def fake_call(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            return (
+                {0: "这是重要的。"},
+                {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+            )
+        return (
+            {0: "这是<em>重要的</em>。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async(["<p>This is <em>important</em>.</p>"]))
+
+    assert len(calls) == 2
+    assert out[0].error is None
+    assert "<em>" in out[0].translated_html
+    assert t.stats.translated_chunks == 1
+    assert t.stats.failed_chunks == 0
+
+
 def _run():
     cases = [
         test_looks_like_error_response,
@@ -216,6 +252,8 @@ def _run():
         test_translate_many_chunks_error_like_only_fails_that_chunk,
         test_translate_many_chunks_splits_failed_batch,
         test_translate_many_chunks_retries_untranslated_response,
+        test_extract_json_tolerates_preamble_and_trailing_commas,
+        test_translate_many_chunks_retries_html_tag_mismatch,
     ]
     passed = 0
     for fn in cases:

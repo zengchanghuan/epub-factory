@@ -177,6 +177,8 @@ class SemanticsTranslator:
         msg = str(exc_or_message).lower()
         if "untranslated" in msg:
             return "untranslated_response"
+        if "html tag mismatch" in msg:
+            return "html_mismatch"
         if "json" in msg or "parse" in msg:
             return "invalid_json"
         if "timeout" in msg or "timed out" in msg:
@@ -273,6 +275,12 @@ class SemanticsTranslator:
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+        if not text.startswith("{"):
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                text = text[start:end + 1]
+        text = re.sub(r",\s*([}\]])", r"\1", text)
         return json.loads(text)
 
     @staticmethod
@@ -352,6 +360,18 @@ class SemanticsTranslator:
         return False
 
     @staticmethod
+    def _inline_tag_counter(html: str) -> dict[str, int]:
+        soup = BeautifulSoup(html or "", "html.parser")
+        return {
+            name: len(soup.find_all(name))
+            for name in sorted({tag.name for tag in soup.find_all(True) if isinstance(tag, Tag)})
+            if name not in {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
+        }
+
+    def _preserves_inline_tags(self, source_html: str, translated_html: str) -> bool:
+        return self._inline_tag_counter(source_html) == self._inline_tag_counter(translated_html)
+
+    @staticmethod
     def _extract_inner_html(html: str) -> str:
         """提取块级标签 inner_html，保持外层属性由 Reduce 回写阶段负责。"""
         soup = BeautifulSoup(html or "", "html.parser")
@@ -374,16 +394,24 @@ class SemanticsTranslator:
         for attempt in range(1, max_attempts + 1):
             base_url, model = routes[(attempt - 1) % len(routes)]
             try:
-                response = await self._get_client(base_url).chat.completions.create(
-                    model=model,
-                    messages=[
+                kwargs = {
+                    "model": model,
+                    "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content}
                     ],
-                    temperature=self.temperature,
-                    response_format={"type": "json_object"} if "gpt" in model.lower() else None,
-                    timeout=self.request_timeout,
-                )
+                    "temperature": self.temperature,
+                    "timeout": self.request_timeout,
+                }
+                if os.environ.get("OPENAI_DISABLE_JSON_RESPONSE_FORMAT", "").lower() not in ("1", "true", "yes"):
+                    kwargs["response_format"] = {"type": "json_object"}
+                try:
+                    response = await self._get_client(base_url).chat.completions.create(**kwargs)
+                except Exception as response_exc:
+                    if "response_format" not in str(response_exc).lower():
+                        raise
+                    kwargs.pop("response_format", None)
+                    response = await self._get_client(base_url).chat.completions.create(**kwargs)
                 raw = (response.choices[0].message.content or "").strip()
                 try:
                     parsed = self._extract_json_from_response(raw)
@@ -526,10 +554,15 @@ class SemanticsTranslator:
                 async with self.semaphore:
                     translations_map, meta = await self._call_llm_json_batch(payload)
                 translated = translations_map.get(0, "")
+            if translated and not self._preserves_inline_tags(inner_html, translated):
+                async with self.semaphore:
+                    translations_map, meta = await self._call_llm_json_batch(payload)
+                translated = translations_map.get(0, "")
             if (
                 not translated
                 or self._looks_like_error_response(translated)
                 or self._looks_untranslated(inner_html, translated)
+                or not self._preserves_inline_tags(inner_html, translated)
             ):
                 raise ValueError("LLM returned untranslated or invalid content")
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -646,12 +679,16 @@ class SemanticsTranslator:
                     not translated
                     or self._looks_like_error_response(translated)
                     or self._looks_untranslated(original_inner, translated)
+                    or not self._preserves_inline_tags(original_inner, translated)
                 ):
+                    reason_detail = reason
+                    if translated and not self._preserves_inline_tags(original_inner, translated):
+                        reason_detail = f"{reason}; html tag mismatch"
                     retry_count = max(1, int(meta.get("attempts") or 1))
                     mark_failed(
                         idx,
                         original_inner,
-                        f"{reason}; retry still untranslated",
+                        f"{reason_detail}; retry still invalid",
                         meta,
                         latency_ms,
                         retry_count=retry_count,
@@ -711,6 +748,9 @@ class SemanticsTranslator:
                     continue
                 if not translated or self._looks_untranslated(original_inner, translated):
                     await retry_one(idx, original_inner, "untranslated response")
+                    continue
+                if not self._preserves_inline_tags(original_inner, translated):
+                    await retry_one(idx, original_inner, "html tag mismatch")
                     continue
                 self.cache.set(original_inner, translated, self._cache_lang_key)
                 self.stats.translated_chunks += 1
