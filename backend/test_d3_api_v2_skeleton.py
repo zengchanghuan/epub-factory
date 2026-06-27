@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from app import main as main_module
 from fastapi.testclient import TestClient
 from app.main import _job_can_download, _job_to_v2_detail, app
-from app.models import ErrorCode, Job, JobStatus, OutputMode
+from app.models import ChunkStatus, ErrorCode, Job, JobChunk, JobStatus, OutputMode
 from app.storage import job_store
 
 # 最小化 payload：仅用于触发「创建任务」并校验响应，不要求真实 EPUB 内容
@@ -162,6 +162,61 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
         self.assertEqual(data["qa_report"]["status"], "retrying")
         enqueue.assert_called_once()
+
+    def test_v2_translation_diagnostics_exposes_failed_chunks(self):
+        """翻译诊断接口返回失败类别、失败段落和重试次数。"""
+        suffix = uuid.uuid4().hex[:8]
+        job = Job(
+            id=f"d3_translation_diag_{suffix}",
+            trace_id="trace_diag",
+            source_filename="diag.epub",
+            input_path="/tmp/diag.epub",
+            access_token="diag-token",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.failed,
+            enable_translation=True,
+            error_code=ErrorCode.TRANSLATION_FAILED.value,
+            message="AI 翻译失败",
+            translation_stats={
+                "model": "deepseek-v4-flash",
+                "total_chunks": 1,
+                "failed_chunks": 1,
+                "timeout_errors": 2,
+                "retry_attempts": 4,
+                "last_error": "untranslated response; retry still untranslated",
+                "audit_flags_count": {"likely_untranslated": 1},
+            },
+        )
+        job_store.add(job)
+        job_store.upsert_chunk(JobChunk(
+            job_id=job.id,
+            chapter_id="part001",
+            chunk_id="part001_0001",
+            sequence=1,
+            locator="p:nth-of-type(1)",
+            source_hash="abc",
+            source_text="This account of DNA is unique in several ways.",
+            translated_text="This account of DNA is unique in several ways.",
+            audit_json={"risk_level": "fail", "flags": ["likely_untranslated", "translation_error"]},
+            status=ChunkStatus.failed,
+            cached=False,
+            model="deepseek-v4-flash",
+            base_url="https://api.deepseek.com",
+            retry_count=3,
+            latency_ms=91000,
+            error_message="untranslated response; retry still untranslated",
+        ))
+
+        res = self.client.get(
+            f"/api/v2/jobs/{job.id}/translation-diagnostics",
+            headers={"X-Job-Token": "diag-token"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["summary"]["failed_chunks"], 1)
+        self.assertEqual(data["summary"]["timeout_errors"], 2)
+        self.assertEqual(data["error_categories"]["untranslated_response"], 1)
+        self.assertEqual(data["failed_chunks"][0]["retry_count"], 3)
 
     def test_v2_list_jobs_after_create(self):
         """GET /api/v2/jobs 创建后列表含至少一项。"""

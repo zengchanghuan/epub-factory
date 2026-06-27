@@ -64,6 +64,32 @@ def test_candidate_routes_with_fallbacks():
         os.environ.pop("OPENAI_MODEL_FALLBACKS", None)
 
 
+def test_translation_stability_caps_env_concurrency_and_batch_size():
+    """线上即使 .env 写高并发，也应被稳定性 cap 限住。"""
+    old_values = {
+        "OPENAI_CONCURRENCY": os.environ.get("OPENAI_CONCURRENCY"),
+        "EPUB_TRANSLATION_CONCURRENCY_CAP": os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP"),
+        "EPUB_TRANSLATION_BATCH_MAX_CHARS": os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS"),
+        "EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP": os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP"),
+    }
+    os.environ["OPENAI_CONCURRENCY"] = "12"
+    os.environ["EPUB_TRANSLATION_CONCURRENCY_CAP"] = "3"
+    os.environ["EPUB_TRANSLATION_BATCH_MAX_CHARS"] = "12000"
+    os.environ["EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP"] = "5000"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+        assert t.semaphore._value == 3
+        assert t.batch_max_chars == 5000
+        assert t.max_retries >= 4
+        assert t.request_timeout >= 90
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_translate_many_chunks_uses_one_json_batch():
     """多个未缓存 chunk 应合并为一次 JSON batch 请求。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -185,6 +211,7 @@ def _run():
         test_faithful_translation_prompt_constraints,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
+        test_translation_stability_caps_env_concurrency_and_batch_size,
         test_translate_many_chunks_uses_one_json_batch,
         test_translate_many_chunks_error_like_only_fails_that_chunk,
         test_translate_many_chunks_splits_failed_batch,

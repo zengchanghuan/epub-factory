@@ -31,6 +31,8 @@ class ChunkResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_ms: int = 0
+    retry_count: int = 0
+    error_type: str | None = None
     audit_json: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -155,6 +157,8 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 prompt_tokens=res.prompt_tokens,
                 completion_tokens=res.completion_tokens,
                 latency_ms=res.latency_ms,
+                retry_count=getattr(res, "retry_count", 0),
+                error_type=getattr(res, "error_type", None),
                 audit_json=audit,
             )
         )
@@ -179,7 +183,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 cached=cr.cached,
                 model=cr.model,
                 base_url=cr.base_url,
-                retry_count=0,
+                retry_count=getattr(cr, "retry_count", 0),
                 prompt_tokens=cr.prompt_tokens,
                 completion_tokens=cr.completion_tokens,
                 latency_ms=cr.latency_ms,

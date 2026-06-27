@@ -1127,6 +1127,153 @@ def _v2_job_stats(job_id: str) -> dict:
     return {"job_id": job_id, "summary": summary}
 
 
+def _enum_value(value) -> str:
+    return getattr(value, "value", str(value))
+
+
+def _diagnose_error_category(error_message: str | None, audit_flags: list | None = None) -> str:
+    msg = (error_message or "").lower()
+    flags = set(audit_flags or [])
+    if "likely_untranslated" in flags or "untranslated" in msg:
+        return "untranslated_response"
+    if "empty_translation" in flags or "missing translation" in msg:
+        return "empty_translation"
+    if "html_tag_mismatch" in flags:
+        return "html_mismatch"
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if "rate limit" in msg or "429" in msg:
+        return "rate_limit"
+    if "json" in msg or "parse" in msg:
+        return "invalid_json"
+    if "connect" in msg or "connection" in msg:
+        return "connection"
+    if error_message:
+        return "model_error"
+    if flags:
+        return "quality_audit"
+    return "unknown"
+
+
+def _short_text(text: str | None, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
+    stats = job.translation_stats or {}
+    list_chunks = getattr(job_store, "list_chunks", None)
+    chunks = list_chunks(job.id) if list_chunks else []
+    status_counts: dict[str, int] = {}
+    error_categories: dict[str, int] = {}
+    audit_flags_count: dict[str, int] = {}
+    failed_items = []
+    slow_items = []
+
+    for chunk in chunks:
+        status = _enum_value(getattr(chunk, "status", ""))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        audit = getattr(chunk, "audit_json", None) or {}
+        flags = audit.get("flags", []) if isinstance(audit, dict) else []
+        risk_level = audit.get("risk_level") if isinstance(audit, dict) else None
+        for flag in flags:
+            audit_flags_count[flag] = audit_flags_count.get(flag, 0) + 1
+
+        has_issue = (
+            status == "failed"
+            or bool(getattr(chunk, "error_message", None))
+            or risk_level == "fail"
+            or "likely_untranslated" in flags
+        )
+        if has_issue:
+            category = _diagnose_error_category(getattr(chunk, "error_message", None), flags)
+            error_categories[category] = error_categories.get(category, 0) + 1
+            if len(failed_items) < max(1, min(limit, 100)):
+                failed_items.append({
+                    "chapter_id": getattr(chunk, "chapter_id", ""),
+                    "chunk_id": getattr(chunk, "chunk_id", ""),
+                    "sequence": getattr(chunk, "sequence", 0),
+                    "locator": getattr(chunk, "locator", ""),
+                    "status": status,
+                    "category": category,
+                    "error_message": getattr(chunk, "error_message", None),
+                    "retry_count": int(getattr(chunk, "retry_count", 0) or 0),
+                    "latency_ms": int(getattr(chunk, "latency_ms", 0) or 0),
+                    "model": getattr(chunk, "model", None),
+                    "base_url": getattr(chunk, "base_url", None),
+                    "risk_level": risk_level,
+                    "flags": flags,
+                    "source_text": _short_text(getattr(chunk, "source_text", "")),
+                    "translated_text": _short_text(getattr(chunk, "translated_text", "")),
+                })
+
+        latency = int(getattr(chunk, "latency_ms", 0) or 0)
+        if latency > 0:
+            slow_items.append((latency, chunk))
+
+    slow_items.sort(key=lambda item: item[0], reverse=True)
+    slow_chunks = [
+        {
+            "chapter_id": getattr(chunk, "chapter_id", ""),
+            "chunk_id": getattr(chunk, "chunk_id", ""),
+            "latency_ms": latency,
+            "retry_count": int(getattr(chunk, "retry_count", 0) or 0),
+            "model": getattr(chunk, "model", None),
+            "source_text": _short_text(getattr(chunk, "source_text", ""), 120),
+        }
+        for latency, chunk in slow_items[:10]
+    ]
+
+    model_timeout_count = int(stats.get("timeout_errors") or 0)
+    connection_count = int(stats.get("connection_errors") or 0)
+    likely_causes = []
+    if error_categories.get("untranslated_response") or (stats.get("audit_flags_count") or {}).get("likely_untranslated"):
+        likely_causes.append("模型返回原文或近似原文，系统已拦截以避免中英混杂交付")
+    if error_categories.get("timeout") or model_timeout_count:
+        likely_causes.append("模型 API 响应超时，可能与上游服务负载或单批内容过长有关")
+    if connection_count:
+        likely_causes.append("模型连接出现波动，已触发自动重试")
+    if not likely_causes and (int(stats.get("failed_chunks") or 0) > 0):
+        likely_causes.append("部分段落重试后仍未达到交付标准")
+
+    return {
+        "job_id": job.id,
+        "status": _job_to_v2_status(job),
+        "error_code": job.error_code,
+        "message": job.message,
+        "summary": {
+            "total_chunks": int(stats.get("total_chunks") or stats.get("chunks_total") or len(chunks) or 0),
+            "translated_chunks": int(stats.get("translated_chunks") or 0),
+            "cached_chunks": int(stats.get("cached_chunks") or 0),
+            "failed_chunks": int(stats.get("failed_chunks") or status_counts.get("failed", 0) or 0),
+            "audit_failed_chunks": int(stats.get("audit_failed_chunks") or 0),
+            "likely_untranslated": int((stats.get("audit_flags_count") or {}).get("likely_untranslated") or audit_flags_count.get("likely_untranslated", 0) or 0),
+            "timeout_errors": model_timeout_count,
+            "connection_errors": connection_count,
+            "retry_attempts": int(stats.get("retry_attempts") or 0),
+            "last_error": stats.get("last_error") or "",
+            "model": stats.get("model") or "",
+            "elapsed_seconds": stats.get("elapsed_seconds") or 0,
+        },
+        "status_counts": status_counts,
+        "error_categories": error_categories,
+        "audit_flags_count": stats.get("audit_flags_count") or audit_flags_count,
+        "likely_causes": likely_causes,
+        "failed_chunks": failed_items,
+        "slow_chunks": slow_chunks,
+        "effective_limits": {
+            "openai_concurrency_cap": int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP", "4")),
+            "chapter_concurrency_cap": int(os.environ.get("EPUB_CHAPTER_CONCURRENCY_CAP", "2")),
+            "batch_max_chars_cap": int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "6000")),
+            "request_timeout_seconds": float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "90")),
+            "max_retries": int(os.environ.get("OPENAI_MAX_RETRIES", "4")),
+            "timeout_extra_retries": int(os.environ.get("OPENAI_TIMEOUT_EXTRA_RETRIES", "2")),
+        },
+    }
+
+
 @app.get("/api/v2/jobs/{job_id}/stats")
 def get_job_stats_v2(job_id: str, request: Request):
     """获取章节/块级聚合统计（v2）。"""
@@ -1136,6 +1283,19 @@ def get_job_stats_v2(job_id: str, request: Request):
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
     return _v2_job_stats(job_id)
+
+
+@app.get("/api/v2/jobs/{job_id}/translation-diagnostics")
+def get_translation_diagnostics_v2(job_id: str, request: Request, limit: int = 20):
+    """获取翻译失败诊断：失败 chunk、错误类别、重试/耗时、审计 flags。"""
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not job.enable_translation:
+        raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
+    return _translation_diagnostics(job, limit=limit)
 
 
 def _v2_job_events(job_id: str) -> list:

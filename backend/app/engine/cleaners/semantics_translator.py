@@ -34,6 +34,8 @@ class TranslationStats:
     start_time: float = field(default_factory=time.time)
     errors: int = 0
     connection_errors: int = 0
+    timeout_errors: int = 0
+    retry_attempts: int = 0
     last_error: str = ""
 
     @property
@@ -81,6 +83,8 @@ class TranslationStats:
             "total_tokens": self.total_tokens,
             "errors": self.errors,
             "connection_errors": self.connection_errors,
+            "timeout_errors": self.timeout_errors,
+            "retry_attempts": self.retry_attempts,
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "last_error": self.last_error,
@@ -99,6 +103,8 @@ class SingleChunkResult:
     completion_tokens: int
     latency_ms: int
     error: str | None
+    retry_count: int = 0
+    error_type: str | None = None
 
 
 class SemanticsTranslator:
@@ -109,7 +115,9 @@ class SemanticsTranslator:
         self.glossary: dict[str, str] = glossary or {}
         self.cache = TranslationCache()
         self.progress_callback = None
-        self.batch_max_chars = max(1000, int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS", self._BATCH_MAX_CHARS)))
+        configured_batch_max = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS", self._BATCH_MAX_CHARS))
+        batch_cap = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "6000"))
+        self.batch_max_chars = max(1000, min(configured_batch_max, batch_cap))
 
         self.api_key = os.environ.get("OPENAI_API_KEY", "dummy")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -120,9 +128,12 @@ class SemanticsTranslator:
         assert_models_allowed([self.model, *self.model_fallbacks], context="translator")
         self.base_url_fallbacks = self._parse_csv_env("OPENAI_BASE_URL_FALLBACKS")
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
+        concurrency_cap = int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP", "4"))
+        env_concurrency = min(env_concurrency, max(1, concurrency_cap))
         self.semaphore = asyncio.Semaphore(max(1, env_concurrency))
-        self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "2")))
-        self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "45"))  # increased for JSON batches
+        self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "4")))
+        self.timeout_extra_retries = max(0, int(os.environ.get("OPENAI_TIMEOUT_EXTRA_RETRIES", "2")))
+        self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "90"))
         if temperature is not None:
             self.temperature = float(temperature)
         else:
@@ -148,6 +159,35 @@ class SemanticsTranslator:
         if "api key" in msg and ("invalid" in msg or "incorrect" in msg):
             return True
         return False
+
+    @staticmethod
+    def _is_timeout_error(exc: Exception) -> bool:
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException)):
+            return True
+        status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+        if status in (408, 504):
+            return True
+        msg = str(exc).lower()
+        return "timeout" in msg or "timed out" in msg or "read timed out" in msg
+
+    @staticmethod
+    def _classify_error(exc_or_message: Exception | str | None) -> str | None:
+        if exc_or_message is None:
+            return None
+        msg = str(exc_or_message).lower()
+        if "untranslated" in msg:
+            return "untranslated_response"
+        if "json" in msg or "parse" in msg:
+            return "invalid_json"
+        if "timeout" in msg or "timed out" in msg:
+            return "timeout"
+        if "rate limit" in msg or "429" in msg:
+            return "rate_limit"
+        if "authentication" in msg or "unauthorized" in msg or "api key" in msg:
+            return "auth"
+        if "connection" in msg or "connect" in msg:
+            return "connection"
+        return "model_error"
 
     def _get_client(self, base_url: str) -> AsyncOpenAI:
         if base_url not in self._clients:
@@ -327,6 +367,7 @@ class SemanticsTranslator:
         last_error = None
         routes = self._candidate_routes()
         max_attempts = max(self.max_retries, len(routes))
+        timeout_bonus_used = 0
         response = None
         base_url, model = self.base_url, self.model
         
@@ -372,6 +413,7 @@ class SemanticsTranslator:
                     self.stats.last_error = str(last_error)
                     if attempt >= max_attempts:
                         raise last_error
+                    self.stats.retry_attempts += 1
                     if self.progress_callback:
                         self.progress_callback(f"JSON 解析失败，重试 ({attempt}/{max_attempts})")
                     await asyncio.sleep(min(2 ** (attempt - 1), 5) + random.uniform(0, 1))
@@ -385,12 +427,18 @@ class SemanticsTranslator:
                     if self.progress_callback:
                         self.progress_callback("模型鉴权失败：API Key 无效或无权限，已停止重试")
                     raise
+                if self._is_timeout_error(exc):
+                    self.stats.timeout_errors += 1
+                    if timeout_bonus_used < self.timeout_extra_retries:
+                        timeout_bonus_used += 1
+                        max_attempts += 1
                 if "connection" in str(exc).lower() or "timeout" in str(exc).lower():
                     self.stats.connection_errors += 1
                 if self.progress_callback:
                     self.progress_callback(f"模型连接波动，正在重试 ({attempt}/{max_attempts})")
                 if attempt >= max_attempts:
                     raise
+                self.stats.retry_attempts += 1
                 delay = min(2 ** (attempt - 1), 5) + random.uniform(0, 1)
                 await asyncio.sleep(delay)
         else:
@@ -405,7 +453,13 @@ class SemanticsTranslator:
             self.stats.total_tokens += getattr(usage, "total_tokens", None) or (prompt_tokens + completion_tokens)
         self.stats.api_calls += 1
 
-        meta = {"model": model, "base_url": base_url, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
+        meta = {
+            "model": model,
+            "base_url": base_url,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "attempts": attempt,
+        }
         return (translations, meta)
 
     _BATCH_MAX_CHARS = 6000
@@ -486,11 +540,16 @@ class SemanticsTranslator:
                 meta.get("model"), meta.get("base_url"),
                 meta.get("prompt_tokens", 0), meta.get("completion_tokens", 0),
                 latency_ms, None,
+                retry_count=max(0, int(meta.get("attempts") or 1) - 1),
             )
         except Exception as e:
             self.stats.failed_chunks += 1
             self.stats.last_error = str(e)
-            return SingleChunkResult(html, False, None, None, 0, 0, 0, str(e))
+            return SingleChunkResult(
+                html, False, None, None, 0, 0, 0, str(e),
+                retry_count=self.max_retries,
+                error_type=self._classify_error(e),
+            )
 
     async def translate_many_chunks_async(
         self,
@@ -552,7 +611,14 @@ class SemanticsTranslator:
                     f"{progress_label}：{completed_chunks}/{len(html_chunks)} 段"
                 )
 
-        def mark_failed(idx: int, original_inner: str, error: str, meta: dict | None = None, latency_ms: int = 0) -> None:
+        def mark_failed(
+            idx: int,
+            original_inner: str,
+            error: str,
+            meta: dict | None = None,
+            latency_ms: int = 0,
+            retry_count: int = 0,
+        ) -> None:
             self.stats.errors += 1
             self.stats.failed_chunks += 1
             self.stats.last_error = error
@@ -565,6 +631,8 @@ class SemanticsTranslator:
                 completion_tokens=0,
                 latency_ms=latency_ms,
                 error=error,
+                retry_count=retry_count,
+                error_type=self._classify_error(error),
             )
 
         async def retry_one(idx: int, original_inner: str, reason: str) -> bool:
@@ -579,7 +647,15 @@ class SemanticsTranslator:
                     or self._looks_like_error_response(translated)
                     or self._looks_untranslated(original_inner, translated)
                 ):
-                    mark_failed(idx, original_inner, f"{reason}; retry still untranslated", meta, latency_ms)
+                    retry_count = max(1, int(meta.get("attempts") or 1))
+                    mark_failed(
+                        idx,
+                        original_inner,
+                        f"{reason}; retry still untranslated",
+                        meta,
+                        latency_ms,
+                        retry_count=retry_count,
+                    )
                     return False
                 self.cache.set(original_inner, translated, self._cache_lang_key)
                 self.stats.translated_chunks += 1
@@ -592,10 +668,16 @@ class SemanticsTranslator:
                     completion_tokens=meta.get("completion_tokens", 0),
                     latency_ms=latency_ms,
                     error=None,
+                    retry_count=max(1, int(meta.get("attempts") or 1)),
                 )
                 return True
             except Exception as exc:
-                mark_failed(idx, original_inner, f"{reason}; retry failed: {exc}")
+                mark_failed(
+                    idx,
+                    original_inner,
+                    f"{reason}; retry failed: {exc}",
+                    retry_count=self.max_retries + 1,
+                )
                 return False
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
@@ -612,7 +694,7 @@ class SemanticsTranslator:
                     await asyncio.gather(run_batch(batch[:mid]), run_batch(batch[mid:]))
                 else:
                     idx, original_inner = batch[0]
-                    mark_failed(idx, original_inner, str(exc))
+                    mark_failed(idx, original_inner, str(exc), retry_count=self.max_retries)
                     report_batch_progress(1)
                 return
 
@@ -641,6 +723,7 @@ class SemanticsTranslator:
                     completion_tokens=completion_each,
                     latency_ms=latency_ms,
                     error=None,
+                    retry_count=max(0, int(meta.get("attempts") or 1) - 1),
                 )
             report_batch_progress(len(batch))
 

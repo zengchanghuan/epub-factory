@@ -45,3 +45,10 @@ test("F11-3 质检失败提供免费重译入口", () => {
   assert.ok(html.includes('id="retryTranslationBtn"'), "应有免费重新翻译按钮");
   assert.ok(html.includes('/retry-translation'), "应调用免费重译接口");
 });
+
+test("F11-4 质检失败提供翻译诊断入口", () => {
+  assert.ok(html.includes('id="translationDiagnosticsBtn"'), "应有失败诊断按钮");
+  assert.ok(html.includes('id="translationDiagnostics"'), "应有失败诊断展示区域");
+  assert.ok(html.includes('/translation-diagnostics'), "应调用翻译诊断接口");
+  assert.ok(html.includes('diagnosticCategoryLabel'), "应展示诊断类别文案");
+});

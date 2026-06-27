@@ -639,6 +639,21 @@
       color: var(--subtle);
       cursor: not-allowed;
     }
+    .diagnostics-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 9px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong);
+      background: #fff;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
 
     .error-msg {
       margin-top: 12px;
@@ -682,6 +697,57 @@
       font-size: 12px;
       color: var(--muted);
       margin-bottom: 10px;
+    }
+    .qa-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .translation-diagnostics {
+      display: none;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--error-border);
+      color: #7f1d1d;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .translation-diagnostics.visible { display: block; }
+    .diagnostic-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 8px 0;
+    }
+    @media (max-width: 520px) { .diagnostic-grid { grid-template-columns: 1fr; } }
+    .diagnostic-metric {
+      border: 1px solid var(--error-border);
+      border-radius: var(--radius-sm);
+      background: rgba(255,255,255,0.55);
+      padding: 8px;
+    }
+    .diagnostic-metric strong {
+      display: block;
+      color: var(--error);
+      font-size: 16px;
+      line-height: 1.2;
+    }
+    .diagnostic-list {
+      margin: 6px 0 0 0;
+      padding-left: 18px;
+    }
+    .diagnostic-chunk {
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid var(--error-border);
+      border-radius: var(--radius-sm);
+      background: rgba(255,255,255,0.55);
+    }
+    .diagnostic-chunk-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--muted);
+      margin-bottom: 4px;
     }
 
     /* ── Metrics panel ───────────────────────────────────────────────────── */
@@ -1202,7 +1268,11 @@
             <div class="qa-report-summary" id="qaSummary"></div>
             <ul class="qa-check-list" id="qaChecks"></ul>
             <div class="qa-meta" id="qaMeta"></div>
-            <button type="button" class="retry-btn" id="retryTranslationBtn">免费重新翻译</button>
+            <div class="qa-actions">
+              <button type="button" class="retry-btn" id="retryTranslationBtn">免费重新翻译</button>
+              <button type="button" class="diagnostics-btn" id="translationDiagnosticsBtn">查看失败诊断</button>
+            </div>
+            <div class="translation-diagnostics" id="translationDiagnostics"></div>
           </div>
           <div class="progress-log" id="progressLog"></div>
 
@@ -1315,6 +1385,8 @@
     const errorMsg = $("errorMsg");
     const qaReport = $("qaReport");
     const retryTranslationBtn = $("retryTranslationBtn");
+    const translationDiagnosticsBtn = $("translationDiagnosticsBtn");
+    const translationDiagnostics = $("translationDiagnostics");
     const jobTimerEl = $("jobTimer");
     const progressLogEl = $("progressLog");
 
@@ -1337,6 +1409,94 @@
     function hideQaReport() {
       if (qaReport) qaReport.classList.remove("visible");
       if (retryTranslationBtn) retryTranslationBtn.disabled = false;
+      if (translationDiagnostics) {
+        translationDiagnostics.classList.remove("visible");
+        translationDiagnostics.innerHTML = "";
+      }
+      if (translationDiagnosticsBtn) {
+        translationDiagnosticsBtn.disabled = false;
+        translationDiagnosticsBtn.textContent = "查看失败诊断";
+      }
+    }
+
+    function diagnosticCategoryLabel(code) {
+      const map = {
+        untranslated_response: "模型返回原文",
+        empty_translation: "空译文",
+        html_mismatch: "HTML结构不匹配",
+        timeout: "请求超时",
+        rate_limit: "限流",
+        invalid_json: "JSON解析失败",
+        connection: "连接波动",
+        model_error: "模型错误",
+        quality_audit: "质检未通过",
+        unknown: "未知",
+      };
+      return map[code] || code || "未知";
+    }
+
+    function renderTranslationDiagnostics(data) {
+      if (!translationDiagnostics) return;
+      const summary = data.summary || {};
+      const categories = data.error_categories || {};
+      const causes = Array.isArray(data.likely_causes) ? data.likely_causes : [];
+      const failedChunks = Array.isArray(data.failed_chunks) ? data.failed_chunks : [];
+      const categoryText = Object.entries(categories)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, 5)
+        .map(([code, count]) => `<li>${escapeHtml(diagnosticCategoryLabel(code))}：${Number(count) || 0}</li>`)
+        .join("");
+      const causesText = causes.length
+        ? `<ul class="diagnostic-list">${causes.map(c => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
+        : "";
+      const chunksText = failedChunks.slice(0, 5).map(chunk => `
+        <div class="diagnostic-chunk">
+          <div class="diagnostic-chunk-code">${escapeHtml(chunk.chapter_id || "")} / ${escapeHtml(chunk.chunk_id || "")} · ${escapeHtml(diagnosticCategoryLabel(chunk.category))} · 重试 ${Number(chunk.retry_count || 0)} 次 · ${Number(chunk.latency_ms || 0)} ms</div>
+          <div>原文：${escapeHtml(chunk.source_text || "-")}</div>
+          <div>译文：${escapeHtml(chunk.translated_text || "-")}</div>
+          ${chunk.error_message ? `<div>错误：${escapeHtml(chunk.error_message)}</div>` : ""}
+        </div>
+      `).join("");
+      translationDiagnostics.innerHTML = `
+        <div class="diagnostic-grid">
+          <div class="diagnostic-metric"><strong>${Number(summary.failed_chunks || 0)}</strong><span>失败段落</span></div>
+          <div class="diagnostic-metric"><strong>${Number(summary.likely_untranslated || 0)}</strong><span>疑似原文</span></div>
+          <div class="diagnostic-metric"><strong>${Number(summary.timeout_errors || 0)}</strong><span>超时次数</span></div>
+        </div>
+        ${causesText}
+        ${categoryText ? `<div style="margin-top:8px;">错误归类</div><ul class="diagnostic-list">${categoryText}</ul>` : ""}
+        <div style="margin-top:8px;">模型：${escapeHtml(summary.model || "-")} · 最后错误：${escapeHtml(summary.last_error || "-")}</div>
+        ${chunksText ? `<div style="margin-top:8px;">失败段落示例</div>${chunksText}` : ""}
+      `;
+      translationDiagnostics.classList.add("visible");
+    }
+
+    function loadTranslationDiagnostics(jobId) {
+      if (!jobId || !translationDiagnosticsBtn) return;
+      translationDiagnosticsBtn.disabled = true;
+      translationDiagnosticsBtn.textContent = "诊断加载中...";
+      fetch(`${API}/api/v2/jobs/${jobId}/translation-diagnostics?limit=12`, {
+        headers: authHeaders(jobId),
+      })
+        .then(async r => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.detail || "诊断加载失败");
+          return data;
+        })
+        .then(data => {
+          renderTranslationDiagnostics(data);
+          translationDiagnosticsBtn.textContent = "刷新失败诊断";
+        })
+        .catch(err => {
+          if (translationDiagnostics) {
+            translationDiagnostics.innerHTML = escapeHtml(err.message);
+            translationDiagnostics.classList.add("visible");
+          }
+          translationDiagnosticsBtn.textContent = "查看失败诊断";
+        })
+        .finally(() => {
+          translationDiagnosticsBtn.disabled = false;
+        });
     }
 
     function renderQaReport(data) {
@@ -1355,6 +1515,7 @@
       retryTranslationBtn.disabled = !report.retryable;
       retryTranslationBtn.textContent = report.retryable ? "免费重新翻译" : "免费重译次数已用完";
       retryTranslationBtn.dataset.jobId = data.job_id || currentJobId || "";
+      translationDiagnosticsBtn.dataset.jobId = data.job_id || currentJobId || "";
       qaReport.classList.add("visible");
     }
 
@@ -1390,6 +1551,10 @@
 
     retryTranslationBtn.addEventListener("click", () => {
       retryTranslation(retryTranslationBtn.dataset.jobId || currentJobId);
+    });
+
+    translationDiagnosticsBtn.addEventListener("click", () => {
+      loadTranslationDiagnostics(translationDiagnosticsBtn.dataset.jobId || currentJobId);
     });
 
     function setTaskUiMode(isTranslation) {

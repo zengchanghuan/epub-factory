@@ -184,7 +184,7 @@ def _upsert_chunk(job_id: str, chapter_id: str, cr: ChunkResult, status: ChunkSt
         cached=cr.cached,
         model=cr.model,
         base_url=cr.base_url,
-        retry_count=0,
+        retry_count=getattr(cr, "retry_count", 0),
         prompt_tokens=cr.prompt_tokens,
         completion_tokens=cr.completion_tokens,
         latency_ms=cr.latency_ms,
@@ -270,7 +270,9 @@ async def _translate_manifest_async(
         ch for ch in manifest.get("chapters", [])
         if ch.get("chapter_kind") == ChapterKind.body.value and (ch.get("chunks") or [])
     ]
-    chapter_limit = max(1, int(os.environ.get("EPUB_CHAPTER_CONCURRENCY", "4")))
+    configured_chapter_limit = int(os.environ.get("EPUB_CHAPTER_CONCURRENCY", "4"))
+    chapter_limit_cap = int(os.environ.get("EPUB_CHAPTER_CONCURRENCY_CAP", "2"))
+    chapter_limit = max(1, min(configured_chapter_limit, max(1, chapter_limit_cap)))
     chapter_sem = asyncio.Semaphore(chapter_limit)
     audit = {
         "glossary_fixed_count": 0,
@@ -373,6 +375,8 @@ async def _translate_manifest_async(
                     prompt_tokens=res.prompt_tokens,
                     completion_tokens=res.completion_tokens,
                     latency_ms=res.latency_ms,
+                    retry_count=getattr(res, "retry_count", 0),
+                    error_type=getattr(res, "error_type", None),
                     audit_json=quality,
                 )
                 chunk_results.append(cr)
