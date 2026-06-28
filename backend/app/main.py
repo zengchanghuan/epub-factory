@@ -1355,24 +1355,43 @@ def retry_translation_v2(job_id: str, request: Request, background_tasks: Backgr
         raise HTTPException(status_code=403, detail="无权访问该任务")
     if not job.enable_translation:
         raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
-    if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
-        raise HTTPException(status_code=400, detail="任务正在处理中，不能重复重译")
     if job.error_code != ErrorCode.PARTIAL_TRANSLATION.value:
         raise HTTPException(status_code=400, detail="当前任务未处于质检失败状态")
+    return _restart_translation_job(job, background_tasks, action_label="免费重译")
+
+
+@app.post("/api/v2/jobs/{job_id}/restart-translation")
+def restart_translation_v2(job_id: str, request: Request, background_tasks: BackgroundTasks):
+    """重启翻译任务：用于取消、失败后的人工重新排队。"""
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not job.enable_translation:
+        raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
+    return _restart_translation_job(job, background_tasks, action_label="重启翻译")
+
+
+def _restart_translation_job(job: Job, background_tasks: BackgroundTasks, action_label: str):
+    if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
+        raise HTTPException(status_code=400, detail="任务正在处理中，不能重复重启")
     if not Path(job.input_path).exists():
-        raise HTTPException(status_code=410, detail="原始上传文件已过期，无法免费重译")
+        raise HTTPException(status_code=410, detail="原始上传文件已过期，无法重启翻译")
 
     stats = dict(job.translation_stats or {})
     free_retry_count = int(stats.get("free_retry_count") or 0)
     max_retries = max_free_retries()
     if max_retries >= 0 and free_retry_count >= max_retries:
-        raise HTTPException(status_code=400, detail="免费重译次数已用完，请联系客服处理")
+        raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")
 
     stats["free_retry_count"] = free_retry_count + 1
     stats["translation_attempt"] = int(stats.get("translation_attempt") or 1) + 1
+    stats["restart_count"] = int(stats.get("restart_count") or 0) + 1
+    restart_summary = f"{action_label}已排队"
     stats["qa_report"] = {
         "status": "retrying",
-        "summary": "免费重译已排队",
+        "summary": restart_summary,
         "retryable": False,
         "free_retry_count": stats["free_retry_count"],
         "max_free_retries": max_retries,
@@ -1385,11 +1404,23 @@ def retry_translation_v2(job_id: str, request: Request, background_tasks: Backgr
     updated = job_store.update_status(
         job.id,
         JobStatus.pending,
-        f"免费重译已排队（第 {stats['translation_attempt']} 次尝试）",
+        f"{restart_summary}（第 {stats['translation_attempt']} 次尝试）",
         error_code=None,
         translation_stats=stats,
+        allow_cancelled_transition=True,
     )
     refreshed = updated or job_store.get(job.id) or job
+    add_stage = getattr(job_store, "add_stage", None)
+    if add_stage:
+        now = datetime.now(timezone.utc)
+        add_stage(JobStage(
+            job_id=job.id,
+            stage_name="translation_restarted",
+            status=StageStatus.completed,
+            started_at=now,
+            finished_at=now,
+            metadata={"message": restart_summary, "level": "info"},
+        ))
     _enqueue_conversion(refreshed, background_tasks)
     return _job_to_v2_detail(refreshed, None)
 

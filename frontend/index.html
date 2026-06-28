@@ -1253,6 +1253,9 @@
       <div id="runningActions" style="display:none; gap:10px; flex-wrap:wrap; margin-top:16px;">
         <button type="button" class="diagnostics-btn stop-btn" id="cancelJobBtn">停止翻译</button>
       </div>
+      <div id="restartActions" style="display:none; gap:10px; flex-wrap:wrap; margin-top:16px;">
+        <button type="button" class="retry-btn" id="restartTranslationBtn">重启翻译</button>
+      </div>
 
       <!-- SafeMode 降级提示 -->
       <div id="safeModeNotice" style="display:none; margin-top:12px; padding:10px 14px;
@@ -1398,11 +1401,13 @@
     const progressBar = $("progressBar");
     const downloadBtn = $("downloadBtn");
     const cancelJobBtn = $("cancelJobBtn");
+    const restartTranslationBtn = $("restartTranslationBtn");
     const errorMsg = $("errorMsg");
     const qaReport = $("qaReport");
     const retryTranslationBtn = $("retryTranslationBtn");
     const translationDiagnosticsBtn = $("translationDiagnosticsBtn");
     let cancelRequestedJobId = "";
+    let restartRequestedJobId = "";
     const translationDiagnostics = $("translationDiagnostics");
     const jobTimerEl = $("jobTimer");
     const progressLogEl = $("progressLog");
@@ -1432,6 +1437,25 @@
         cancelJobBtn.textContent = stopping ? "停止中..." : "停止翻译";
       } else if (cancelRequestedJobId === normalizedJobId) {
         cancelRequestedJobId = "";
+      }
+    }
+
+    function canRestartTranslationStatus(status) {
+      return status === "cancelled" || status === "failed";
+    }
+
+    function setRestartActionsVisible(visible, jobId) {
+      const restartActions = $("restartActions");
+      if (!restartActions || !restartTranslationBtn) return;
+      const normalizedJobId = jobId || "";
+      restartActions.style.display = visible ? "flex" : "none";
+      restartTranslationBtn.dataset.jobId = visible ? normalizedJobId : "";
+      if (visible) {
+        const restarting = restartRequestedJobId === normalizedJobId;
+        restartTranslationBtn.disabled = restarting;
+        restartTranslationBtn.textContent = restarting ? "排队中..." : "重启翻译";
+      } else if (restartRequestedJobId === normalizedJobId) {
+        restartRequestedJobId = "";
       }
     }
 
@@ -1585,6 +1609,46 @@
 
     retryTranslationBtn.addEventListener("click", () => {
       retryTranslation(retryTranslationBtn.dataset.jobId || currentJobId);
+    });
+
+    function restartTranslation(jobId) {
+      if (!jobId || !restartTranslationBtn) return;
+      restartRequestedJobId = jobId;
+      restartTranslationBtn.disabled = true;
+      restartTranslationBtn.textContent = "排队中...";
+      appendProgressLog("已请求重启翻译，正在重新加入队列...");
+      fetch(`${API}/api/v2/jobs/${jobId}/restart-translation`, {
+        method: "POST",
+        headers: authHeaders(jobId),
+      })
+        .then(async r => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.detail || "重启翻译失败");
+          return data;
+        })
+        .then(data => {
+          restartRequestedJobId = "";
+          hideQaReport();
+          setRestartActionsVisible(false);
+          setRunningActionsVisible(false);
+          setStatus("pending", data.message || "重启翻译已排队");
+          appendProgressLog(data.message || "重启翻译已排队");
+          startJobTimer();
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(() => pollJobV2(jobId), 2000);
+          pollJobV2(jobId);
+        })
+        .catch(err => {
+          restartRequestedJobId = "";
+          restartTranslationBtn.disabled = false;
+          restartTranslationBtn.textContent = "重启翻译";
+          errorMsg.textContent = err.message;
+          errorMsg.style.display = "block";
+        });
+    }
+
+    restartTranslationBtn.addEventListener("click", () => {
+      restartTranslation(restartTranslationBtn.dataset.jobId || currentJobId);
     });
 
     function cancelJob(jobId) {
@@ -1814,6 +1878,10 @@
           statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s, data.enable_translation) : s;
           setRunningActionsVisible(
             !!data.enable_translation && (s === "queued" || s === "running"),
+            data.job_id || jobId,
+          );
+          setRestartActionsVisible(
+            !!data.enable_translation && canRestartTranslationStatus(s),
             data.job_id || jobId,
           );
           // 付款等待 loading 态
@@ -2089,6 +2157,7 @@
       $("errorCodeMsg").style.display = "none";
       $("resultActions").classList.remove("visible");
       setRunningActionsVisible(false);
+      setRestartActionsVisible(false);
       hideQaReport();
     }
 

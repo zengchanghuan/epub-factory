@@ -670,12 +670,13 @@ class PersistentJobStore:
         quality_stats=None,
         translation_stats=None,
         metrics_summary: Optional[str] = None,
+        allow_cancelled_transition: bool = False,
     ) -> Optional[Job]:
         with self._Session() as session:
             r = session.get(JobRecord, job_id)
             if not r:
                 return None
-            if r.status == JobStatus.cancelled.value and status != JobStatus.cancelled:
+            if r.status == JobStatus.cancelled.value and status != JobStatus.cancelled and not allow_cancelled_transition:
                 return _record_to_job(r)
             r.status = status.value
             r.message = message

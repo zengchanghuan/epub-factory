@@ -231,6 +231,44 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
         enqueue.assert_called_once()
 
+    def test_v2_restart_translation_accepts_cancelled_job(self):
+        """用户主动停止后，可复用原上传文件重启翻译。"""
+        suffix = uuid.uuid4().hex[:8]
+        tmp_input = Path(f"/tmp/d3_restart_cancelled_{suffix}.epub")
+        tmp_input.write_bytes(MINIMAL_EPUB_BYTES)
+        job = Job(
+            id=f"d3_restart_cancelled_{suffix}",
+            trace_id="trace_restart_cancelled",
+            source_filename="restart_cancelled.epub",
+            input_path=str(tmp_input),
+            access_token="restart-token",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.cancelled,
+            enable_translation=True,
+            message="用户已停止翻译",
+            translation_stats={
+                "free_retry_count": 0,
+                "translation_attempt": 1,
+            },
+        )
+        job_store.add(job)
+
+        with patch.object(main_module, "_enqueue_conversion") as enqueue:
+            res = self.client.post(
+                f"/api/v2/jobs/{job.id}/restart-translation",
+                headers={"X-Job-Token": "restart-token"},
+            )
+
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(data["message"], "重启翻译已排队（第 2 次尝试）")
+        self.assertEqual(data["translation_stats"]["free_retry_count"], 1)
+        self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
+        self.assertEqual(data["translation_stats"]["restart_count"], 1)
+        self.assertEqual(job_store.get(job.id).status, JobStatus.pending)
+        enqueue.assert_called_once()
+
     def test_v2_translation_diagnostics_exposes_failed_chunks(self):
         """翻译诊断接口返回失败类别、失败段落和重试次数。"""
         suffix = uuid.uuid4().hex[:8]

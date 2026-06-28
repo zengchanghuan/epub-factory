@@ -137,12 +137,13 @@ class JobStore:
         quality_stats: Optional[QualityStats] = None,
         translation_stats: Optional[Dict[str, Any]] = None,
         metrics_summary: Optional[str] = None,
+        allow_cancelled_transition: bool = False,
     ) -> Optional[Job]:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return None
-            if job.status == JobStatus.cancelled and status != JobStatus.cancelled:
+            if job.status == JobStatus.cancelled and status != JobStatus.cancelled and not allow_cancelled_transition:
                 return job
             job.status = status
             job.message = message
