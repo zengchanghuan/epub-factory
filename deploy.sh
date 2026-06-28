@@ -37,6 +37,11 @@ zip -r "$ZIP_FILE" . \
     -x "backend/failed_chunks/*" \
     -x "backend/failed_chunks/**" \
     -x "backend/*.db*" \
+    -x "./*.db" \
+    -x "./*.db-*" \
+    -x "*.sqlite" \
+    -x "*.sqlite3" \
+    -x "./*.sqlite*" \
     -x "./*.epub" \
     -x "*.epub" \
     -x "tools/epubcheck.zip" \

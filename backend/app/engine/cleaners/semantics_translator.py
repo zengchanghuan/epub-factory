@@ -1,4 +1,5 @@
 import asyncio
+import html as html_lib
 import json
 import random
 import re
@@ -20,6 +21,9 @@ PRICING = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4o": {"input": 2.50, "output": 10.00},
 }
+
+BLOCK_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
+VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 
 
 @dataclass
@@ -256,7 +260,7 @@ class SemanticsTranslator:
 2. 不得删减、总结、解释、本土化、审查、弱化或替作者表达；原文中的事实、立场、语气、冒犯性、政治性、宗教性、争议性内容都必须保留并翻译。
 3. 不得为了通顺擅自改写逻辑关系、因果关系、否定、程度副词、时间、数量、引号、脚注编号或专有名词。
 4. 不确定的专有名词或术语优先按术语表；术语表没有且无法可靠翻译时，可保留原文，不要瞎编。
-5. 绝对不能修改、增加或删除任何 HTML 标签及属性（如 id, class, href）。保持标签与对应文字的包裹关系完全一致。
+5. 绝对不能修改、增加或删除任何 HTML 标签及属性（如 id, class, href）。保持标签与对应文字的包裹关系完全一致。若看到类似 [[EPUB_TAG_0_OPEN]] / [[EPUB_TAG_0_CLOSE]] 的占位符，它代表 HTML 标签边界，必须逐字保留；占位符之间的正文仍需翻译。
 6. 必须返回一个包含翻译结果的 JSON 对象，格式必须严格为：
 {{
   "results": [
@@ -393,18 +397,65 @@ class SemanticsTranslator:
         return {
             name: len(soup.find_all(name))
             for name in sorted({tag.name for tag in soup.find_all(True) if isinstance(tag, Tag)})
-            if name not in {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
+            if name not in BLOCK_TAGS
         }
 
     def _preserves_inline_tags(self, source_html: str, translated_html: str) -> bool:
         return self._inline_tag_counter(source_html) == self._inline_tag_counter(translated_html)
 
     @staticmethod
+    def _serialize_open_tag(tag: Tag) -> str:
+        attrs = []
+        for key, value in tag.attrs.items():
+            if value is None or value is False:
+                continue
+            if value is True:
+                attrs.append(f" {key}")
+                continue
+            if isinstance(value, (list, tuple)):
+                value_text = " ".join(str(v) for v in value)
+            else:
+                value_text = str(value)
+            attrs.append(f' {key}="{html_lib.escape(value_text, quote=True)}"')
+        return f"<{tag.name}{''.join(attrs)}>"
+
+    def _protect_inline_tags(self, fragment_html: str) -> tuple[str, dict[str, str]]:
+        """Replace inline tags with stable markers before sending text to the LLM."""
+        soup = BeautifulSoup(fragment_html or "", "html.parser")
+        replacements: dict[str, str] = {}
+        counter = 0
+        for tag in list(soup.find_all(True)):
+            if not isinstance(tag, Tag) or tag.name in BLOCK_TAGS:
+                continue
+            open_marker = f"[[EPUB_TAG_{counter}_OPEN]]"
+            close_marker = f"[[EPUB_TAG_{counter}_CLOSE]]"
+            single_marker = f"[[EPUB_TAG_{counter}_SELF]]"
+            counter += 1
+            if tag.name in VOID_TAGS or not tag.contents:
+                replacements[single_marker] = str(tag)
+                tag.replace_with(NavigableString(single_marker))
+                continue
+            replacements[open_marker] = self._serialize_open_tag(tag)
+            replacements[close_marker] = f"</{tag.name}>"
+            tag.insert_before(NavigableString(open_marker))
+            tag.insert_after(NavigableString(close_marker))
+            tag.unwrap()
+        protected = "".join(str(item) for item in soup.contents)
+        return protected, replacements
+
+    @staticmethod
+    def _restore_inline_tag_markers(translated_html: str, replacements: dict[str, str]) -> str:
+        restored = translated_html or ""
+        for marker in sorted(replacements, key=len, reverse=True):
+            restored = restored.replace(marker, replacements[marker])
+        return restored
+
+    @staticmethod
     def _extract_inner_html(html: str) -> str:
         """提取块级标签 inner_html，保持外层属性由 Reduce 回写阶段负责。"""
         soup = BeautifulSoup(html or "", "html.parser")
         block_tag = soup.find()
-        if block_tag and block_tag.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']:
+        if block_tag and block_tag.name in BLOCK_TAGS:
             return "".join(str(c) for c in block_tag.contents).strip()
         return (html or "").strip()
 
@@ -412,7 +463,16 @@ class SemanticsTranslator:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         self._raise_if_cancelled()
         system_prompt = self._build_system_prompt()
-        user_content = json.dumps(payload, ensure_ascii=False)
+        protected_payload: list[dict] = []
+        protected_replacements: dict[int, dict[str, str]] = {}
+        for item in payload:
+            item_id = int(item["id"])
+            protected_html, replacements = self._protect_inline_tags(str(item.get("html", "") or ""))
+            protected_item = dict(item)
+            protected_item["html"] = protected_html
+            protected_payload.append(protected_item)
+            protected_replacements[item_id] = replacements
+        user_content = json.dumps(protected_payload, ensure_ascii=False)
         last_error = None
         routes = self._candidate_routes()
         max_attempts = max(self.max_retries, len(routes))
@@ -455,7 +515,11 @@ class SemanticsTranslator:
                             item_id = int(item["id"])
                         except (KeyError, TypeError, ValueError) as id_err:
                             raise ValueError(f"JSON result id invalid: {item!r}") from id_err
-                        translations[item_id] = item.get("translation", "")
+                        raw_translation = item.get("translation", "")
+                        translations[item_id] = self._restore_inline_tag_markers(
+                            raw_translation,
+                            protected_replacements.get(item_id, {}),
+                        )
 
                     expected_ids = {item["id"] for item in payload}
                     if set(translations.keys()) != expected_ids:
@@ -547,8 +611,13 @@ class SemanticsTranslator:
         self.stats.total_chunks += 1
         cached = self.cache.get(html_chunk, self._cache_lang_key)
         if cached:
-            self.stats.cached_chunks += 1
-            return cached
+            if (
+                not self._looks_like_error_response(cached)
+                and not self._looks_untranslated(html_chunk, cached)
+                and self._preserves_inline_tags(html_chunk, cached)
+            ):
+                self.stats.cached_chunks += 1
+                return cached
             
         payload = [{"id": 0, "html": html_chunk}]
         async with self.semaphore:
@@ -573,7 +642,11 @@ class SemanticsTranslator:
             
         cached = self.cache.get(inner_html, self._cache_lang_key)
         if cached:
-            if not self._looks_like_error_response(cached) and not self._looks_untranslated(inner_html, cached):
+            if (
+                not self._looks_like_error_response(cached)
+                and not self._looks_untranslated(inner_html, cached)
+                and self._preserves_inline_tags(inner_html, cached)
+            ):
                 self.stats.cached_chunks += 1
                 # Return cached inner_html directly. apply_chunk_results will handle it.
                 return SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
@@ -647,7 +720,11 @@ class SemanticsTranslator:
             self.stats.total_chunks += 1
             cached = self.cache.get(inner_html, self._cache_lang_key)
             if cached:
-                if not self._looks_like_error_response(cached) and not self._looks_untranslated(inner_html, cached):
+                if (
+                    not self._looks_like_error_response(cached)
+                    and not self._looks_untranslated(inner_html, cached)
+                    and self._preserves_inline_tags(inner_html, cached)
+                ):
                     self.stats.cached_chunks += 1
                     results[i] = SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
                 else:

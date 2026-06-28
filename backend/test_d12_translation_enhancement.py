@@ -314,6 +314,33 @@ def test_translate_many_chunks_retries_html_tag_mismatch():
     assert t.stats.failed_chunks == 0
 
 
+def test_inline_tag_markers_roundtrip_span_anchor_sup():
+    """复杂行内标签先保护为占位符，译后应完整还原原始标签。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    source = (
+        '<span class="big">T</span>he Double Helix'
+        '<a href="notes.xhtml#n1"><sup>1</sup></a>'
+    )
+    protected, replacements = t._protect_inline_tags(source)
+
+    assert "<span" not in protected
+    assert "<a " not in protected
+    assert "<sup" not in protected
+    assert "[[EPUB_TAG_0_OPEN]]" in protected
+    assert "[[EPUB_TAG_1_OPEN]]" in protected
+    assert "[[EPUB_TAG_2_OPEN]]" in protected
+
+    restored = t._restore_inline_tag_markers(
+        protected.replace("he Double Helix", "《双螺旋》"),
+        replacements,
+    )
+
+    assert '<span class="big">T</span>' in restored
+    assert '<a href="notes.xhtml#n1"><sup>1</sup></a>' in restored
+    assert "《双螺旋》" in restored
+    assert t._preserves_inline_tags(source, restored) is True
+
+
 def test_translate_many_chunks_honors_cancel_check_before_llm_call():
     """用户点停止后，翻译器应在下一次模型请求前退出。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -351,6 +378,7 @@ def _run():
         test_translate_many_chunks_emits_final_failure_progress,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,
+        test_inline_tag_markers_roundtrip_span_anchor_sup,
         test_translate_many_chunks_honors_cancel_check_before_llm_call,
     ]
     passed = 0
