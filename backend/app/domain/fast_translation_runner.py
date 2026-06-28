@@ -29,6 +29,7 @@ from app.converter import converter
 from app.domain.book_reduce_service import make_get_chapter_content, reduce_and_package, set_chapter_output
 from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
+from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.manifest_service import build_manifest
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_qa_service import attach_translation_qa_report
@@ -205,6 +206,7 @@ def _upsert_chunk(job_id: str, chapter_id: str, cr: ChunkResult, status: ChunkSt
         created_at=now,
         updated_at=now,
     ))
+    archive_failed_chunk(job_id=job_id, chapter_id=chapter_id, chunk=cr, status=status)
 
 
 def _run_epubcheck(output_path: Path) -> bool:

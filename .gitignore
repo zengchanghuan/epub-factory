@@ -13,6 +13,7 @@ backend/uploads/
 backend/outputs/
 backend/reduce_work/
 backend/temp/
+backend/failed_chunks/
 backend/.env
 backend/translation_cache.db
 epub_jobs.db
@@ -59,4 +60,3 @@ test_*/
 /文化大革命人民的歷史*.pdf
 test_测试用例书
 test_测试用例书/
-

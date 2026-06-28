@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from app.storage import job_store
 from app.domain.manifest_service import build_manifest
 from app.domain.chapter_reduce_service import apply_chunk_results
+from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.engine.unpacker import EpubUnpacker
 from app.models import ChapterKind, ChunkStatus, JobChunk
@@ -192,6 +193,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 updated_at=now,
             )
             upsert(job_chunk)
+            archive_failed_chunk(job_id=job_id, chapter_id=chapter_id, chunk=cr, status=status)
     # 回写本节译文到整章 HTML，供全书 Reduce 使用
     try:
         unpacker = EpubUnpacker(job.input_path)

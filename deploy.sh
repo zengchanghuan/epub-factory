@@ -34,6 +34,8 @@ zip -r "$ZIP_FILE" . \
     -x "backend/feedback.jsonl" \
     -x "backend/uploads/*" \
     -x "backend/outputs/*" \
+    -x "backend/failed_chunks/*" \
+    -x "backend/failed_chunks/**" \
     -x "backend/*.db*" \
     -x "./*.epub" \
     -x "*.epub" \
