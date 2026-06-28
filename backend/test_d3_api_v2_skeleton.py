@@ -95,6 +95,29 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertIsNotNone(job)
         self.assertEqual(job.translation_model, "deepseek-v4-pro")
 
+    def test_v2_create_translation_defaults_to_pro_model(self):
+        """AI 翻译任务不传模型时，后端默认使用 DeepSeek V4 Pro。"""
+        old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
+        os.environ["SKIP_PAYMENT_CHECK"] = "1"
+        try:
+            res = self.client.post(
+                "/api/v2/jobs",
+                files={"file": ("default_model.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+                data={
+                    "output_mode": "simplified",
+                    "device": "generic",
+                    "enable_translation": "true",
+                },
+            )
+        finally:
+            if old_skip is None:
+                os.environ.pop("SKIP_PAYMENT_CHECK", None)
+            else:
+                os.environ["SKIP_PAYMENT_CHECK"] = old_skip
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data.get("translation_model"), "deepseek-v4-pro")
+
     def test_v2_create_translation_rejects_unknown_model(self):
         """后端拒绝 UI 外的模型名，避免客户端绕过模型护栏。"""
         res = self.client.post(

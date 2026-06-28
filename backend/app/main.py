@@ -78,9 +78,9 @@ TRANSLATION_MODEL_CHOICES = {
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
 }
-DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-flash").strip()
+DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-pro").strip()
 if DEFAULT_TRANSLATION_MODEL not in TRANSLATION_MODEL_CHOICES:
-    DEFAULT_TRANSLATION_MODEL = "deepseek-v4-flash"
+    DEFAULT_TRANSLATION_MODEL = "deepseek-v4-pro"
 
 
 def _normalize_translation_model(model: Optional[str], enable_translation: bool) -> str:

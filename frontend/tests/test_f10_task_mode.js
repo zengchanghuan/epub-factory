@@ -33,10 +33,14 @@ test("F10-3 提交参数按当前模式互斥", () => {
 });
 
 test("F10-4 AI 翻译可选择模型", () => {
-  assert.ok(html.includes('id="translationModel"'), "应有翻译模型下拉");
-  assert.ok(html.includes('value="deepseek-v4-flash" selected'), "默认应使用 flash 模型");
+  assert.ok(html.includes('class="model-picker"'), "模型选择区域应更醒目");
+  assert.ok(html.includes('id="translationModel" value="deepseek-v4-pro"'), "默认应使用 pro 模型");
+  assert.ok(html.includes('name="translationModelChoice" value="deepseek-v4-pro" checked'), "Pro radio 应默认选中");
+  assert.ok(html.includes('class="model-current"'), "应有醒目的当前模型标记");
   assert.ok(html.includes('value="deepseek-v4-pro"'), "应可选择 pro 模型");
-  assert.ok(html.includes('form.append("translation_model", $("translationModel").value || "deepseek-v4-flash")'), "提交时应传 translation_model");
+  assert.ok(html.includes('value="deepseek-v4-flash"'), "应可切换 flash 模型");
+  assert.ok(html.includes('translationModelChoices.forEach'), "应同步模型选择");
+  assert.ok(html.includes('form.append("translation_model", $("translationModel").value || "deepseek-v4-pro")'), "提交时应传 translation_model");
 });
 
 test("F10-5 MOBI/AZW3 禁用翻译模式", () => {

@@ -514,6 +514,119 @@
       letter-spacing: 0.4px;
       margin-bottom: 12px;
     }
+    .model-picker {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--text);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+    }
+    .model-picker-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .model-picker-head strong {
+      font-size: 14px;
+      color: var(--text);
+    }
+    .model-picker-badge {
+      flex-shrink: 0;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--text);
+      color: var(--bg);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .model-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .model-option {
+      display: block;
+      position: relative;
+      min-height: 74px;
+      padding: 10px 11px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .model-option input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .model-option-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .model-radio-dot {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      flex-shrink: 0;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .model-radio-dot::after {
+      content: "";
+      display: block;
+      width: 8px;
+      height: 8px;
+      margin: 3px;
+      border-radius: 999px;
+      background: var(--text);
+      transform: scale(0);
+      transition: transform 0.15s;
+    }
+    .model-option-title strong {
+      display: block;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .model-current {
+      margin-left: auto;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: var(--text);
+      color: var(--bg);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.4;
+      opacity: 0;
+      visibility: hidden;
+    }
+    .model-option-desc {
+      display: block;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .model-option:has(input:checked) {
+      border-color: var(--text);
+      background: var(--card);
+      box-shadow: inset 0 0 0 1px var(--text);
+    }
+    .model-option:has(input:checked) .model-radio-dot {
+      border-color: var(--text);
+      background: var(--bg);
+    }
+    .model-option:has(input:checked) .model-radio-dot::after {
+      transform: scale(1);
+    }
+    .model-option:has(input:checked) .model-current {
+      opacity: 1;
+      visibility: visible;
+    }
 
     /* ── Submit button ───────────────────────────────────────────────────── */
     .submit-btn {
@@ -1290,13 +1403,32 @@
               </select>
             </div>
 
-            <div class="form-group" style="margin-top: 12px;">
-              <label>翻译模型</label>
-              <select id="translationModel">
-                <option value="deepseek-v4-flash" selected>DeepSeek V4 Flash（默认）</option>
-                <option value="deepseek-v4-pro">DeepSeek V4 Pro（更稳）</option>
-              </select>
-              <div class="hint" style="margin-top:4px;">Flash 速度和成本更友好；Pro 适合格式复杂、反复重试的书。</div>
+            <div class="model-picker">
+              <div class="model-picker-head">
+                <strong>翻译模型</strong>
+                <span class="model-picker-badge">默认 Pro</span>
+              </div>
+              <input type="hidden" id="translationModel" value="deepseek-v4-pro" />
+              <div class="model-options">
+                <label class="model-option">
+                  <input type="radio" name="translationModelChoice" value="deepseek-v4-pro" checked>
+                  <span class="model-option-title">
+                    <span class="model-radio-dot"></span>
+                    <strong>DeepSeek V4 Pro</strong>
+                    <span class="model-current">当前使用</span>
+                  </span>
+                  <span class="model-option-desc">优先稳定性，适合复杂 EPUB 与反复重试段落。</span>
+                </label>
+                <label class="model-option">
+                  <input type="radio" name="translationModelChoice" value="deepseek-v4-flash">
+                  <span class="model-option-title">
+                    <span class="model-radio-dot"></span>
+                    <strong>DeepSeek V4 Flash</strong>
+                    <span class="model-current">当前使用</span>
+                  </span>
+                  <span class="model-option-desc">速度更快，适合结构简单、对成本更敏感的任务。</span>
+                </label>
+              </div>
             </div>
 
             <div class="form-group" style="margin-top: 12px;">
@@ -1562,6 +1694,7 @@
     const enableTranslation = $("enableTranslation");
     const translationDetails = $("translationDetails");
     const taskModeRadios = Array.from(document.querySelectorAll('input[name="taskMode"]'));
+    const translationModelChoices = Array.from(document.querySelectorAll('input[name="translationModelChoice"]'));
     const translationModeCard = $("translationModeCard");
     const statusCard = $("statusCard");
     const statusBadge = $("statusBadge");
@@ -2507,6 +2640,11 @@
     taskModeRadios.forEach(radio => {
       radio.addEventListener("change", () => setTaskMode(radio.value));
     });
+    translationModelChoices.forEach(radio => {
+      radio.addEventListener("change", () => {
+        if (radio.checked) $("translationModel").value = radio.value;
+      });
+    });
 
     async function estimatePolishPrice() {
       if (!selectedFile || !enablePrecisionPolish.checked) {
@@ -2718,7 +2856,7 @@
       if (isTranslationMode) {
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
-        form.append("translation_model", $("translationModel").value || "deepseek-v4-flash");
+        form.append("translation_model", $("translationModel").value || "deepseek-v4-pro");
         const tempVal = parseFloat($("temperature").value);
         if (!isNaN(tempVal) && tempVal >= 0 && tempVal <= 2) form.append("temperature", tempVal);
 
