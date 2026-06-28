@@ -4,6 +4,7 @@ EPUB Manifest 服务：解包后按文件识别正文/非正文，生成标准 C
 供后续章节级翻译任务与 Reduce 回写使用；不依赖 Celery，可单独被 ingest 任务或现有 pipeline 调用。
 """
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -30,6 +31,35 @@ def classify_chapter_kind(file_name: str) -> ChapterKind:
         return ChapterKind.other
     # 其余视为正文
     return ChapterKind.body
+
+
+_CONTENT_HEADING_KINDS = {
+    "index": ChapterKind.index,
+    "bibliography": ChapterKind.index,
+    "references": ChapterKind.index,
+    "sources": ChapterKind.index,
+    "works cited": ChapterKind.index,
+    "photo credits": ChapterKind.other,
+    "picture credits": ChapterKind.other,
+    "image credits": ChapterKind.other,
+    "illustration credits": ChapterKind.other,
+}
+
+
+def _normalize_heading(text: str) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip().lower()
+    text = re.sub(r"[\s:：.。]+$", "", text)
+    return text
+
+
+def classify_chapter_kind_from_chunks(file_name: str, chunks: list[ChunkItem]) -> ChapterKind:
+    """结合文件名和首标题识别泛名 XHTML 中的非正文章节。"""
+    kind = classify_chapter_kind(file_name)
+    if kind != ChapterKind.body or not chunks:
+        return kind
+
+    first_heading = _normalize_heading(chunks[0].text)
+    return _CONTENT_HEADING_KINDS.get(first_heading, kind)
 
 
 def _chapter_id_from_path(file_path: str) -> str:
@@ -83,6 +113,7 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         chapter_id = _chapter_id_from_path(file_name)
         # 仅正文提取 chunk，非正文保留空 chunks 便于 Reduce 按 file_path 回写
         chunk_list = extract_chunks(content, chapter_id)
+        kind = classify_chapter_kind_from_chunks(file_name, chunk_list)
         chunks_payload = [
             {
                 "chunk_id": c.chunk_id,

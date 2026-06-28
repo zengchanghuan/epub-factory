@@ -11,7 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.domain.manifest_service import classify_chapter_kind, build_manifest
+from app.domain.manifest_service import (
+    classify_chapter_kind,
+    classify_chapter_kind_from_chunks,
+    build_manifest,
+)
 from app.models import ChapterKind
 from app.engine.chunk_extractor import extract_chunks, ChunkItem
 
@@ -39,6 +43,29 @@ def test_classify_appendix_index_other():
     assert classify_chapter_kind("index.xhtml") == ChapterKind.index
     assert classify_chapter_kind("cover.xhtml") == ChapterKind.other
     assert classify_chapter_kind("about_the_author.xhtml") == ChapterKind.other
+
+
+def _chunk(text: str) -> ChunkItem:
+    return ChunkItem(
+        chunk_id="part_0001",
+        sequence=1,
+        locator="/html/body/p[1]",
+        html=f"<p>{text}</p>",
+        text=text,
+        word_count=len(text.split()),
+        char_count=len(text),
+    )
+
+
+def test_classify_generic_files_by_content_heading():
+    assert classify_chapter_kind_from_chunks("text/part0109.html", [_chunk("Bibliography")]) == ChapterKind.index
+    assert classify_chapter_kind_from_chunks("text/part0110.html", [_chunk("Sources")]) == ChapterKind.index
+    assert classify_chapter_kind_from_chunks("text/part0148.html", [_chunk("Index")]) == ChapterKind.index
+    assert classify_chapter_kind_from_chunks("text/part0111.html", [_chunk("Photo Credits")]) == ChapterKind.other
+
+
+def test_content_heading_classification_is_exact():
+    assert classify_chapter_kind_from_chunks("text/part0001.html", [_chunk("Sources of Inspiration")]) == ChapterKind.body
 
 
 def test_extract_chunks_returns_locator_and_sequence():
@@ -109,6 +136,8 @@ if __name__ == "__main__":
         test_classify_nav,
         test_classify_copyright,
         test_classify_appendix_index_other,
+        test_classify_generic_files_by_content_heading,
+        test_content_heading_classification_is_exact,
         test_extract_chunks_returns_locator_and_sequence,
         test_extract_chunks_skips_nested_blocks,
         test_build_manifest_structure,
