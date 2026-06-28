@@ -1,8 +1,9 @@
 """Local archive for failed translation chunks.
 
-The archive is intentionally file-based and outside git. It stores only final
-failed chunks (or chunks with an explicit error) so we can inspect repeated LLM
-formatting failures without querying SQLite by hand.
+The archive is intentionally file-based and outside git. It stores final failed
+chunks, chunks with an explicit error, and chunks that required repeated retry
+attempts so we can inspect LLM formatting failures without querying SQLite by
+hand.
 """
 
 from __future__ import annotations

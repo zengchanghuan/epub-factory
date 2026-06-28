@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
+os.environ.setdefault("EPUB_PERSISTENT_STORE", "1")
 
 from app.domain.chapter_translation_service import ChunkResult  # noqa: E402
 from app.domain.failed_chunk_archive import archive_failed_chunk, archive_root  # noqa: E402
@@ -44,6 +46,20 @@ def _manifest_chunk_map(job) -> dict[str, dict]:
     return out
 
 
+def _min_retry_count() -> int:
+    return int(os.environ.get("EPUB_FAILED_CHUNK_MIN_RETRIES", "2") or "2")
+
+
+def _should_backfill_chunk(chunk, *, include_nonfailed: bool) -> bool:
+    if include_nonfailed:
+        return True
+    status = _status_value(getattr(chunk, "status", ""))
+    if status == ChunkStatus.failed.value or getattr(chunk, "error_message", None):
+        return True
+    retry_count = int(getattr(chunk, "retry_count", 0) or 0)
+    return retry_count >= _min_retry_count()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_id")
@@ -58,8 +74,7 @@ def main() -> int:
     specs = _manifest_chunk_map(job)
     chunks = []
     for chunk in job_store.list_chunks(args.job_id):
-        status = _status_value(getattr(chunk, "status", ""))
-        if not args.include_nonfailed and status != ChunkStatus.failed.value and not getattr(chunk, "error_message", None):
+        if not _should_backfill_chunk(chunk, include_nonfailed=args.include_nonfailed):
             continue
         chunks.append(chunk)
 
@@ -97,7 +112,8 @@ def main() -> int:
         "ok": True,
         "job_id": args.job_id,
         "archive_root": str(archive_root()),
-        "failed_or_error_chunks": len(chunks),
+        "selected_chunks": len(chunks),
+        "selection": "all" if args.include_nonfailed else f"failed/error/retry_count>={_min_retry_count()}",
         "archived": len(archived),
         "sample_paths": archived[:5],
     }, ensure_ascii=False, indent=2))
