@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from bs4 import BeautifulSoup
 
+from app.cancellation import CancelCheck, raise_if_cancelled
 from app.converter import converter
 from app.domain.book_reduce_service import make_get_chapter_content, reduce_and_package, set_chapter_output
 from app.domain.chapter_reduce_service import apply_chunk_results
@@ -319,6 +320,7 @@ async def _translate_manifest_async(
     content_by_file: dict[str, bytes],
     glossary: dict[str, str],
     progress_callback: ProgressCallback,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     translator = SemanticsTranslator(
         target_lang=job.target_lang,
@@ -327,6 +329,7 @@ async def _translate_manifest_async(
         temperature=getattr(job, "temperature", None),
     )
     translator.progress_callback = progress_callback
+    translator.cancel_check = cancel_check
 
     body_chapters = [
         ch for ch in manifest.get("chapters", [])
@@ -361,6 +364,7 @@ async def _translate_manifest_async(
 
     async def run_chapter(chapter: dict) -> list[ChunkResult]:
         async with chapter_sem:
+            raise_if_cancelled(cancel_check)
             started = _now()
             specs = chapter.get("chunks") or []
             _upsert_chapter(JobChapter(
@@ -373,16 +377,19 @@ async def _translate_manifest_async(
                 started_at=started,
             ))
             progress_callback(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
+            raise_if_cancelled(cancel_check)
 
             translated = await translator.translate_many_chunks_async(
                 [c["html"] for c in specs],
                 progress_label=f"快速翻译 {chapter['file_path']}",
             )
+            raise_if_cancelled(cancel_check)
             chunk_results: list[ChunkResult] = []
             chunk_statuses: list[ChunkStatus] = []
             chapter_audit_fail = 0
             chapter_audit_warn = 0
             for spec, res in zip(specs, translated):
+                raise_if_cancelled(cancel_check)
                 status = ChunkStatus.failed if res.error else (ChunkStatus.cached if res.cached else ChunkStatus.translated)
                 raw_text = BeautifulSoup(spec["html"], "html.parser").get_text()
                 if not translator._should_translate(raw_text):
@@ -450,6 +457,7 @@ async def _translate_manifest_async(
                 _upsert_chunk(job.id, chapter["chapter_id"], cr, status)
 
             original = content_by_file.get(chapter["file_path"])
+            raise_if_cancelled(cancel_check)
             if original is not None:
                 reduced = apply_chunk_results(original, chunk_results, job.bilingual)
                 set_chapter_output(job.id, chapter["file_path"], reduced)
@@ -487,7 +495,9 @@ async def _translate_manifest_async(
             ))
             return chunk_results
 
+    raise_if_cancelled(cancel_check)
     chapter_results = await asyncio.gather(*(run_chapter(ch) for ch in body_chapters))
+    raise_if_cancelled(cancel_check)
     flat_results = [cr for chapter in chapter_results for cr in chapter]
     stats = translator.stats.to_dict(translator.model)
     stats.update({
@@ -509,6 +519,7 @@ def run_fast_translation_job(
     output_path: Path,
     progress_callback: ProgressCallback,
     stage_callback: StageCallback,
+    cancel_check: CancelCheck | None = None,
 ) -> ConversionResult:
     """
     执行快速翻译主链路。仅面向 EPUB 翻译任务；调用方负责非 EPUB 的回退。
@@ -516,10 +527,12 @@ def run_fast_translation_job(
     timings: list[tuple[str, float]] = []
     started_all = time.monotonic()
     _log_stage("start", input=str(input_path))
+    raise_if_cancelled(cancel_check)
 
     with tempfile.TemporaryDirectory(prefix="epub_fast_translate_") as tmp:
         preprocessed = Path(tmp) / "preprocessed.epub"
 
+        raise_if_cancelled(cancel_check)
         t = time.monotonic()
         stage_callback("preprocessing", "开始预处理 EPUB（非 LLM 清洗）", None)
         pre_result = converter.convert_file_to_horizontal(
@@ -540,6 +553,7 @@ def run_fast_translation_job(
         )
         timings.append(("Preprocess", (time.monotonic() - t) * 1000))
         _log_stage("preprocessing", timings[-1][1])
+        raise_if_cancelled(cancel_check)
 
         t = time.monotonic()
         stage_callback("mapping", "生成章节 Manifest", None)
@@ -553,6 +567,7 @@ def run_fast_translation_job(
         original_book_title = _extract_book_title(str(preprocessed))
         timings.append(("Manifest", (time.monotonic() - t) * 1000))
         _log_stage("mapping", timings[-1][1], chapters=len(manifest.get("chapters", [])))
+        raise_if_cancelled(cancel_check)
 
         t = time.monotonic()
         stage_callback("glossary", "构建全书术语表", None)
@@ -576,6 +591,7 @@ def run_fast_translation_job(
             ),
             int(timings[-1][1]),
         )
+        raise_if_cancelled(cancel_check)
 
         t = time.monotonic()
         stage_callback("metadata", "翻译书名元数据", None)
@@ -591,6 +607,7 @@ def run_fast_translation_job(
             original_title=original_book_title,
             translated_title=translated_book_title,
         )
+        raise_if_cancelled(cancel_check)
 
         t = time.monotonic()
         stage_callback("translating", "开始快速章节翻译", None)
@@ -600,6 +617,7 @@ def run_fast_translation_job(
             content_by_file=content_by_file,
             glossary=glossary,
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         ))
         translation_stats.update({
             "glossary_stats": glossary_result.stats,
@@ -615,6 +633,7 @@ def run_fast_translation_job(
             failed=translation_stats.get("failed_chunks"),
             cost_usd=translation_stats.get("cost_usd"),
         )
+        raise_if_cancelled(cancel_check)
 
         if translation_stats.get("all_failed"):
             last_error = translation_stats.get("last_error") or "上游模型调用失败"
@@ -643,6 +662,7 @@ def run_fast_translation_job(
             )
 
         t = time.monotonic()
+        raise_if_cancelled(cancel_check)
         stage_callback("reducing", "回写译文并打包 EPUB", None)
         ok = reduce_and_package(
             str(preprocessed),
@@ -660,6 +680,7 @@ def run_fast_translation_job(
             raise RuntimeError("快速翻译 Reduce/打包失败")
 
     t = time.monotonic()
+    raise_if_cancelled(cancel_check)
     stage_callback("validating", "校验 EPUB", None)
     validation_passed = _run_epubcheck(output_path)
     timings.append(("EpubCheck", (time.monotonic() - t) * 1000))

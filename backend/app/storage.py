@@ -142,6 +142,8 @@ class JobStore:
             job = self._jobs.get(job_id)
             if not job:
                 return None
+            if job.status == JobStatus.cancelled and status != JobStatus.cancelled:
+                return job
             job.status = status
             job.message = message
             job.error_code = error_code

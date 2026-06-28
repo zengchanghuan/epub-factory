@@ -25,7 +25,7 @@ from .converter import converter
 from .infra.rate_limiter import MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, get_real_ip, rate_limiter
 from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_notification
 from .job_runner import run_job
-from .models import DeviceProfile, ErrorCode, Job, JobStatus, OutputMode, TraditionalVariant
+from .models import DeviceProfile, ErrorCode, Job, JobStage, JobStatus, OutputMode, StageStatus, TraditionalVariant
 from .storage import job_store
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
@@ -1365,7 +1365,7 @@ def retry_translation_v2(job_id: str, request: Request, background_tasks: Backgr
     stats = dict(job.translation_stats or {})
     free_retry_count = int(stats.get("free_retry_count") or 0)
     max_retries = max_free_retries()
-    if free_retry_count >= max_retries:
+    if max_retries >= 0 and free_retry_count >= max_retries:
         raise HTTPException(status_code=400, detail="免费重译次数已用完，请联系客服处理")
 
     stats["free_retry_count"] = free_retry_count + 1
@@ -1470,12 +1470,24 @@ def cancel_job_v2(job_id: str, request: Request):
         raise HTTPException(status_code=403, detail="无权访问该任务")
     if job.status not in (JobStatus.pending, JobStatus.running):
         raise HTTPException(status_code=400, detail="当前状态不可取消")
-    job_store.update_status(job_id, JobStatus.cancelled, "用户取消")
+    message = "用户已停止翻译" if job.enable_translation else "用户取消"
+    job_store.update_status(job_id, JobStatus.cancelled, message)
+    add_stage = getattr(job_store, "add_stage", None)
+    if add_stage:
+        now = datetime.now(timezone.utc)
+        add_stage(JobStage(
+            job_id=job_id,
+            stage_name="cancelled",
+            status=StageStatus.completed,
+            started_at=now,
+            finished_at=now,
+            metadata={"message": message, "level": "warning"},
+        ))
     updated = job_store.get(job_id)
     return {
         "job_id": job_id,
         "status": "cancelled",
-        "message": "已取消",
+        "message": message,
     }
 
 

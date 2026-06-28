@@ -368,6 +368,27 @@ class TestApiV2Skeleton(unittest.TestCase):
             data = res.json()
             self.assertEqual(data.get("status"), "cancelled")
 
+    def test_cancelled_job_status_cannot_be_overwritten_by_worker(self):
+        """用户取消后，后台线程迟到的成功/失败状态不能覆盖 cancelled。"""
+        job_id = f"d3_cancel_lock_{uuid.uuid4().hex[:12]}"
+        job_store.add(Job(
+            id=job_id,
+            source_filename="cancel_lock.epub",
+            output_mode=OutputMode.simplified,
+            trace_id=uuid.uuid4().hex,
+            input_path="/tmp/cancel_lock.epub",
+            enable_translation=True,
+            status=JobStatus.running,
+        ))
+
+        cancelled = job_store.update_status(job_id, JobStatus.cancelled, "用户已停止翻译")
+        self.assertIsNotNone(cancelled)
+        overwritten = job_store.update_status(job_id, JobStatus.success, "转换成功")
+
+        self.assertIsNotNone(overwritten)
+        self.assertEqual(overwritten.status, JobStatus.cancelled)
+        self.assertEqual(overwritten.message, "用户已停止翻译")
+
     def test_v2_notifications_shape(self):
         """GET /api/v2/notifications 返回 items 数组。"""
         res = self.client.get("/api/v2/notifications")

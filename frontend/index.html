@@ -654,6 +654,18 @@
       font-family: inherit;
       cursor: pointer;
     }
+    .stop-btn {
+      border-color: #dc2626;
+      color: #b91c1c;
+      background: #fff;
+    }
+    .stop-btn:hover { background: #fef2f2; }
+    .stop-btn:disabled {
+      border-color: var(--border);
+      color: var(--subtle);
+      background: var(--surface);
+      cursor: not-allowed;
+    }
 
     .error-msg {
       margin-top: 12px;
@@ -1238,6 +1250,9 @@
           ↓ 下载处理结果
         </a>
       </div>
+      <div id="runningActions" style="display:none; gap:10px; flex-wrap:wrap; margin-top:16px;">
+        <button type="button" class="diagnostics-btn stop-btn" id="cancelJobBtn">停止翻译</button>
+      </div>
 
       <!-- SafeMode 降级提示 -->
       <div id="safeModeNotice" style="display:none; margin-top:12px; padding:10px 14px;
@@ -1382,10 +1397,12 @@
     const statusMessage = $("statusMessage");
     const progressBar = $("progressBar");
     const downloadBtn = $("downloadBtn");
+    const cancelJobBtn = $("cancelJobBtn");
     const errorMsg = $("errorMsg");
     const qaReport = $("qaReport");
     const retryTranslationBtn = $("retryTranslationBtn");
     const translationDiagnosticsBtn = $("translationDiagnosticsBtn");
+    let cancelRequestedJobId = "";
     const translationDiagnostics = $("translationDiagnostics");
     const jobTimerEl = $("jobTimer");
     const progressLogEl = $("progressLog");
@@ -1401,6 +1418,21 @@
 
     function taskVerb(isTranslation = currentJobIsTranslation) {
       return isTranslation ? "翻译" : "转换";
+    }
+
+    function setRunningActionsVisible(visible, jobId) {
+      const runningActions = $("runningActions");
+      if (!runningActions || !cancelJobBtn) return;
+      const normalizedJobId = jobId || "";
+      runningActions.style.display = visible ? "flex" : "none";
+      cancelJobBtn.dataset.jobId = visible ? normalizedJobId : "";
+      if (visible) {
+        const stopping = cancelRequestedJobId === normalizedJobId;
+        cancelJobBtn.disabled = stopping;
+        cancelJobBtn.textContent = stopping ? "停止中..." : "停止翻译";
+      } else if (cancelRequestedJobId === normalizedJobId) {
+        cancelRequestedJobId = "";
+      }
     }
 
     function isTerminalFailureStatus(status) {
@@ -1512,9 +1544,10 @@
       const retryCount = Number(report.free_retry_count || 0);
       const maxRetries = Number(report.max_free_retries || 0);
       const attempt = Number(report.translation_attempt || 1);
-      $("qaMeta").textContent = `质检分 ${report.score ?? 0} / 100 · 当前第 ${attempt} 次尝试 · 免费重译 ${retryCount}/${maxRetries}`;
+      const retryMeta = maxRetries < 0 ? `已重译 ${retryCount} 次` : `免费重译 ${retryCount}/${maxRetries}`;
+      $("qaMeta").textContent = `质检分 ${report.score ?? 0} / 100 · 当前第 ${attempt} 次尝试 · ${retryMeta}`;
       retryTranslationBtn.disabled = !report.retryable;
-      retryTranslationBtn.textContent = report.retryable ? "免费重新翻译" : "免费重译次数已用完";
+      retryTranslationBtn.textContent = report.retryable ? "重新翻译" : "当前不可重译";
       retryTranslationBtn.dataset.jobId = data.job_id || currentJobId || "";
       translationDiagnosticsBtn.dataset.jobId = data.job_id || currentJobId || "";
       qaReport.classList.add("visible");
@@ -1544,7 +1577,7 @@
         })
         .catch(err => {
           retryTranslationBtn.disabled = false;
-          retryTranslationBtn.textContent = "免费重新翻译";
+          retryTranslationBtn.textContent = "重新翻译";
           errorMsg.textContent = err.message;
           errorMsg.style.display = "block";
         });
@@ -1552,6 +1585,43 @@
 
     retryTranslationBtn.addEventListener("click", () => {
       retryTranslation(retryTranslationBtn.dataset.jobId || currentJobId);
+    });
+
+    function cancelJob(jobId) {
+      if (!jobId || !cancelJobBtn) return;
+      cancelRequestedJobId = jobId;
+      cancelJobBtn.disabled = true;
+      cancelJobBtn.textContent = "停止中...";
+      appendProgressLog("已请求停止翻译，正在停止新的模型请求...");
+      fetch(`${API}/api/v2/jobs/${jobId}/cancel`, {
+        method: "POST",
+        headers: authHeaders(jobId),
+      })
+        .then(async r => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.detail || "停止翻译失败");
+          return data;
+        })
+        .then(data => {
+          cancelRequestedJobId = "";
+          setRunningActionsVisible(false);
+          setStatus("failed", data.message || "用户已停止翻译");
+          statusBadge.textContent = "已取消";
+          appendProgressLog(data.message || "用户已停止翻译");
+          pollJobEvents(jobId);
+          pollJobV2(jobId);
+        })
+        .catch(err => {
+          cancelRequestedJobId = "";
+          cancelJobBtn.disabled = false;
+          cancelJobBtn.textContent = "停止翻译";
+          errorMsg.textContent = err.message;
+          errorMsg.style.display = "block";
+        });
+    }
+
+    cancelJobBtn.addEventListener("click", () => {
+      cancelJob(cancelJobBtn.dataset.jobId || currentJobId);
     });
 
     translationDiagnosticsBtn.addEventListener("click", () => {
@@ -1742,6 +1812,10 @@
           }
           setStatus(legacy, statusLineMessage);
           statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s, data.enable_translation) : s;
+          setRunningActionsVisible(
+            !!data.enable_translation && (s === "queued" || s === "running"),
+            data.job_id || jobId,
+          );
           // 付款等待 loading 态
           if (s === "pending_payment") {
             $("paymentWaitNotice").classList.add("visible");
@@ -2014,6 +2088,7 @@
       errorMsg.style.display = "none";
       $("errorCodeMsg").style.display = "none";
       $("resultActions").classList.remove("visible");
+      setRunningActionsVisible(false);
       hideQaReport();
     }
 

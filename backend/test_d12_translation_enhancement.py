@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from app.cancellation import JobCancelled
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 
 
@@ -127,7 +128,7 @@ def test_translate_many_chunks_error_like_only_fails_that_chunk():
             if "BAD" in item["html"]:
                 out[item["id"]] = "Sorry, I cannot translate this content."
             else:
-                out[item["id"]] = f"译文:{item['html']}"
+                out[item["id"]] = "这是一段正常译文。"
         return (out, {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 30, "completion_tokens": 60})
 
     t._call_llm_json_batch = fake_call
@@ -138,8 +139,8 @@ def test_translate_many_chunks_error_like_only_fails_that_chunk():
     ]
     out = asyncio.run(t.translate_many_chunks_async(chunks))
 
-    assert out[0].error is None and out[0].translated_html.startswith("译文:")
-    assert out[2].error is None and out[2].translated_html.startswith("译文:")
+    assert out[0].error is None and "正常译文" in out[0].translated_html
+    assert out[2].error is None and "正常译文" in out[2].translated_html
     # 出错块回退原文（inner_html），且被标记 error
     assert out[1].error is not None
     assert not out[1].translated_html.startswith("译文:")
@@ -313,6 +314,28 @@ def test_translate_many_chunks_retries_html_tag_mismatch():
     assert t.stats.failed_chunks == 0
 
 
+def test_translate_many_chunks_honors_cancel_check_before_llm_call():
+    """用户点停止后，翻译器应在下一次模型请求前退出。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+    t.cancel_check = lambda: True
+
+    async def fake_call(payload):
+        calls.append(payload)
+        return ({0: "不应调用"}, {"model": "fake-model", "base_url": "fake://llm"})
+
+    t._call_llm_json_batch = fake_call
+
+    try:
+        asyncio.run(t.translate_many_chunks_async(["<p>Hello world.</p>"]))
+    except JobCancelled:
+        pass
+    else:
+        raise AssertionError("expected JobCancelled")
+
+    assert calls == []
+
+
 def _run():
     cases = [
         test_looks_like_error_response,
@@ -328,6 +351,7 @@ def _run():
         test_translate_many_chunks_emits_final_failure_progress,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,
+        test_translate_many_chunks_honors_cancel_check_before_llm_call,
     ]
     passed = 0
     for fn in cases:

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from ebooklib import epub
 
+from app.cancellation import JobCancelled
 import app.engine.glossary_service as glossary_service
 from app.domain.fast_translation_runner import (
     _translation_delivery_gate_result,
@@ -180,11 +181,45 @@ def test_delivery_gate_result_keeps_retryable_qa_report():
     assert any("翻译交付质检未通过" in msg for msg in progress)
 
 
+def test_fast_translation_runner_honors_cancel_check_before_work():
+    marker = uuid.uuid4().hex[:10]
+    with tempfile.TemporaryDirectory() as tmp:
+        inp = Path(tmp) / "input.epub"
+        out = Path(tmp) / "output.epub"
+        _make_epub(inp, marker)
+        job = Job(
+            id=f"d14_cancel_{marker}",
+            source_filename="input.epub",
+            output_mode=OutputMode.simplified,
+            trace_id=uuid.uuid4().hex,
+            input_path=str(inp),
+            enable_translation=True,
+            target_lang="zh-CN",
+            device=DeviceProfile.generic,
+        )
+        try:
+            run_fast_translation_job(
+                job=job,
+                input_path=inp,
+                output_path=out,
+                progress_callback=lambda _msg: None,
+                stage_callback=lambda _stage, _msg, _elapsed=None: None,
+                cancel_check=lambda: True,
+            )
+        except JobCancelled:
+            pass
+        else:
+            raise AssertionError("expected JobCancelled")
+
+        assert not out.exists()
+
+
 if __name__ == "__main__":
     tests = [
         test_fast_translation_runner_glossary_audit,
         test_translation_failure_delivery_gate,
         test_delivery_gate_result_keeps_retryable_qa_report,
+        test_fast_translation_runner_honors_cancel_check_before_work,
     ]
     passed = 0
     for fn in tests:

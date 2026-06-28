@@ -12,7 +12,7 @@ from typing import Any
 
 
 def max_free_retries() -> int:
-    return max(0, int(os.environ.get("EPUB_TRANSLATION_MAX_FREE_RETRIES", "3")))
+    return int(os.environ.get("EPUB_TRANSLATION_MAX_FREE_RETRIES", "-1"))
 
 
 def _flag(report: dict[str, Any], code: str, message: str) -> None:
@@ -75,7 +75,10 @@ def build_translation_qa_report(
     report["score"] = max(0, int(report["score"]))
     if report["flags"]:
         report["status"] = "failed"
-        report["retryable"] = report["free_retry_count"] < report["max_free_retries"]
+        report["retryable"] = (
+            report["max_free_retries"] < 0
+            or report["free_retry_count"] < report["max_free_retries"]
+        )
         report["summary"] = "；".join(item["message"] for item in report["checks"][:4])
     elif audit_warn:
         report["status"] = "warning"

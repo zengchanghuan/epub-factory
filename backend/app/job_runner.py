@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .cancellation import JobCancelled, raise_if_cancelled
 from .converter import converter
 from .domain.notification_service import notify_job_completed
 from .domain.status_resolver import resolve_after_conversion
@@ -121,6 +122,9 @@ def run_job(job_id: str) -> None:
     if not job:
         logger.warning("run_job: job not found", extra={"job_id": job_id})
         return
+    if job.status == JobStatus.cancelled:
+        logger.info("run_job: job already cancelled", extra={"job_id": job_id})
+        return
 
     logger.info("job started", extra={"trace_id": job.trace_id, "job_id": job.id})
     job_store.update_status(job.id, JobStatus.running, "开始转换")
@@ -157,8 +161,16 @@ def run_job(job_id: str) -> None:
             )
             job_store.add_stage(stage)
 
+        def is_cancelled() -> bool:
+            current = job_store.get(job.id)
+            return bool(current and current.status == JobStatus.cancelled)
+
+        def check_cancelled() -> None:
+            raise_if_cancelled(is_cancelled)
+
         def on_progress(msg: str) -> None:
             nonlocal last_progress_event
+            check_cancelled()
             job_store.update_status(job.id, JobStatus.running, msg)
             if msg and msg != last_progress_event:
                 last_progress_event = msg
@@ -168,6 +180,7 @@ def run_job(job_id: str) -> None:
             level = "error" if "fail" in stage_name or "failed" in stage_name else "info"
             record_stage(stage_name, message, elapsed_ms, level=level)
 
+        check_cancelled()
         input_path = Path(job.input_path)
         if input_path.suffix.lower() in [".mobi", ".azw3"]:
             on_progress(f"正在将 {input_path.suffix.upper()[1:]} 格式转换为 EPUB...")
@@ -180,6 +193,7 @@ def run_job(job_id: str) -> None:
                 input_path = temp_epub
                 elapsed = int((datetime.now() - start_time).total_seconds() * 1000)
                 on_stage("format_convert", "格式转换完成", elapsed_ms=elapsed)
+                check_cancelled()
             except subprocess.CalledProcessError as e:
                 err_msg = e.stderr.decode("utf-8", errors="ignore")
                 raise RuntimeError(f"格式转换失败，可能受 DRM 保护或格式损坏。详情: {err_msg[:200]}")
@@ -187,6 +201,7 @@ def run_job(job_id: str) -> None:
                 raise RuntimeError("服务器未安装 ebook-convert (Calibre)，无法转换此格式。")
 
         fast_translation_enabled = os.environ.get("EPUB_FAST_TRANSLATION", "1").lower() not in ("0", "false", "no")
+        check_cancelled()
         if job.enable_translation and input_path.suffix.lower() == ".epub" and fast_translation_enabled:
             from .domain.fast_translation_runner import run_fast_translation_job
             result = run_fast_translation_job(
@@ -195,6 +210,7 @@ def run_job(job_id: str) -> None:
                 output_path=output_path,
                 progress_callback=on_progress,
                 stage_callback=on_stage,
+                cancel_check=is_cancelled,
             )
         else:
             result = converter.convert_file_to_horizontal(
@@ -213,6 +229,7 @@ def run_job(job_id: str) -> None:
                 progress_callback=on_progress,
                 stage_callback=on_stage,
             )
+        check_cancelled()
         status, message, error_code = resolve_after_conversion(result)
         output_path = _rename_output_with_translated_title(job, result, output_path, suffix)
         if job.enable_translation:
@@ -271,6 +288,26 @@ def run_job(job_id: str) -> None:
             source_filename=job.source_filename,
         )
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
+    except JobCancelled as exc:
+        message = str(exc) or "用户已停止翻译"
+        if getattr(job_store, "add_stage", None):
+            now = datetime.now(timezone.utc)
+            job_store.add_stage(JobStage(
+                job_id=job.id,
+                stage_name="cancelled",
+                status=StageStatus.completed,
+                started_at=now,
+                finished_at=now,
+                metadata={"message": message, "level": "warning"},
+            ))
+        job_store.update_status(job.id, JobStatus.cancelled, message)
+        notify_job_completed(
+            job.id,
+            JobStatus.cancelled,
+            message,
+            source_filename=job.source_filename,
+        )
+        logger.info("job cancelled", extra={"trace_id": job.trace_id, "job_id": job.id})
     except Exception as exc:
         message = str(exc)
         error_code = ErrorCode.CONVERT_FAILED

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, Tag, NavigableString
 from openai import AsyncOpenAI
 import httpx
+from app.cancellation import raise_if_cancelled
 from ..translation_cache import TranslationCache
 
 
@@ -115,6 +116,7 @@ class SemanticsTranslator:
         self.glossary: dict[str, str] = glossary or {}
         self.cache = TranslationCache()
         self.progress_callback = None
+        self.cancel_check = None
         configured_batch_max = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS", self._BATCH_MAX_CHARS))
         batch_cap = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "6000"))
         self.batch_max_chars = max(1000, min(configured_batch_max, batch_cap))
@@ -152,6 +154,9 @@ class SemanticsTranslator:
     def _emit_progress(self, message: str) -> None:
         if self.progress_callback:
             self.progress_callback(message)
+
+    def _raise_if_cancelled(self) -> None:
+        raise_if_cancelled(self.cancel_check)
 
     def _invalid_translation_reason(self, original_html: str, translated_html: str) -> str | None:
         if not translated_html:
@@ -405,6 +410,7 @@ class SemanticsTranslator:
 
     async def _call_llm_json_batch(self, payload: list[dict]) -> tuple[dict[int, str], dict]:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
+        self._raise_if_cancelled()
         system_prompt = self._build_system_prompt()
         user_content = json.dumps(payload, ensure_ascii=False)
         last_error = None
@@ -415,6 +421,7 @@ class SemanticsTranslator:
         base_url, model = self.base_url, self.model
         
         for attempt in range(1, max_attempts + 1):
+            self._raise_if_cancelled()
             base_url, model = routes[(attempt - 1) % len(routes)]
             try:
                 kwargs = {
@@ -629,6 +636,7 @@ class SemanticsTranslator:
         uncached: list[tuple[int, str]] = []
 
         for i, html in enumerate(html_chunks):
+            self._raise_if_cancelled()
             soup = BeautifulSoup(html or "", "html.parser")
             text = soup.get_text() if html else ""
             if not self._should_translate(text):
@@ -701,6 +709,7 @@ class SemanticsTranslator:
             )
 
         async def retry_one(idx: int, original_inner: str, reason: str) -> bool:
+            self._raise_if_cancelled()
             reason_detail = reason
             last_meta: dict | None = None
             last_latency_ms = 0
@@ -712,6 +721,7 @@ class SemanticsTranslator:
             }.get(reason, reason)
             self._emit_progress(f"段落质检未通过，启动单段补译：{reason_label}")
             for quality_attempt in range(1, self.quality_retries + 1):
+                self._raise_if_cancelled()
                 t0 = time.monotonic()
                 try:
                     self.stats.retry_attempts += 1
@@ -768,10 +778,12 @@ class SemanticsTranslator:
             return False
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
+            self._raise_if_cancelled()
             payload = [{"id": local_id, "html": html} for local_id, (_, html) in enumerate(batch)]
             t0 = time.monotonic()
             try:
                 async with self.semaphore:
+                    self._raise_if_cancelled()
                     translations_map, meta = await self._call_llm_json_batch(payload)
             except Exception as exc:
                 # 整批 API/网络/JSON 失败时，先拆小重试，避免一个坏 chunk 连累整批。
@@ -798,6 +810,7 @@ class SemanticsTranslator:
 
             # 逐块降级：单块被判为错误响应只标记该块失败，不连累同批其它正常译文。
             for local_id, (idx, original_inner) in enumerate(batch):
+                self._raise_if_cancelled()
                 translated = translations_map.get(local_id, "")
                 if self._looks_like_error_response(translated):
                     await retry_one(idx, original_inner, "error-like response")
@@ -824,8 +837,10 @@ class SemanticsTranslator:
             report_batch_progress(len(batch))
 
         if batches:
+            self._raise_if_cancelled()
             await asyncio.gather(*(run_batch(batch) for batch in batches))
 
+        self._raise_if_cancelled()
         missing = [i for i, r in enumerate(results) if r is None]
         if missing:
             error = f"chunk not processed: {len(missing)} 段"

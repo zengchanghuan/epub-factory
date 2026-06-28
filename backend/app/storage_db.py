@@ -675,6 +675,8 @@ class PersistentJobStore:
             r = session.get(JobRecord, job_id)
             if not r:
                 return None
+            if r.status == JobStatus.cancelled.value and status != JobStatus.cancelled:
+                return _record_to_job(r)
             r.status = status.value
             r.message = message
             r.error_code = error_code
