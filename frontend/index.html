@@ -810,11 +810,50 @@
       display: none;
     }
     .translation-timing-card.visible { display: block; }
+    .timing-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
     .timing-title {
       font-size: 12px;
       font-weight: 700;
       color: var(--text);
-      margin-bottom: 8px;
+    }
+    .timing-actions {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .timing-copy-btn {
+      min-height: 28px;
+      padding: 5px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: #fff;
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .timing-copy-btn:hover { background: var(--surface); }
+    .timing-copy-btn:disabled {
+      color: var(--subtle);
+      border-color: var(--border);
+      background: var(--surface);
+      cursor: not-allowed;
+    }
+    .timing-copy-state {
+      min-width: 44px;
+      color: var(--subtle);
+      font-size: 11px;
+      text-align: right;
     }
     .timing-verdict {
       padding: 9px 10px;
@@ -1125,6 +1164,7 @@
       .topbar { padding: 0 16px; }
       .timing-grid { grid-template-columns: repeat(2, 1fr); }
       .timing-bar-row { grid-template-columns: 64px 1fr 48px; }
+      .timing-header { align-items: flex-start; }
     }
   </style>
 </head>
@@ -1425,7 +1465,13 @@
           </div>
 
           <div class="translation-timing-card" id="translationTimingCard">
-            <div class="timing-title">翻译耗时归因</div>
+            <div class="timing-header">
+              <div class="timing-title">翻译耗时归因</div>
+              <div class="timing-actions">
+                <button type="button" class="timing-copy-btn" id="copyTranslationTimingLogBtn">复制日志</button>
+                <span class="timing-copy-state" id="translationTimingCopyState"></span>
+              </div>
+            </div>
             <div class="timing-verdict" id="translationTimingVerdict"></div>
             <div class="timing-grid" id="translationTimingGrid"></div>
             <div class="timing-bars" id="translationTimingBars"></div>
@@ -1519,6 +1565,8 @@
     const qaReport = $("qaReport");
     const retryTranslationBtn = $("retryTranslationBtn");
     const translationDiagnosticsBtn = $("translationDiagnosticsBtn");
+    const copyTranslationTimingLogBtn = $("copyTranslationTimingLogBtn");
+    const translationTimingCopyState = $("translationTimingCopyState");
     let cancelRequestedJobId = "";
     let restartRequestedJobId = "";
     const translationDiagnostics = $("translationDiagnostics");
@@ -1533,6 +1581,8 @@
     let renderedEventKeys = new Set();
     let currentJobId = null;
     let currentJobIsTranslation = false;
+    let lastTranslationTimingLog = "";
+    let translationTimingCopyTimer = null;
 
     function taskVerb(isTranslation = currentJobIsTranslation) {
       return isTranslation ? "翻译" : "转换";
@@ -2171,11 +2221,118 @@
     function hideTranslationTiming() {
       const card = $("translationTimingCard");
       if (card) card.classList.remove("visible");
+      lastTranslationTimingLog = "";
+      if (copyTranslationTimingLogBtn) {
+        copyTranslationTimingLogBtn.disabled = false;
+        copyTranslationTimingLogBtn.textContent = "复制日志";
+      }
+      if (translationTimingCopyState) translationTimingCopyState.textContent = "";
     }
 
     function formatPercent(value) {
       const n = Number(value || 0);
       return `${Math.round(n * 100)}%`;
+    }
+
+    function cleanLogValue(value) {
+      const text = String(value ?? "").replace(/\s+/g, " ").trim();
+      return text || "-";
+    }
+
+    function formatLogDuration(ms) {
+      const n = Number(ms || 0);
+      return n > 0 ? `${formatDuration(n)} (${Math.round(n)} ms)` : "-";
+    }
+
+    function formatTranslationTimingLog(report) {
+      const bottleneck = report.bottleneck || {};
+      const stages = Array.isArray(report.stage_timings) ? report.stage_timings : [];
+      const failures = Array.isArray(report.failure_categories) ? report.failure_categories : [];
+      const recommendations = Array.isArray(bottleneck.recommendations) ? bottleneck.recommendations : [];
+      const tokens = report.tokens || {};
+      const filename = $("metaFilename") ? $("metaFilename").textContent : "";
+      const stageLines = stages
+        .filter(item => String(item.name || "").toLowerCase() !== "total")
+        .sort((a, b) => Number(b.ms || 0) - Number(a.ms || 0))
+        .slice(0, 12)
+        .map(item => `- ${cleanLogValue(item.name)}: ${formatLogDuration(item.ms)}, share=${formatPercent(item.share)}`);
+      const failureLines = failures.map(item => (
+        `- ${cleanLogValue(item.code || item.label)}: ${Number(item.count || 0)} 段, label=${cleanLogValue(item.label || item.code)}`
+      ));
+      const recommendationLines = recommendations.map((item, index) => `${index + 1}. ${cleanLogValue(item)}`);
+
+      return [
+        "log:'翻译耗时归因快照'",
+        `generated_at=${new Date().toLocaleString()}`,
+        `job_id=${cleanLogValue(currentJobId)}`,
+        `filename=${cleanLogValue(filename)}`,
+        `bottleneck=${cleanLogValue(bottleneck.type || bottleneck.title)}`,
+        `bottleneck_title=${cleanLogValue(bottleneck.title)}`,
+        `reason=${cleanLogValue(bottleneck.reason)}`,
+        `total=${formatLogDuration(report.total_ms)}`,
+        `model_stage=${formatLogDuration(report.model_stage_ms)}, model_share=${formatPercent(report.model_share)}`,
+        `server_stage=${formatLogDuration(report.server_stage_ms)}, server_share=${formatPercent(report.server_share)}`,
+        `api_calls=${Number(report.api_calls || 0)}, avg_model_call=${formatLogDuration(report.avg_model_call_ms)}`,
+        `chunk_latency_avg=${formatLogDuration(report.chunk_latency_avg_ms)}, p95=${formatLogDuration(report.chunk_latency_p95_ms)}, p99=${formatLogDuration(report.chunk_latency_p99_ms)}`,
+        `retry_attempts=${Number(report.retry_attempts || 0)}, chunk_retry_total=${Number(report.chunk_retry_total || 0)}, chunk_retry_max=${Number(report.chunk_retry_max || 0)}`,
+        `chunks=total:${Number(report.total_chunks || 0)}, translated:${Number(report.translated_chunks || 0)}, cached:${Number(report.cached_chunks || 0)}, failed:${Number(report.failed_chunks || 0)}, failure_ratio=${formatPercent(report.failure_ratio)}`,
+        `tokens=prompt:${Number(tokens.prompt || 0)}, completion:${Number(tokens.completion || 0)}, total:${Number(tokens.total || 0)}`,
+        "[stage_timings]",
+        ...(stageLines.length ? stageLines : ["- 暂无阶段耗时"]),
+        "[failure_categories]",
+        ...(failureLines.length ? failureLines : ["- 暂无失败类别"]),
+        "[recommendations]",
+        ...(recommendationLines.length ? recommendationLines : ["- 暂无建议"]),
+      ].join("\n");
+    }
+
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return;
+        } catch (_) {
+          // Some browsers expose clipboard but block it outside secure contexts.
+        }
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      if (!copied) throw new Error("copy command failed");
+    }
+
+    function setTranslationTimingCopyState(message) {
+      if (!translationTimingCopyState) return;
+      if (translationTimingCopyTimer) clearTimeout(translationTimingCopyTimer);
+      translationTimingCopyState.textContent = message || "";
+      if (message) {
+        translationTimingCopyTimer = setTimeout(() => {
+          translationTimingCopyState.textContent = "";
+        }, 3000);
+      }
+    }
+
+    async function copyTranslationTimingLog() {
+      if (!copyTranslationTimingLogBtn || !lastTranslationTimingLog) return;
+      copyTranslationTimingLogBtn.disabled = true;
+      copyTranslationTimingLogBtn.textContent = "复制中...";
+      try {
+        await copyTextToClipboard(lastTranslationTimingLog);
+        setTranslationTimingCopyState("已复制");
+      } catch (_) {
+        setTranslationTimingCopyState("复制失败");
+      } finally {
+        copyTranslationTimingLogBtn.disabled = false;
+        copyTranslationTimingLogBtn.textContent = "复制日志";
+      }
     }
 
     function renderTranslationTiming(report) {
@@ -2191,6 +2348,12 @@
       const failedChunks = Number(report.failed_chunks || 0);
       const totalChunks = Number(report.total_chunks || 0);
       const apiCalls = Number(report.api_calls || 0);
+      lastTranslationTimingLog = formatTranslationTimingLog(report);
+      if (copyTranslationTimingLogBtn) {
+        copyTranslationTimingLogBtn.disabled = false;
+        copyTranslationTimingLogBtn.textContent = "复制日志";
+      }
+      setTranslationTimingCopyState("");
 
       $("translationTimingVerdict").innerHTML = `
         <strong>${escapeHtml(bottleneck.title || "主要瓶颈：数据不足")}</strong><br>
@@ -2258,6 +2421,10 @@
           `).join("")
         : `<div class="timing-list-row"><span>暂无建议</span><span>-</span></div>`;
       $("translationTimingCard").classList.add("visible");
+    }
+
+    if (copyTranslationTimingLogBtn) {
+      copyTranslationTimingLogBtn.addEventListener("click", copyTranslationTimingLog);
     }
 
     const DEV_MODE = location.hostname === "localhost" || location.hostname === "127.0.0.1";

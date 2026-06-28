@@ -13,6 +13,8 @@ const html = fs.readFileSync(
 test("F15-1 主页面提供翻译耗时归因面板", () => {
   assert.ok(html.includes('id="translationTimingCard"'), "应有翻译耗时归因面板");
   assert.ok(html.includes("翻译耗时归因"), "面板标题应可见");
+  assert.ok(html.includes('id="copyTranslationTimingLogBtn"'), "应提供复制归因日志按钮");
+  assert.ok(html.includes("复制日志"), "复制按钮文案应可见");
   assert.ok(html.includes('id="translationTimingVerdict"'), "应展示主要瓶颈判断");
   assert.ok(html.includes('id="translationTimingStages"'), "应展示阶段耗时排行");
 });
@@ -24,7 +26,20 @@ test("F15-2 详情轮询会消费后端 translation_timing 字段", () => {
   assert.ok(html.includes("failure_categories"), "应展示失败类别");
 });
 
-test("F15-3 状态重置时会隐藏归因面板", () => {
+test("F15-3 归因面板支持复制结构化日志", () => {
+  assert.ok(html.includes("function formatTranslationTimingLog(report)"), "应格式化可复制日志");
+  assert.ok(html.includes("log:'翻译耗时归因快照'"), "复制内容应包含稳定日志标题");
+  assert.ok(html.includes("model_stage="), "复制内容应包含模型耗时字段");
+  assert.ok(html.includes("server_stage="), "复制内容应包含服务器耗时字段");
+  assert.ok(html.includes("[failure_categories]"), "复制内容应包含失败类别段落");
+  assert.ok(html.includes("navigator.clipboard.writeText"), "应优先使用 Clipboard API");
+  assert.ok(html.includes("document.execCommand(\"copy\")"), "应提供复制 fallback");
+  assert.ok(html.includes("已复制"), "复制成功后应有 UI 状态");
+  assert.ok(html.includes("复制失败"), "复制失败后应有 UI 状态");
+});
+
+test("F15-4 状态重置时会隐藏归因面板", () => {
   assert.ok(html.includes("function hideTranslationTiming()"), "应有隐藏函数");
   assert.ok(html.includes("hideTranslationTiming();"), "状态重置时应隐藏面板");
+  assert.ok(html.includes("lastTranslationTimingLog = \"\""), "隐藏时应清理上一次复制日志");
 });
