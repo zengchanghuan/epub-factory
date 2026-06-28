@@ -356,12 +356,35 @@ def _percentile_ms(values: list[int], percentile: float) -> int:
     return int(ordered[max(0, min(idx, len(ordered) - 1))])
 
 
-def _classify_translation_error(message: str) -> tuple[str, str]:
+def _coerce_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _job_wall_elapsed_ms(job: Job) -> int:
+    start = _coerce_utc(getattr(job, "created_at", None))
+    if not start:
+        return 0
+    status = getattr(getattr(job, "status", None), "value", getattr(job, "status", ""))
+    if status in {"pending", "running"}:
+        end = datetime.now(timezone.utc)
+    else:
+        end = _coerce_utc(getattr(job, "updated_at", None)) or datetime.now(timezone.utc)
+    return max(0, int((end - start).total_seconds() * 1000))
+
+
+def _classify_translation_error(message: str, flags: list | None = None) -> tuple[str, str]:
     text = (message or "").lower()
-    if "html tag mismatch" in text or "html结构" in text or "tag mismatch" in text:
+    flag_set = set(flags or [])
+    if "html_tag_mismatch" in flag_set or "html_mismatch" in flag_set or "html_tag_mismatch" in text or "html tag mismatch" in text or "html结构" in text or "tag mismatch" in text:
         return "html_tag_mismatch", "HTML 标签不匹配"
-    if "untranslated" in text or "未翻译" in text or "原文" in text:
+    if "likely_untranslated" in flag_set or "untranslated" in text or "未翻译" in text or "原文" in text:
         return "untranslated_response", "模型返回未翻译内容"
+    if "empty_translation" in flag_set:
+        return "empty_translation", "空译文"
     if "json" in text or "parse" in text:
         return "json_parse", "模型 JSON 解析失败"
     if "timeout" in text or "timed out" in text or "超时" in text:
@@ -380,24 +403,8 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
     stats = dict(job.translation_stats or {})
     stages, stage_total_ms = _parse_pipeline_timings(job.metrics_summary)
     stats_elapsed_ms = _metric_number(stats.get("elapsed_seconds"), 0.0) * 1000
-    total_ms = stage_total_ms or (stats_elapsed_ms if stats_elapsed_ms > 0 else None)
-
-    model_stage_names = {"TranslateMap", "BookTitle", "Glossary"}
-    non_total_stages = [s for s in stages if str(s.get("name", "")).lower() != "total"]
-    model_stage_ms = sum(int(s.get("ms") or 0) for s in non_total_stages if s.get("name") in model_stage_names)
-    server_stage_ms = sum(
-        int(s.get("ms") or 0)
-        for s in non_total_stages
-        if s.get("name") not in model_stage_names
-    )
-    if not model_stage_ms and stats_elapsed_ms:
-        model_stage_ms = round(stats_elapsed_ms)
-    if total_ms is None:
-        total_ms = model_stage_ms + server_stage_ms
-
-    total_ms = int(round(total_ms or 0))
-    model_share = (model_stage_ms / total_ms) if total_ms > 0 else 0.0
-    server_share = (server_stage_ms / total_ms) if total_ms > 0 else 0.0
+    wall_elapsed_ms = _job_wall_elapsed_ms(job)
+    total_ms = stage_total_ms or (stats_elapsed_ms if stats_elapsed_ms > 0 else None) or (wall_elapsed_ms if wall_elapsed_ms > 0 else None)
 
     chunks = []
     list_chunks = getattr(job_store, "list_chunks", None)
@@ -408,25 +415,77 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
             chunks = []
     latencies = [int(getattr(c, "latency_ms", 0) or 0) for c in chunks if int(getattr(c, "latency_ms", 0) or 0) > 0]
     retry_counts = [int(getattr(c, "retry_count", 0) or 0) for c in chunks]
+    chunk_retry_total = sum(retry_counts)
+    chunk_latency_sum_ms = sum(latencies)
+    status_counts: dict[str, int] = {}
+    prompt_tokens_from_chunks = 0
+    completion_tokens_from_chunks = 0
     failed_categories: dict[str, dict] = {}
     for chunk in chunks:
         status = getattr(getattr(chunk, "status", None), "value", getattr(chunk, "status", ""))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        prompt_tokens_from_chunks += int(getattr(chunk, "prompt_tokens", 0) or 0)
+        completion_tokens_from_chunks += int(getattr(chunk, "completion_tokens", 0) or 0)
         message = getattr(chunk, "error_message", "") or ""
-        if status != "failed" and not message:
+        audit = getattr(chunk, "audit_json", None) or {}
+        flags = audit.get("flags", []) if isinstance(audit, dict) else []
+        risk_level = audit.get("risk_level") if isinstance(audit, dict) else None
+        if status != "failed" and not message and risk_level != "fail" and not flags:
             continue
-        code, label = _classify_translation_error(message)
+        code, label = _classify_translation_error(message, flags)
         item = failed_categories.setdefault(code, {"code": code, "label": label, "count": 0})
         item["count"] += 1
 
-    total_chunks = int(stats.get("total_chunks") or stats.get("chunks_total") or len(chunks) or 0)
-    failed_chunks = int(stats.get("failed_chunks") or 0)
-    translated_chunks = int(stats.get("translated_chunks") or 0)
-    cached_chunks = int(stats.get("cached_chunks") or 0)
-    api_calls = int(stats.get("api_calls") or 0)
-    retry_attempts = int(stats.get("retry_attempts") or 0)
+    model_stage_names = {"TranslateMap", "BookTitle", "Glossary"}
+    non_total_stages = [s for s in stages if str(s.get("name", "")).lower() != "total"]
+    model_stage_ms = sum(int(s.get("ms") or 0) for s in non_total_stages if s.get("name") in model_stage_names)
+    server_stage_ms = sum(
+        int(s.get("ms") or 0)
+        for s in non_total_stages
+        if s.get("name") not in model_stage_names
+    )
+    model_stage_estimated = False
+    if not model_stage_ms and chunk_latency_sum_ms:
+        model_stage_estimated = True
+        model_stage_ms = min(chunk_latency_sum_ms, int(round(total_ms or chunk_latency_sum_ms)))
+    elif not model_stage_ms and stats_elapsed_ms:
+        model_stage_estimated = True
+        model_stage_ms = round(stats_elapsed_ms)
+    if total_ms is None:
+        total_ms = model_stage_ms + server_stage_ms
+
+    total_ms = int(round(total_ms or 0))
+    if model_stage_ms > total_ms and total_ms > 0:
+        model_stage_ms = total_ms
+    if not server_stage_ms and total_ms > 0:
+        server_stage_ms = max(0, total_ms - model_stage_ms)
+    model_share = (model_stage_ms / total_ms) if total_ms > 0 else 0.0
+    server_share = (server_stage_ms / total_ms) if total_ms > 0 else 0.0
+
+    total_chunks_from_stats = int(stats.get("total_chunks") or stats.get("chunks_total") or 0)
+    total_chunks = max(total_chunks_from_stats, len(chunks))
+    if chunks:
+        failed_chunks = int(status_counts.get("failed", 0))
+        translated_chunks = int(status_counts.get("translated", 0))
+        cached_chunks = int(status_counts.get("cached", 0))
+    else:
+        failed_chunks = int(stats.get("failed_chunks") or 0)
+        translated_chunks = int(stats.get("translated_chunks") or 0)
+        cached_chunks = int(stats.get("cached_chunks") or 0)
+    api_calls_from_stats = int(stats.get("api_calls") or 0)
+    api_calls_estimated = False
+    if api_calls_from_stats > 0:
+        api_calls = api_calls_from_stats
+    else:
+        api_calls = len(latencies)
+        api_calls_estimated = api_calls > 0
+    retry_attempts = int(stats.get("retry_attempts") or 0) or chunk_retry_total
     chunk_latency_avg_ms = round(sum(latencies) / len(latencies)) if latencies else 0
-    avg_model_call_ms = round(model_stage_ms / api_calls) if model_stage_ms and api_calls else 0
+    avg_model_call_ms = chunk_latency_avg_ms if api_calls_estimated else (round(model_stage_ms / api_calls) if model_stage_ms and api_calls else 0)
     failure_ratio = (failed_chunks / total_chunks) if total_chunks > 0 else 0.0
+    prompt_tokens = int(stats.get("prompt_tokens") or prompt_tokens_from_chunks or 0)
+    completion_tokens = int(stats.get("completion_tokens") or completion_tokens_from_chunks or 0)
+    total_tokens = int(stats.get("total_tokens") or (prompt_tokens + completion_tokens) or 0)
 
     bottleneck = {
         "primary": "unknown",
@@ -434,11 +493,11 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "reason": "当前任务缺少足够的阶段耗时或模型调用数据。",
         "recommendations": ["跑完一次翻译任务后查看该面板，优先看模型耗时占比、重试次数和失败类别。"],
     }
-    if retry_attempts > max(3, api_calls * 0.3) or failed_chunks > 0:
+    if retry_attempts > max(3, total_chunks * 0.1) or failed_chunks > 0 or failed_categories:
         bottleneck = {
             "primary": "model_stability",
             "title": "主要瓶颈：模型响应稳定性 / 重试放大",
-            "reason": "失败段落或重试次数较高，少量坏段落会放大整本书耗时。",
+            "reason": f"当前已记录 {failed_chunks} 个失败段落、{retry_attempts} 次重试，少量坏段落会放大整本书耗时。",
             "recommendations": [
                 "优先检查失败类别分布，针对未翻译、HTML 标签不匹配、JSON 解析失败分别优化。",
                 "启用动态批大小和动态并发：失败率升高时自动降并发、拆小批次。",
@@ -449,7 +508,7 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         bottleneck = {
             "primary": "model_latency",
             "title": "主要瓶颈：大模型响应速度",
-            "reason": f"模型相关阶段占总耗时约 {round(model_share * 100)}%。",
+            "reason": f"模型相关阶段占总耗时约 {round(model_share * 100)}%，chunk P95 延迟约 {_percentile_ms(latencies, 0.95)} ms。",
             "recommendations": [
                 "评估 DeepSeek 当前响应耗时和失败率，必要时增加备用模型路由。",
                 "调优批大小，减少 API 调用总数，同时避免单批过大导致格式失败。",
@@ -485,12 +544,17 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "model_share": round(model_share, 4),
         "server_share": round(server_share, 4),
         "api_calls": api_calls,
+        "api_calls_estimated": api_calls_estimated,
         "avg_model_call_ms": avg_model_call_ms,
+        "model_stage_estimated": model_stage_estimated,
+        "chunk_latency_sum_ms": chunk_latency_sum_ms,
+        "chunk_latency_samples": len(latencies),
+        "wall_elapsed_ms": wall_elapsed_ms,
         "chunk_latency_avg_ms": chunk_latency_avg_ms,
         "chunk_latency_p95_ms": _percentile_ms(latencies, 0.95),
         "chunk_latency_p99_ms": _percentile_ms(latencies, 0.99),
         "retry_attempts": retry_attempts,
-        "chunk_retry_total": sum(retry_counts),
+        "chunk_retry_total": chunk_retry_total,
         "chunk_retry_max": max(retry_counts) if retry_counts else 0,
         "total_chunks": total_chunks,
         "translated_chunks": translated_chunks,
@@ -498,9 +562,9 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "failed_chunks": failed_chunks,
         "failure_ratio": round(failure_ratio, 4),
         "tokens": {
-            "prompt": int(stats.get("prompt_tokens") or 0),
-            "completion": int(stats.get("completion_tokens") or 0),
-            "total": int(stats.get("total_tokens") or 0),
+            "prompt": prompt_tokens,
+            "completion": completion_tokens,
+            "total": total_tokens,
             "cost_usd": _metric_number(stats.get("cost_usd"), 0.0),
         },
         "stage_timings": [

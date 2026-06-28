@@ -2251,6 +2251,8 @@
       const recommendations = Array.isArray(bottleneck.recommendations) ? bottleneck.recommendations : [];
       const tokens = report.tokens || {};
       const filename = $("metaFilename") ? $("metaFilename").textContent : "";
+      const apiCallsSuffix = report.api_calls_estimated ? " (estimated_from_chunk_latency_samples)" : "";
+      const modelStageSuffix = report.model_stage_estimated ? " (estimated)" : "";
       const stageLines = stages
         .filter(item => String(item.name || "").toLowerCase() !== "total")
         .sort((a, b) => Number(b.ms || 0) - Number(a.ms || 0))
@@ -2270,9 +2272,11 @@
         `bottleneck_title=${cleanLogValue(bottleneck.title)}`,
         `reason=${cleanLogValue(bottleneck.reason)}`,
         `total=${formatLogDuration(report.total_ms)}`,
-        `model_stage=${formatLogDuration(report.model_stage_ms)}, model_share=${formatPercent(report.model_share)}`,
+        `wall_elapsed=${formatLogDuration(report.wall_elapsed_ms)}`,
+        `model_stage=${formatLogDuration(report.model_stage_ms)}${modelStageSuffix}, model_share=${formatPercent(report.model_share)}`,
         `server_stage=${formatLogDuration(report.server_stage_ms)}, server_share=${formatPercent(report.server_share)}`,
-        `api_calls=${Number(report.api_calls || 0)}, avg_model_call=${formatLogDuration(report.avg_model_call_ms)}`,
+        `api_calls=${Number(report.api_calls || 0)}${apiCallsSuffix}, avg_model_call=${formatLogDuration(report.avg_model_call_ms)}`,
+        `chunk_latency_samples=${Number(report.chunk_latency_samples || 0)}, chunk_latency_sum=${formatLogDuration(report.chunk_latency_sum_ms)}`,
         `chunk_latency_avg=${formatLogDuration(report.chunk_latency_avg_ms)}, p95=${formatLogDuration(report.chunk_latency_p95_ms)}, p99=${formatLogDuration(report.chunk_latency_p99_ms)}`,
         `retry_attempts=${Number(report.retry_attempts || 0)}, chunk_retry_total=${Number(report.chunk_retry_total || 0)}, chunk_retry_max=${Number(report.chunk_retry_max || 0)}`,
         `chunks=total:${Number(report.total_chunks || 0)}, translated:${Number(report.translated_chunks || 0)}, cached:${Number(report.cached_chunks || 0)}, failed:${Number(report.failed_chunks || 0)}, failure_ratio=${formatPercent(report.failure_ratio)}`,
@@ -2348,6 +2352,7 @@
       const failedChunks = Number(report.failed_chunks || 0);
       const totalChunks = Number(report.total_chunks || 0);
       const apiCalls = Number(report.api_calls || 0);
+      const apiCallsLabel = report.api_calls_estimated ? "API 调用(估)" : "API 调用";
       lastTranslationTimingLog = formatTranslationTimingLog(report);
       if (copyTranslationTimingLogBtn) {
         copyTranslationTimingLogBtn.disabled = false;
@@ -2363,7 +2368,7 @@
         ["总耗时", totalMs ? formatDuration(totalMs) : "-"],
         ["模型占比", formatPercent(modelShare)],
         ["服务器占比", formatPercent(serverShare)],
-        ["API 调用", apiCalls ? `${apiCalls} 次` : "-"],
+        [apiCallsLabel, apiCalls ? `${apiCalls} 次` : "-"],
         ["重试", `${retryAttempts} 次`],
         ["失败段落", totalChunks ? `${failedChunks}/${totalChunks}` : `${failedChunks}`],
         ["平均调用", report.avg_model_call_ms ? formatDuration(report.avg_model_call_ms) : "-"],

@@ -10,6 +10,7 @@ import os
 import sys
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from pathlib import Path
 
@@ -221,6 +222,63 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(timing["failure_categories"][0]["code"], "untranslated_response")
         self.assertEqual(timing["bottleneck"]["primary"], "model_stability")
         self.assertGreater(timing["model_share"], 0.8)
+
+    def test_v2_translation_timing_derives_live_chunk_data(self):
+        """运行中任务缺少汇总 stats 时，从 job_chunks 推断实时耗时与失败归因。"""
+        suffix = uuid.uuid4().hex[:8]
+        now = datetime.now(timezone.utc)
+        job = Job(
+            id=f"d3_timing_live_{suffix}",
+            trace_id="trace_timing_live",
+            source_filename="timing_live.epub",
+            input_path="/tmp/timing_live.epub",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.running,
+            enable_translation=True,
+            message="正在翻译",
+            created_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(seconds=10),
+            translation_stats={"restart_count": 2},
+        )
+        job_store.add(job)
+        fixtures = [
+            (ChunkStatus.translated, 12000, 0, 100, 40, None),
+            (ChunkStatus.translated, 16000, 1, 120, 50, None),
+            (ChunkStatus.cached, 0, 0, 0, 0, None),
+            (ChunkStatus.failed, 42000, 2, 80, 20, "html tag mismatch; retry still invalid"),
+        ]
+        for idx, (status, latency, retries, prompt, completion, error) in enumerate(fixtures, start=1):
+            job_store.upsert_chunk(JobChunk(
+                job_id=job.id,
+                chapter_id="c1",
+                chunk_id=f"c1_{idx:03d}",
+                sequence=idx,
+                locator=f"c1.xhtml#{idx}",
+                source_hash=f"h{idx}",
+                status=status,
+                latency_ms=latency,
+                retry_count=retries,
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                error_message=error,
+            ))
+
+        timing = _job_translation_timing(job)
+
+        self.assertIsNotNone(timing)
+        self.assertGreaterEqual(timing["total_ms"], 299000)
+        self.assertTrue(timing["model_stage_estimated"])
+        self.assertTrue(timing["api_calls_estimated"])
+        self.assertEqual(timing["api_calls"], 3)
+        self.assertEqual(timing["total_chunks"], 4)
+        self.assertEqual(timing["translated_chunks"], 2)
+        self.assertEqual(timing["cached_chunks"], 1)
+        self.assertEqual(timing["failed_chunks"], 1)
+        self.assertEqual(timing["retry_attempts"], 3)
+        self.assertEqual(timing["chunk_retry_total"], 3)
+        self.assertEqual(timing["tokens"]["total"], 410)
+        self.assertEqual(timing["failure_categories"][0]["code"], "html_tag_mismatch")
+        self.assertEqual(timing["bottleneck"]["primary"], "model_stability")
 
     def test_v2_retry_translation_reuses_original_job_without_payment(self):
         """质检失败后可复用原上传文件和 token 免费重译。"""
