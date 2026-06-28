@@ -224,7 +224,7 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertGreater(timing["model_share"], 0.8)
 
     def test_v2_translation_timing_derives_live_chunk_data(self):
-        """运行中任务缺少汇总 stats 时，从 job_chunks 推断实时耗时与失败归因。"""
+        """运行中任务缺少汇总 stats 时，从 job_chunks 推断耗时与失败归因，但不冒充 API 次数。"""
         suffix = uuid.uuid4().hex[:8]
         now = datetime.now(timezone.utc)
         job = Job(
@@ -278,8 +278,10 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertIsNotNone(timing)
         self.assertGreaterEqual(timing["total_ms"], 299000)
         self.assertTrue(timing["model_stage_estimated"])
-        self.assertTrue(timing["api_calls_estimated"])
-        self.assertEqual(timing["api_calls"], 3)
+        self.assertFalse(timing["api_calls_estimated"])
+        self.assertEqual(timing["api_calls_source"], "unavailable")
+        self.assertEqual(timing["api_calls"], 0)
+        self.assertEqual(timing["chunk_latency_samples"], 3)
         self.assertEqual(timing["total_chunks"], 5)
         self.assertEqual(timing["translated_chunks"], 3)
         self.assertEqual(timing["cached_chunks"], 1)

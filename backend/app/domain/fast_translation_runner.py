@@ -46,6 +46,7 @@ from app.models import (
     ErrorCode,
     JobChapter,
     JobChunk,
+    JobStatus,
 )
 from app.storage import job_store
 
@@ -330,17 +331,19 @@ async def _translate_manifest_async(
         glossary=glossary,
         temperature=getattr(job, "temperature", None),
     )
-    translator.progress_callback = progress_callback
     translator.cancel_check = cancel_check
 
     body_chapters = [
         ch for ch in manifest.get("chapters", [])
         if ch.get("chapter_kind") == ChapterKind.body.value and (ch.get("chunks") or [])
     ]
+    manifest_body_chunk_total = sum(len(ch.get("chunks") or []) for ch in body_chapters)
     configured_chapter_limit = int(os.environ.get("EPUB_CHAPTER_CONCURRENCY", "4"))
     chapter_limit_cap = int(os.environ.get("EPUB_CHAPTER_CONCURRENCY_CAP", "2"))
     chapter_limit = max(1, min(configured_chapter_limit, max(1, chapter_limit_cap)))
     chapter_sem = asyncio.Semaphore(chapter_limit)
+    live_stats_interval = max(1.0, float(os.environ.get("EPUB_TRANSLATION_STATS_PUBLISH_INTERVAL", "5")))
+    last_live_stats_publish = 0.0
     audit = {
         "glossary_fixed_count": 0,
         "glossary_fixed_terms": {},
@@ -350,6 +353,70 @@ async def _translate_manifest_async(
         "audit_flags_count": {},
         "audit_examples": [],
     }
+
+    def _build_translation_stats(*, live: bool, flat_results: list[ChunkResult] | None = None) -> dict[str, Any]:
+        stats = translator.stats.to_dict(translator.model)
+        stats.update({
+            "chapters_total": len(body_chapters),
+            "manifest_chunks_total": manifest_body_chunk_total,
+            "chunks_total": len(flat_results) if flat_results is not None else manifest_body_chunk_total,
+            "chunks_processed": int(stats.get("translated_chunks") or 0)
+            + int(stats.get("cached_chunks") or 0)
+            + int(stats.get("failed_chunks") or 0),
+            "live": live,
+            **audit,
+        })
+        if flat_results is not None:
+            stats["chunks_skipped"] = sum(
+                1 for cr in flat_results
+                if not translator._should_translate(BeautifulSoup(cr.original_html, "html.parser").get_text())
+            )
+        return stats
+
+    def _publish_translation_stats(
+        stats: dict[str, Any],
+        *,
+        message: str | None = None,
+        force: bool = False,
+    ) -> None:
+        nonlocal last_live_stats_publish
+        now = time.monotonic()
+        if not force and (now - last_live_stats_publish) < live_stats_interval:
+            return
+        last_live_stats_publish = now
+        update_status = getattr(job_store, "update_status", None)
+        if not update_status:
+            return
+        try:
+            current = job_store.get(job.id) if getattr(job_store, "get", None) else None
+            current_status = getattr(current, "status", None) or getattr(job, "status", None) or JobStatus.running
+            current_message = (
+                message
+                or getattr(current, "message", None)
+                or getattr(job, "message", None)
+                or "翻译中..."
+            )
+            update_status(
+                job.id,
+                current_status,
+                current_message,
+                translation_stats=stats,
+            )
+        except Exception:
+            logger.warning("failed to publish live translation stats", exc_info=True)
+
+    def _publish_live_translation_stats(message: str | None = None, *, force: bool = False) -> None:
+        _publish_translation_stats(
+            _build_translation_stats(live=True),
+            message=message,
+            force=force,
+        )
+
+    def emit_progress(message: str) -> None:
+        progress_callback(message)
+        _publish_live_translation_stats(message=message)
+
+    translator.progress_callback = emit_progress
 
     for ch in manifest.get("chapters", []):
         kind = ChapterKind(ch.get("chapter_kind", ChapterKind.body.value))
@@ -378,7 +445,7 @@ async def _translate_manifest_async(
                 chunk_total=len(specs),
                 started_at=started,
             ))
-            progress_callback(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
+            emit_progress(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
             raise_if_cancelled(cancel_check)
 
             translated = await translator.translate_many_chunks_async(
@@ -464,19 +531,19 @@ async def _translate_manifest_async(
                 reduced = apply_chunk_results(original, chunk_results, job.bilingual)
                 set_chapter_output(job.id, chapter["file_path"], reduced)
             else:
-                progress_callback(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
+                emit_progress(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
 
             failed = sum(1 for c in chunk_results if c.error)
             if failed:
-                progress_callback(
+                emit_progress(
                     f"章节翻译存在失败：{chapter['file_path']} 失败 {failed}/{len(chunk_results)} 段。最后错误：{_short_log(translator.stats.last_error)}"
                 )
             if chapter_audit_fail:
-                progress_callback(
+                emit_progress(
                     f"章节质检未通过：{chapter['file_path']} {chapter_audit_fail} 段需要重译"
                 )
             elif chapter_audit_warn:
-                progress_callback(
+                emit_progress(
                     f"章节质检提示：{chapter['file_path']} {chapter_audit_warn} 段需要复核"
                 )
             # 按最终 status 统计，避免 skip 块（translate_many 返回 cached=True）被误计为缓存命中
@@ -495,22 +562,18 @@ async def _translate_manifest_async(
                 finished_at=_now(),
                 error_message=translator.stats.last_error if failed else None,
             ))
+            _publish_live_translation_stats(
+                message=f"章节翻译完成：{chapter['file_path']}（失败 {failed}/{len(chunk_results)} 段）",
+                force=True,
+            )
             return chunk_results
 
     raise_if_cancelled(cancel_check)
     chapter_results = await asyncio.gather(*(run_chapter(ch) for ch in body_chapters))
     raise_if_cancelled(cancel_check)
     flat_results = [cr for chapter in chapter_results for cr in chapter]
-    stats = translator.stats.to_dict(translator.model)
-    stats.update({
-        "chapters_total": len(body_chapters),
-        "chunks_total": len(flat_results),
-        "chunks_skipped": sum(
-            1 for cr in flat_results
-            if not translator._should_translate(BeautifulSoup(cr.original_html, "html.parser").get_text())
-        ),
-        **audit,
-    })
+    stats = _build_translation_stats(live=False, flat_results=flat_results)
+    _publish_translation_stats(stats, message="快速章节翻译完成", force=True)
     return stats, audit
 
 

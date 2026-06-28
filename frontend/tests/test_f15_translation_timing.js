@@ -32,6 +32,9 @@ test("F15-3 归因面板支持复制结构化日志", () => {
   assert.ok(html.includes("model_stage="), "复制内容应包含模型耗时字段");
   assert.ok(html.includes("server_stage="), "复制内容应包含服务器耗时字段");
   assert.ok(html.includes("api_calls_estimated"), "应标注 API 调用是否估算");
+  assert.ok(html.includes("api_calls_source"), "应标注 API 调用数据来源");
+  assert.ok(html.includes("live_stats_unavailable"), "缺少实时 stats 时应避免冒充 API 次数");
+  assert.ok(html.includes("api_latency_samples="), "复制内容应包含 API 延迟样本数");
   assert.ok(html.includes("chunk_latency_samples="), "复制内容应包含 chunk 延迟样本数");
   assert.ok(html.includes("chunk_latency_sum="), "复制内容应包含 chunk 延迟累计");
   assert.ok(html.includes("optimizations=complex_chunks:"), "复制内容应包含翻译优化计数");

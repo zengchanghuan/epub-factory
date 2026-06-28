@@ -476,14 +476,18 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         cached_chunks = int(stats.get("cached_chunks") or 0)
     api_calls_from_stats = int(stats.get("api_calls") or 0)
     api_calls_estimated = False
+    api_calls_source = "unavailable"
     if api_calls_from_stats > 0:
         api_calls = api_calls_from_stats
+        api_calls_source = "translation_stats"
     else:
-        api_calls = len(latencies)
-        api_calls_estimated = api_calls > 0
+        api_calls = 0
     retry_attempts = int(stats.get("retry_attempts") or 0) or chunk_retry_total
     chunk_latency_avg_ms = round(sum(latencies) / len(latencies)) if latencies else 0
-    avg_model_call_ms = chunk_latency_avg_ms if api_calls_estimated else (round(model_stage_ms / api_calls) if model_stage_ms and api_calls else 0)
+    api_latency_sum_ms = int(stats.get("api_latency_ms_total") or 0)
+    api_latency_samples = int(stats.get("api_latency_samples") or 0)
+    api_latency_avg_ms = round(api_latency_sum_ms / api_latency_samples) if api_latency_sum_ms and api_latency_samples else 0
+    avg_model_call_ms = api_latency_avg_ms or (round(model_stage_ms / api_calls) if model_stage_ms and api_calls else 0)
     failure_ratio = (failed_chunks / total_chunks) if total_chunks > 0 else 0.0
     prompt_tokens = int(stats.get("prompt_tokens") or prompt_tokens_from_chunks or 0)
     completion_tokens = int(stats.get("completion_tokens") or completion_tokens_from_chunks or 0)
@@ -533,7 +537,7 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
                 "若 CPU/IO 长期高位，再考虑升级服务器或拆 worker。",
             ],
         }
-    elif api_calls and total_chunks and (total_chunks / max(api_calls, 1)) < 3:
+    elif api_calls_source == "translation_stats" and api_calls and total_chunks and (total_chunks / max(api_calls, 1)) < 3:
         bottleneck = {
             "primary": "orchestration",
             "title": "主要瓶颈：请求批量偏碎",
@@ -552,7 +556,11 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "server_share": round(server_share, 4),
         "api_calls": api_calls,
         "api_calls_estimated": api_calls_estimated,
+        "api_calls_source": api_calls_source,
         "avg_model_call_ms": avg_model_call_ms,
+        "api_latency_sum_ms": api_latency_sum_ms,
+        "api_latency_samples": api_latency_samples,
+        "api_latency_avg_ms": api_latency_avg_ms,
         "model_stage_estimated": model_stage_estimated,
         "chunk_latency_sum_ms": chunk_latency_sum_ms,
         "chunk_latency_samples": len(latencies),

@@ -2252,7 +2252,10 @@
       const tokens = report.tokens || {};
       const optimization = report.optimization_counters || {};
       const filename = $("metaFilename") ? $("metaFilename").textContent : "";
-      const apiCallsSuffix = report.api_calls_estimated ? " (estimated_from_chunk_latency_samples)" : "";
+      const apiCallsSource = report.api_calls_source || (report.api_calls_estimated ? "estimated_from_chunk_latency_samples" : "translation_stats");
+      const apiCallsSuffix = report.api_calls_estimated
+        ? " (estimated_from_chunk_latency_samples)"
+        : (apiCallsSource === "unavailable" ? " (live_stats_unavailable)" : "");
       const modelStageSuffix = report.model_stage_estimated ? " (estimated)" : "";
       const stageLines = stages
         .filter(item => String(item.name || "").toLowerCase() !== "total")
@@ -2276,7 +2279,8 @@
         `wall_elapsed=${formatLogDuration(report.wall_elapsed_ms)}`,
         `model_stage=${formatLogDuration(report.model_stage_ms)}${modelStageSuffix}, model_share=${formatPercent(report.model_share)}`,
         `server_stage=${formatLogDuration(report.server_stage_ms)}, server_share=${formatPercent(report.server_share)}`,
-        `api_calls=${Number(report.api_calls || 0)}${apiCallsSuffix}, avg_model_call=${formatLogDuration(report.avg_model_call_ms)}`,
+        `api_calls=${Number(report.api_calls || 0)}${apiCallsSuffix}, source=${cleanLogValue(apiCallsSource)}, avg_model_call=${formatLogDuration(report.avg_model_call_ms)}`,
+        `api_latency_samples=${Number(report.api_latency_samples || 0)}, api_latency_sum=${formatLogDuration(report.api_latency_sum_ms)}, api_latency_avg=${formatLogDuration(report.api_latency_avg_ms)}`,
         `chunk_latency_samples=${Number(report.chunk_latency_samples || 0)}, chunk_latency_sum=${formatLogDuration(report.chunk_latency_sum_ms)}`,
         `chunk_latency_avg=${formatLogDuration(report.chunk_latency_avg_ms)}, p95=${formatLogDuration(report.chunk_latency_p95_ms)}, p99=${formatLogDuration(report.chunk_latency_p99_ms)}`,
         `retry_attempts=${Number(report.retry_attempts || 0)}, chunk_retry_total=${Number(report.chunk_retry_total || 0)}, chunk_retry_max=${Number(report.chunk_retry_max || 0)}`,
@@ -2354,7 +2358,10 @@
       const failedChunks = Number(report.failed_chunks || 0);
       const totalChunks = Number(report.total_chunks || 0);
       const apiCalls = Number(report.api_calls || 0);
-      const apiCallsLabel = report.api_calls_estimated ? "API 调用(估)" : "API 调用";
+      const apiCallsSource = report.api_calls_source || (report.api_calls_estimated ? "estimated_from_chunk_latency_samples" : "translation_stats");
+      const apiCallsLabel = report.api_calls_estimated
+        ? "API 调用(估)"
+        : (apiCallsSource === "unavailable" ? "API 调用(待统计)" : "API 调用");
       const optimization = report.optimization_counters || {};
       lastTranslationTimingLog = formatTranslationTimingLog(report);
       if (copyTranslationTimingLogBtn) {

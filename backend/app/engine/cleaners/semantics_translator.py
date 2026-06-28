@@ -42,6 +42,9 @@ class TranslationStats:
     timeout_errors: int = 0
     retry_attempts: int = 0
     last_error: str = ""
+    api_latency_ms_total: int = 0
+    api_latency_ms_max: int = 0
+    api_latency_samples: int = 0
     complex_chunks: int = 0
     complex_singleton_batches: int = 0
     inline_tag_repairs: int = 0
@@ -93,6 +96,9 @@ class TranslationStats:
             "connection_errors": self.connection_errors,
             "timeout_errors": self.timeout_errors,
             "retry_attempts": self.retry_attempts,
+            "api_latency_ms_total": self.api_latency_ms_total,
+            "api_latency_ms_max": self.api_latency_ms_max,
+            "api_latency_samples": self.api_latency_samples,
             "complex_chunks": self.complex_chunks,
             "complex_singleton_batches": self.complex_singleton_batches,
             "inline_tag_repairs": self.inline_tag_repairs,
@@ -620,6 +626,7 @@ class SemanticsTranslator:
         timeout_bonus_used = 0
         response = None
         base_url, model = self.base_url, self.model
+        started_call = time.monotonic()
         
         for attempt in range(1, max_attempts + 1):
             self._raise_if_cancelled()
@@ -721,6 +728,10 @@ class SemanticsTranslator:
             self.stats.completion_tokens += completion_tokens
             self.stats.total_tokens += getattr(usage, "total_tokens", None) or (prompt_tokens + completion_tokens)
         self.stats.api_calls += 1
+        latency_ms = int((time.monotonic() - started_call) * 1000)
+        self.stats.api_latency_ms_total += latency_ms
+        self.stats.api_latency_ms_max = max(self.stats.api_latency_ms_max, latency_ms)
+        self.stats.api_latency_samples += 1
 
         meta = {
             "model": model,
