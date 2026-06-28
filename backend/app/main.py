@@ -430,7 +430,9 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         audit = getattr(chunk, "audit_json", None) or {}
         flags = audit.get("flags", []) if isinstance(audit, dict) else []
         risk_level = audit.get("risk_level") if isinstance(audit, dict) else None
-        if status != "failed" and not message and risk_level != "fail" and not flags:
+        failure_flags = {"likely_untranslated", "html_tag_mismatch", "html_mismatch", "empty_translation", "translation_error"}
+        has_failure_flag = bool(set(flags) & failure_flags)
+        if status != "failed" and not message and risk_level != "fail" and not has_failure_flag:
             continue
         code, label = _classify_translation_error(message, flags)
         item = failed_categories.setdefault(code, {"code": code, "label": label, "count": 0})

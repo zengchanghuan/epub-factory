@@ -262,6 +262,16 @@ class TestApiV2Skeleton(unittest.TestCase):
                 completion_tokens=completion,
                 error_message=error,
             ))
+        job_store.upsert_chunk(JobChunk(
+            job_id=job.id,
+            chapter_id="c1",
+            chunk_id="c1_warn",
+            sequence=99,
+            locator="c1.xhtml#warn",
+            source_hash="h_warn",
+            status=ChunkStatus.translated,
+            audit_json={"risk_level": "warn", "flags": ["glossary_review"]},
+        ))
 
         timing = _job_translation_timing(job)
 
@@ -270,14 +280,15 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertTrue(timing["model_stage_estimated"])
         self.assertTrue(timing["api_calls_estimated"])
         self.assertEqual(timing["api_calls"], 3)
-        self.assertEqual(timing["total_chunks"], 4)
-        self.assertEqual(timing["translated_chunks"], 2)
+        self.assertEqual(timing["total_chunks"], 5)
+        self.assertEqual(timing["translated_chunks"], 3)
         self.assertEqual(timing["cached_chunks"], 1)
         self.assertEqual(timing["failed_chunks"], 1)
         self.assertEqual(timing["retry_attempts"], 3)
         self.assertEqual(timing["chunk_retry_total"], 3)
         self.assertEqual(timing["tokens"]["total"], 410)
         self.assertEqual(timing["failure_categories"][0]["code"], "html_tag_mismatch")
+        self.assertNotIn("other", [item["code"] for item in timing["failure_categories"]])
         self.assertEqual(timing["bottleneck"]["primary"], "model_stability")
 
     def test_v2_retry_translation_reuses_original_job_without_payment(self):
