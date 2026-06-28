@@ -34,6 +34,8 @@ test("F15-3 归因面板支持复制结构化日志", () => {
   assert.ok(html.includes("api_calls_estimated"), "应标注 API 调用是否估算");
   assert.ok(html.includes("chunk_latency_samples="), "复制内容应包含 chunk 延迟样本数");
   assert.ok(html.includes("chunk_latency_sum="), "复制内容应包含 chunk 延迟累计");
+  assert.ok(html.includes("optimizations=complex_chunks:"), "复制内容应包含翻译优化计数");
+  assert.ok(html.includes("inline_tag_repairs"), "复制内容应包含标签自动修复次数");
   assert.ok(html.includes("[failure_categories]"), "复制内容应包含失败类别段落");
   assert.ok(html.includes("navigator.clipboard.writeText"), "应优先使用 Clipboard API");
   assert.ok(html.includes("document.execCommand(\"copy\")"), "应提供复制 fallback");

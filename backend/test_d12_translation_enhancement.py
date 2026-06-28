@@ -314,6 +314,83 @@ def test_translate_many_chunks_retries_html_tag_mismatch():
     assert t.stats.failed_chunks == 0
 
 
+def test_translate_many_chunks_repairs_missing_footnote_tags_without_retry():
+    """正文已翻译但脚注链接丢失时，应自动补回标签，避免额外补译。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+    html = (
+        '<p>Watson wrote the note.'
+        '<sup class="sup"><a id="fn1"></a><a class="promo2" href="notes.xhtml#fn1a">1</a></sup></p>'
+    )
+
+    async def fake_call(payload):
+        calls.append(payload)
+        return (
+            {0: "沃森写下了这条注释。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([html]))
+
+    assert len(calls) == 1
+    assert out[0].error is None
+    assert "<sup" in out[0].translated_html
+    assert 'href="notes.xhtml#fn1a"' in out[0].translated_html
+    assert t.stats.inline_tag_repairs == 1
+    assert t.stats.retry_attempts == 0
+
+
+def test_translate_many_chunks_repairs_dropcap_span_without_retry():
+    """dropcap 首字母样式丢失时，自动包住译文首字，避免 HTML mismatch 补译。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+    html = '<p class="noindent"><span class="big">B</span>efore Watson arrived, Francis studied DNA.</p>'
+
+    async def fake_call(payload):
+        calls.append(payload)
+        return (
+            {0: "在沃森到达之前，弗朗西斯研究 DNA。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([html]))
+
+    assert len(calls) == 1
+    assert out[0].error is None
+    assert out[0].translated_html.startswith('<span class="big">在</span>')
+    assert t.stats.inline_tag_repairs == 1
+    assert t.stats.retry_attempts == 0
+
+
+def test_translate_many_chunks_isolates_complex_inline_chunks():
+    """含脚注/多链接的复杂 chunk 应单独成批，避免污染普通段落批次。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+    chunks = [
+        f"<p>Alice sees Smith {uuid.uuid4().hex}</p>",
+        f"<p>Bob visits London {uuid.uuid4().hex}</p>",
+        '<p>Watson wrote the note.<sup><a id="fn1"></a><a href="n.xhtml#fn1a">1</a></sup></p>',
+        f"<p>Crick studies DNA {uuid.uuid4().hex}</p>",
+    ]
+
+    async def fake_call(payload):
+        calls.append(len(payload))
+        return (
+            {item["id"]: f"译文:{item['html']}" for item in payload},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async(chunks))
+
+    assert calls == [2, 1, 1]
+    assert all(item.error is None for item in out)
+    assert t.stats.complex_chunks == 1
+    assert t.stats.complex_singleton_batches == 1
+
+
 def test_inline_tag_markers_roundtrip_span_anchor_sup():
     """复杂行内标签先保护为占位符，译后应完整还原原始标签。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -378,6 +455,9 @@ def _run():
         test_translate_many_chunks_emits_final_failure_progress,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,
+        test_translate_many_chunks_repairs_missing_footnote_tags_without_retry,
+        test_translate_many_chunks_repairs_dropcap_span_without_retry,
+        test_translate_many_chunks_isolates_complex_inline_chunks,
         test_inline_tag_markers_roundtrip_span_anchor_sup,
         test_translate_many_chunks_honors_cancel_check_before_llm_call,
     ]

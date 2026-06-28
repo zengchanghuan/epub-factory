@@ -2250,6 +2250,7 @@
       const failures = Array.isArray(report.failure_categories) ? report.failure_categories : [];
       const recommendations = Array.isArray(bottleneck.recommendations) ? bottleneck.recommendations : [];
       const tokens = report.tokens || {};
+      const optimization = report.optimization_counters || {};
       const filename = $("metaFilename") ? $("metaFilename").textContent : "";
       const apiCallsSuffix = report.api_calls_estimated ? " (estimated_from_chunk_latency_samples)" : "";
       const modelStageSuffix = report.model_stage_estimated ? " (estimated)" : "";
@@ -2280,6 +2281,7 @@
         `chunk_latency_avg=${formatLogDuration(report.chunk_latency_avg_ms)}, p95=${formatLogDuration(report.chunk_latency_p95_ms)}, p99=${formatLogDuration(report.chunk_latency_p99_ms)}`,
         `retry_attempts=${Number(report.retry_attempts || 0)}, chunk_retry_total=${Number(report.chunk_retry_total || 0)}, chunk_retry_max=${Number(report.chunk_retry_max || 0)}`,
         `chunks=total:${Number(report.total_chunks || 0)}, translated:${Number(report.translated_chunks || 0)}, cached:${Number(report.cached_chunks || 0)}, failed:${Number(report.failed_chunks || 0)}, failure_ratio=${formatPercent(report.failure_ratio)}`,
+        `optimizations=complex_chunks:${Number(optimization.complex_chunks || 0)}, singleton_batches:${Number(optimization.complex_singleton_batches || 0)}, inline_tag_repairs:${Number(optimization.inline_tag_repairs || 0)}`,
         `tokens=prompt:${Number(tokens.prompt || 0)}, completion:${Number(tokens.completion || 0)}, total:${Number(tokens.total || 0)}`,
         "[stage_timings]",
         ...(stageLines.length ? stageLines : ["- 暂无阶段耗时"]),
@@ -2353,6 +2355,7 @@
       const totalChunks = Number(report.total_chunks || 0);
       const apiCalls = Number(report.api_calls || 0);
       const apiCallsLabel = report.api_calls_estimated ? "API 调用(估)" : "API 调用";
+      const optimization = report.optimization_counters || {};
       lastTranslationTimingLog = formatTranslationTimingLog(report);
       if (copyTranslationTimingLogBtn) {
         copyTranslationTimingLogBtn.disabled = false;
@@ -2373,6 +2376,7 @@
         ["失败段落", totalChunks ? `${failedChunks}/${totalChunks}` : `${failedChunks}`],
         ["平均调用", report.avg_model_call_ms ? formatDuration(report.avg_model_call_ms) : "-"],
         ["P95 段延迟", report.chunk_latency_p95_ms ? formatDuration(report.chunk_latency_p95_ms) : "-"],
+        ["标签修复", `${Number(optimization.inline_tag_repairs || 0)} 次`],
         ["Token", report.tokens && report.tokens.total ? `${Number(report.tokens.total).toLocaleString()}` : "-"],
       ].map(([label, value]) => `
         <div class="timing-item">

@@ -488,6 +488,11 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
     prompt_tokens = int(stats.get("prompt_tokens") or prompt_tokens_from_chunks or 0)
     completion_tokens = int(stats.get("completion_tokens") or completion_tokens_from_chunks or 0)
     total_tokens = int(stats.get("total_tokens") or (prompt_tokens + completion_tokens) or 0)
+    optimization_counters = {
+        "complex_chunks": int(stats.get("complex_chunks") or 0),
+        "complex_singleton_batches": int(stats.get("complex_singleton_batches") or 0),
+        "inline_tag_repairs": int(stats.get("inline_tag_repairs") or 0),
+    }
 
     bottleneck = {
         "primary": "unknown",
@@ -569,6 +574,7 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
             "total": total_tokens,
             "cost_usd": _metric_number(stats.get("cost_usd"), 0.0),
         },
+        "optimization_counters": optimization_counters,
         "stage_timings": [
             {
                 "name": s["name"],

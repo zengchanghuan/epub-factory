@@ -42,6 +42,9 @@ class TranslationStats:
     timeout_errors: int = 0
     retry_attempts: int = 0
     last_error: str = ""
+    complex_chunks: int = 0
+    complex_singleton_batches: int = 0
+    inline_tag_repairs: int = 0
 
     @property
     def elapsed_seconds(self) -> float:
@@ -90,6 +93,9 @@ class TranslationStats:
             "connection_errors": self.connection_errors,
             "timeout_errors": self.timeout_errors,
             "retry_attempts": self.retry_attempts,
+            "complex_chunks": self.complex_chunks,
+            "complex_singleton_batches": self.complex_singleton_batches,
+            "inline_tag_repairs": self.inline_tag_repairs,
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "last_error": self.last_error,
@@ -404,6 +410,28 @@ class SemanticsTranslator:
         return self._inline_tag_counter(source_html) == self._inline_tag_counter(translated_html)
 
     @staticmethod
+    def _has_dropcap_span(html: str) -> bool:
+        soup = BeautifulSoup(html or "", "html.parser")
+        for tag in soup.find_all("span"):
+            classes = tag.get("class") or []
+            class_text = " ".join(classes) if isinstance(classes, list) else str(classes)
+            if "big" in class_text.split() and re.fullmatch(r"[A-Za-z]", tag.get_text(strip=True) or ""):
+                return True
+        return False
+
+    def _should_singleton_batch(self, html: str) -> bool:
+        if os.environ.get("EPUB_COMPLEX_INLINE_SINGLETON", "1").lower() in {"0", "false", "no", "off"}:
+            return False
+        counts = self._inline_tag_counter(html)
+        if self._has_dropcap_span(html):
+            return True
+        if counts.get("sup", 0) > 0:
+            return True
+        if counts.get("a", 0) >= 2:
+            return True
+        return sum(counts.values()) >= int(os.environ.get("EPUB_COMPLEX_INLINE_TAG_THRESHOLD", "4") or "4")
+
+    @staticmethod
     def _serialize_open_tag(tag: Tag) -> str:
         attrs = []
         for key, value in tag.attrs.items():
@@ -449,6 +477,119 @@ class SemanticsTranslator:
         for marker in sorted(replacements, key=len, reverse=True):
             restored = restored.replace(marker, replacements[marker])
         return restored
+
+    @staticmethod
+    def _missing_inline_tags(source_html: str, translated_html: str) -> bool:
+        source = SemanticsTranslator._inline_tag_counter(source_html)
+        translated = SemanticsTranslator._inline_tag_counter(translated_html)
+        return any(source.get(name, 0) > translated.get(name, 0) for name in source)
+
+    @staticmethod
+    def _source_empty_anchor_fragments(source_html: str, translated_html: str) -> list[str]:
+        source = BeautifulSoup(source_html or "", "html.parser")
+        translated = BeautifulSoup(translated_html or "", "html.parser")
+        translated_ids = {tag.get("id") for tag in translated.find_all(True) if tag.get("id")}
+        fragments = []
+        for tag in source.find_all("a"):
+            if tag.find_parent("sup"):
+                continue
+            if tag.get_text(strip=True):
+                continue
+            anchor_id = tag.get("id")
+            if anchor_id and anchor_id in translated_ids:
+                continue
+            if anchor_id or tag.get("name"):
+                fragments.append(str(tag))
+        return fragments
+
+    @staticmethod
+    def _source_sup_fragments(source_html: str, translated_html: str) -> list[str]:
+        source = BeautifulSoup(source_html or "", "html.parser")
+        translated = BeautifulSoup(translated_html or "", "html.parser")
+        if len(translated.find_all("sup")) >= len(source.find_all("sup")):
+            return []
+        return [str(tag) for tag in source.find_all("sup")]
+
+    def _dropcap_wrapper(self, source_html: str) -> tuple[str, str] | None:
+        soup = BeautifulSoup(source_html or "", "html.parser")
+        for tag in soup.find_all("span"):
+            classes = tag.get("class") or []
+            class_text = " ".join(classes) if isinstance(classes, list) else str(classes)
+            if "big" in class_text.split() and re.fullmatch(r"[A-Za-z]", tag.get_text(strip=True) or ""):
+                return self._serialize_open_tag(tag), f"</{tag.name}>"
+        return None
+
+    def _full_inline_wrapper(self, source_html: str) -> tuple[str, str] | None:
+        soup = BeautifulSoup(source_html or "", "html.parser")
+        contents = [c for c in soup.contents if not (isinstance(c, NavigableString) and not str(c).strip())]
+        if len(contents) != 1 or not isinstance(contents[0], Tag):
+            return None
+        tag = contents[0]
+        if tag.name not in {"span", "em", "strong", "i", "b"}:
+            return None
+        return self._serialize_open_tag(tag), f"</{tag.name}>"
+
+    @staticmethod
+    def _wrap_first_text_char(fragment_html: str, open_tag: str, close_tag: str) -> str:
+        soup = BeautifulSoup(fragment_html or "", "html.parser")
+        for node in list(soup.descendants):
+            if not isinstance(node, NavigableString):
+                continue
+            text = str(node)
+            match = re.search(r"\S", text)
+            if not match:
+                continue
+            i = match.start()
+            pieces = []
+            if text[:i]:
+                pieces.append(NavigableString(text[:i]))
+            wrapped = BeautifulSoup(
+                f"{open_tag}{html_lib.escape(text[i], quote=False)}{close_tag}",
+                "html.parser",
+            )
+            pieces.extend(list(wrapped.contents))
+            if text[i + 1:]:
+                pieces.append(NavigableString(text[i + 1:]))
+            node.replace_with(*pieces)
+            return "".join(str(item) for item in soup.contents)
+        return fragment_html
+
+    def _repair_inline_tags_if_safe(self, source_html: str, translated_html: str) -> tuple[str, bool]:
+        if (
+            not translated_html
+            or self._looks_like_error_response(translated_html)
+            or self._looks_untranslated(source_html, translated_html)
+            or self._preserves_inline_tags(source_html, translated_html)
+            or not self._missing_inline_tags(source_html, translated_html)
+        ):
+            return translated_html, False
+
+        repaired = translated_html
+        empty_anchors = self._source_empty_anchor_fragments(source_html, repaired)
+        if empty_anchors:
+            repaired = "".join(empty_anchors) + repaired
+
+        sup_fragments = self._source_sup_fragments(source_html, repaired)
+        if sup_fragments:
+            repaired = repaired.rstrip() + "".join(sup_fragments)
+
+        if self._has_dropcap_span(source_html) and "span" in self._inline_tag_counter(source_html):
+            if self._inline_tag_counter(repaired).get("span", 0) < self._inline_tag_counter(source_html).get("span", 0):
+                wrapper = self._dropcap_wrapper(source_html)
+                if wrapper:
+                    repaired = self._wrap_first_text_char(repaired, wrapper[0], wrapper[1])
+
+        source_counts = self._inline_tag_counter(source_html)
+        repaired_counts = self._inline_tag_counter(repaired)
+        if source_counts.get("span", 0) == 1 and repaired_counts.get("span", 0) == 0:
+            wrapper = self._full_inline_wrapper(source_html)
+            if wrapper:
+                repaired = f"{wrapper[0]}{repaired}{wrapper[1]}"
+
+        if self._preserves_inline_tags(source_html, repaired):
+            self.stats.inline_tag_repairs += 1
+            return repaired, True
+        return translated_html, False
 
     @staticmethod
     def _extract_inner_html(html: str) -> str:
@@ -664,9 +805,14 @@ class SemanticsTranslator:
                     translations_map, meta = await self._call_llm_json_batch(payload)
                 translated = translations_map.get(0, "")
             if translated and not self._preserves_inline_tags(inner_html, translated):
-                async with self.semaphore:
-                    translations_map, meta = await self._call_llm_json_batch(payload)
-                translated = translations_map.get(0, "")
+                repaired, did_repair = self._repair_inline_tags_if_safe(inner_html, translated)
+                if did_repair:
+                    translated = repaired
+                else:
+                    async with self.semaphore:
+                        translations_map, meta = await self._call_llm_json_batch(payload)
+                    translated = translations_map.get(0, "")
+                    translated, _ = self._repair_inline_tags_if_safe(inner_html, translated)
             if (
                 not translated
                 or self._looks_like_error_response(translated)
@@ -736,6 +882,15 @@ class SemanticsTranslator:
         cur_batch: list[tuple[int, str]] = []
         cur_chars = 0
         for idx, html in uncached:
+            if self._should_singleton_batch(html):
+                if cur_batch:
+                    batches.append(cur_batch)
+                    cur_batch = []
+                    cur_chars = 0
+                batches.append([(idx, html)])
+                self.stats.complex_chunks += 1
+                self.stats.complex_singleton_batches += 1
+                continue
             if cur_chars + len(html) > self.batch_max_chars and cur_batch:
                 batches.append(cur_batch)
                 cur_batch = []
@@ -818,6 +973,9 @@ class SemanticsTranslator:
                     await asyncio.sleep(min(quality_attempt, 3) + random.uniform(0, 0.5))
                     continue
 
+                translated, repaired = self._repair_inline_tags_if_safe(original_inner, translated)
+                if repaired:
+                    self._emit_progress("HTML 标签结构已自动修复，跳过额外补译")
                 invalid_reason = self._invalid_translation_reason(original_inner, translated)
                 if invalid_reason:
                     reason_detail = f"{reason}; html tag mismatch" if invalid_reason == "HTML 内联标签不匹配" else reason
@@ -895,6 +1053,9 @@ class SemanticsTranslator:
                 if not translated or self._looks_untranslated(original_inner, translated):
                     await retry_one(idx, original_inner, "untranslated response")
                     continue
+                translated, repaired = self._repair_inline_tags_if_safe(original_inner, translated)
+                if repaired:
+                    self._emit_progress("HTML 标签结构已自动修复，跳过单段补译")
                 if not self._preserves_inline_tags(original_inner, translated):
                     await retry_one(idx, original_inner, "html tag mismatch")
                     continue
