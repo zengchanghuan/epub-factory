@@ -801,6 +801,104 @@
     .metrics-row.warn .stage-name  { color: var(--warning-text); }
     .metrics-row.error .stage-name { color: var(--error); }
 
+    .translation-timing-card {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: #fff;
+      display: none;
+    }
+    .translation-timing-card.visible { display: block; }
+    .timing-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    .timing-verdict {
+      padding: 9px 10px;
+      border: 1px solid #bfdbfe;
+      border-radius: var(--radius-sm);
+      background: #eff6ff;
+      color: #1e40af;
+      font-size: 12px;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+    .timing-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .timing-item {
+      padding: 8px;
+      background: var(--surface);
+      border-radius: var(--radius-sm);
+      min-width: 0;
+    }
+    .timing-value {
+      display: block;
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+    .timing-label {
+      display: block;
+      color: var(--subtle);
+      font-size: 11px;
+      margin-top: 3px;
+    }
+    .timing-bars {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .timing-bar-row {
+      display: grid;
+      grid-template-columns: 72px 1fr 52px;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .timing-bar-track {
+      height: 7px;
+      background: var(--surface);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .timing-bar-fill {
+      height: 100%;
+      background: var(--text);
+      border-radius: 999px;
+    }
+    .timing-bar-fill.server { background: #64748b; }
+    .timing-section-title {
+      margin: 10px 0 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .timing-list {
+      display: grid;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .timing-list-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .timing-list-row:last-child { border-bottom: none; }
+
     /* ── Quality card ────────────────────────────────────────────────────── */
     .quality-card {
       margin-top: 14px;
@@ -1025,6 +1123,8 @@
       .container { padding: 32px 16px 40px; }
       header h1 { font-size: 24px; }
       .topbar { padding: 0 16px; }
+      .timing-grid { grid-template-columns: repeat(2, 1fr); }
+      .timing-bar-row { grid-template-columns: 64px 1fr 48px; }
     }
   </style>
 </head>
@@ -1322,6 +1422,19 @@
                background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;
                font-size:13px; color:#065f46;">
             🤖 翻译消耗：<span id="costText"></span>
+          </div>
+
+          <div class="translation-timing-card" id="translationTimingCard">
+            <div class="timing-title">翻译耗时归因</div>
+            <div class="timing-verdict" id="translationTimingVerdict"></div>
+            <div class="timing-grid" id="translationTimingGrid"></div>
+            <div class="timing-bars" id="translationTimingBars"></div>
+            <div class="timing-section-title">阶段耗时排行</div>
+            <div class="timing-list" id="translationTimingStages"></div>
+            <div class="timing-section-title" id="translationFailureTitle">失败类别</div>
+            <div class="timing-list" id="translationTimingFailures"></div>
+            <div class="timing-section-title">建议动作</div>
+            <div class="timing-list" id="translationTimingRecommendations"></div>
           </div>
 
           <!-- Pipeline 耗时折叠面板 -->
@@ -1906,6 +2019,7 @@
             $("errorCodeMsg").style.display = "block";
           }
           renderQaReport(data);
+          renderTranslationTiming(data.translation_timing);
           if (s !== "pending_payment" && !isTerminalFailureStatus(s)) {
             if (!$("queueNotice").querySelector("#goToTasksBtn")) {
               $("queueNotice").innerHTML = `
@@ -2054,6 +2168,98 @@
       $("metricsPanel").classList.add("visible");
     }
 
+    function hideTranslationTiming() {
+      const card = $("translationTimingCard");
+      if (card) card.classList.remove("visible");
+    }
+
+    function formatPercent(value) {
+      const n = Number(value || 0);
+      return `${Math.round(n * 100)}%`;
+    }
+
+    function renderTranslationTiming(report) {
+      if (!report || !currentJobIsTranslation) {
+        hideTranslationTiming();
+        return;
+      }
+      const bottleneck = report.bottleneck || {};
+      const totalMs = Number(report.total_ms || 0);
+      const modelShare = Number(report.model_share || 0);
+      const serverShare = Number(report.server_share || 0);
+      const retryAttempts = Number(report.retry_attempts || 0);
+      const failedChunks = Number(report.failed_chunks || 0);
+      const totalChunks = Number(report.total_chunks || 0);
+      const apiCalls = Number(report.api_calls || 0);
+
+      $("translationTimingVerdict").innerHTML = `
+        <strong>${escapeHtml(bottleneck.title || "主要瓶颈：数据不足")}</strong><br>
+        ${escapeHtml(bottleneck.reason || "当前任务缺少足够的归因数据。")}
+      `;
+      $("translationTimingGrid").innerHTML = [
+        ["总耗时", totalMs ? formatDuration(totalMs) : "-"],
+        ["模型占比", formatPercent(modelShare)],
+        ["服务器占比", formatPercent(serverShare)],
+        ["API 调用", apiCalls ? `${apiCalls} 次` : "-"],
+        ["重试", `${retryAttempts} 次`],
+        ["失败段落", totalChunks ? `${failedChunks}/${totalChunks}` : `${failedChunks}`],
+        ["平均调用", report.avg_model_call_ms ? formatDuration(report.avg_model_call_ms) : "-"],
+        ["P95 段延迟", report.chunk_latency_p95_ms ? formatDuration(report.chunk_latency_p95_ms) : "-"],
+        ["Token", report.tokens && report.tokens.total ? `${Number(report.tokens.total).toLocaleString()}` : "-"],
+      ].map(([label, value]) => `
+        <div class="timing-item">
+          <span class="timing-value">${escapeHtml(String(value))}</span>
+          <span class="timing-label">${escapeHtml(label)}</span>
+        </div>
+      `).join("");
+
+      $("translationTimingBars").innerHTML = [
+        ["模型相关", modelShare, report.model_stage_ms, ""],
+        ["服务器", serverShare, report.server_stage_ms, "server"],
+      ].map(([label, share, ms, cls]) => `
+        <div class="timing-bar-row">
+          <span>${escapeHtml(label)}</span>
+          <span class="timing-bar-track"><span class="timing-bar-fill ${cls}" style="width:${Math.min(100, Math.max(0, Number(share || 0) * 100))}%"></span></span>
+          <span>${formatDuration(Number(ms || 0))}</span>
+        </div>
+      `).join("");
+
+      const stages = Array.isArray(report.stage_timings) ? report.stage_timings : [];
+      const rankedStages = stages
+        .filter(item => String(item.name || "").toLowerCase() !== "total")
+        .sort((a, b) => Number(b.ms || 0) - Number(a.ms || 0))
+        .slice(0, 8);
+      $("translationTimingStages").innerHTML = rankedStages.length
+        ? rankedStages.map(item => `
+            <div class="timing-list-row">
+              <span>${escapeHtml(item.name || "-")}</span>
+              <span>${formatDuration(Number(item.ms || 0))} · ${formatPercent(item.share)}</span>
+            </div>
+          `).join("")
+        : `<div class="timing-list-row"><span>暂无阶段耗时</span><span>-</span></div>`;
+
+      const failures = Array.isArray(report.failure_categories) ? report.failure_categories : [];
+      $("translationFailureTitle").style.display = failures.length ? "block" : "none";
+      $("translationTimingFailures").style.display = failures.length ? "grid" : "none";
+      $("translationTimingFailures").innerHTML = failures.map(item => `
+        <div class="timing-list-row">
+          <span>${escapeHtml(item.label || item.code || "其他失败")}</span>
+          <span>${Number(item.count || 0)} 段</span>
+        </div>
+      `).join("");
+
+      const recommendations = Array.isArray(bottleneck.recommendations) ? bottleneck.recommendations : [];
+      $("translationTimingRecommendations").innerHTML = recommendations.length
+        ? recommendations.slice(0, 4).map((item, idx) => `
+            <div class="timing-list-row">
+              <span>${idx + 1}. ${escapeHtml(item)}</span>
+              <span></span>
+            </div>
+          `).join("")
+        : `<div class="timing-list-row"><span>暂无建议</span><span>-</span></div>`;
+      $("translationTimingCard").classList.add("visible");
+    }
+
     const DEV_MODE = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
     function updateSubmitButton() {
@@ -2159,6 +2365,7 @@
       setRunningActionsVisible(false);
       setRestartActionsVisible(false);
       hideQaReport();
+      hideTranslationTiming();
     }
 
     function formatElapsed(ms) {
@@ -2247,6 +2454,7 @@
           $("errorCodeMsg").textContent = codeText;
           $("errorCodeMsg").style.display = "block";
         }
+        renderTranslationTiming(data.translation_timing);
 
         if (data.status === "success" && data.download_url) {
           downloadBtn.href = withJobToken(`${API}${data.download_url}`, data.job_id);

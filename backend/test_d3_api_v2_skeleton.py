@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from app import main as main_module
 from fastapi.testclient import TestClient
-from app.main import _job_can_download, _job_to_v2_detail, app
+from app.main import _job_can_download, _job_to_v2_detail, _job_translation_timing, app
 from app.models import ChunkStatus, ErrorCode, Job, JobChunk, JobStatus, OutputMode
 from app.storage import job_store
 
@@ -150,6 +150,77 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertIsNone(detail["download_url"])
         self.assertEqual(detail["qa_report"]["status"], "failed")
         self.assertTrue(detail["qa_report"]["retryable"])
+
+    def test_v2_translation_timing_attribution(self):
+        """任务详情返回翻译耗时归因，便于判断瓶颈。"""
+        suffix = uuid.uuid4().hex[:8]
+        job = Job(
+            id=f"d3_timing_{suffix}",
+            trace_id="trace_timing",
+            source_filename="timing.epub",
+            input_path="/tmp/timing.epub",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.failed,
+            enable_translation=True,
+            error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+            message="AI 翻译失败：仍有 1/4 个段落未成功翻译。",
+            metrics_summary="""
+────────────────────────────────────────────────────
+⏱  Pipeline [fast-translation] — 总耗时 30000 ms
+────────────────────────────────────────────────────
+  ✅ Preprocess                    1000.0 ms
+  ✅ Manifest                       500.0 ms
+  ✅ Glossary                      2000.0 ms
+  ✅ TranslateMap                 15000.0 ms
+  ✅ ReducePackage                 1000.0 ms
+  ✅ Total                        20000.0 ms
+────────────────────────────────────────────────────
+""",
+            translation_stats={
+                "total_chunks": 4,
+                "translated_chunks": 3,
+                "cached_chunks": 0,
+                "failed_chunks": 1,
+                "api_calls": 3,
+                "retry_attempts": 2,
+                "elapsed_seconds": 18.5,
+                "total_tokens": 1000,
+                "cost_usd": 0.01,
+            },
+        )
+        job_store.add(job)
+        job_store.upsert_chunk(JobChunk(
+            job_id=job.id,
+            chapter_id="c1",
+            chunk_id="c1_001",
+            sequence=1,
+            locator="c1.xhtml#1",
+            source_hash="h1",
+            status=ChunkStatus.translated,
+            latency_ms=1200,
+        ))
+        job_store.upsert_chunk(JobChunk(
+            job_id=job.id,
+            chapter_id="c1",
+            chunk_id="c1_002",
+            sequence=2,
+            locator="c1.xhtml#2",
+            source_hash="h2",
+            status=ChunkStatus.failed,
+            latency_ms=90000,
+            retry_count=2,
+            error_message="untranslated response; retry still invalid",
+        ))
+
+        timing = _job_translation_timing(job)
+
+        self.assertIsNotNone(timing)
+        self.assertEqual(timing["total_ms"], 20000)
+        self.assertEqual(timing["api_calls"], 3)
+        self.assertEqual(timing["failed_chunks"], 1)
+        self.assertEqual(timing["failure_categories"][0]["code"], "untranslated_response")
+        self.assertEqual(timing["bottleneck"]["primary"], "model_stability")
+        self.assertGreater(timing["model_share"], 0.8)
 
     def test_v2_retry_translation_reuses_original_job_without_payment(self):
         """质检失败后可复用原上传文件和 token 免费重译。"""

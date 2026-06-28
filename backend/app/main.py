@@ -317,6 +317,205 @@ def _job_qa_report(job: Job) -> dict | None:
     )
 
 
+def _metric_number(value, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_pipeline_timings(metrics_summary: str | None) -> tuple[list[dict], Optional[float]]:
+    if not metrics_summary:
+        return [], None
+    stages: list[dict] = []
+    headline_total = None
+    for line in metrics_summary.splitlines():
+        total_match = re.search(r"总耗时\s+([0-9]+(?:\.[0-9]+)?)\s*ms", line)
+        if total_match:
+            headline_total = _metric_number(total_match.group(1), 0.0)
+        stage_match = re.search(r"[✅⚠️❌]\s+(.+?)\s+([0-9]+(?:\.[0-9]+)?)\s*ms\s*$", line)
+        if stage_match:
+            stages.append({
+                "name": stage_match.group(1).strip(),
+                "ms": round(_metric_number(stage_match.group(2), 0.0)),
+            })
+    explicit_total = next((s["ms"] for s in stages if str(s.get("name", "")).lower() == "total"), None)
+    if explicit_total is not None:
+        return stages, float(explicit_total)
+    stage_sum = sum(s["ms"] for s in stages)
+    return stages, float(headline_total or stage_sum or 0) or None
+
+
+def _percentile_ms(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    idx = int(round((len(ordered) - 1) * percentile))
+    return int(ordered[max(0, min(idx, len(ordered) - 1))])
+
+
+def _classify_translation_error(message: str) -> tuple[str, str]:
+    text = (message or "").lower()
+    if "html tag mismatch" in text or "html结构" in text or "tag mismatch" in text:
+        return "html_tag_mismatch", "HTML 标签不匹配"
+    if "untranslated" in text or "未翻译" in text or "原文" in text:
+        return "untranslated_response", "模型返回未翻译内容"
+    if "json" in text or "parse" in text:
+        return "json_parse", "模型 JSON 解析失败"
+    if "timeout" in text or "timed out" in text or "超时" in text:
+        return "timeout", "模型请求超时"
+    if "rate limit" in text or "429" in text or "限流" in text:
+        return "rate_limit", "模型限流"
+    if "connection" in text or "network" in text or "连接" in text:
+        return "connection", "网络/连接异常"
+    return "other", "其他失败"
+
+
+def _job_translation_timing(job: Job) -> Optional[dict]:
+    if not job.enable_translation:
+        return None
+
+    stats = dict(job.translation_stats or {})
+    stages, stage_total_ms = _parse_pipeline_timings(job.metrics_summary)
+    stats_elapsed_ms = _metric_number(stats.get("elapsed_seconds"), 0.0) * 1000
+    total_ms = stage_total_ms or (stats_elapsed_ms if stats_elapsed_ms > 0 else None)
+
+    model_stage_names = {"TranslateMap", "BookTitle", "Glossary"}
+    non_total_stages = [s for s in stages if str(s.get("name", "")).lower() != "total"]
+    model_stage_ms = sum(int(s.get("ms") or 0) for s in non_total_stages if s.get("name") in model_stage_names)
+    server_stage_ms = sum(
+        int(s.get("ms") or 0)
+        for s in non_total_stages
+        if s.get("name") not in model_stage_names
+    )
+    if not model_stage_ms and stats_elapsed_ms:
+        model_stage_ms = round(stats_elapsed_ms)
+    if total_ms is None:
+        total_ms = model_stage_ms + server_stage_ms
+
+    total_ms = int(round(total_ms or 0))
+    model_share = (model_stage_ms / total_ms) if total_ms > 0 else 0.0
+    server_share = (server_stage_ms / total_ms) if total_ms > 0 else 0.0
+
+    chunks = []
+    list_chunks = getattr(job_store, "list_chunks", None)
+    if list_chunks:
+        try:
+            chunks = list_chunks(job.id)
+        except Exception:
+            chunks = []
+    latencies = [int(getattr(c, "latency_ms", 0) or 0) for c in chunks if int(getattr(c, "latency_ms", 0) or 0) > 0]
+    retry_counts = [int(getattr(c, "retry_count", 0) or 0) for c in chunks]
+    failed_categories: dict[str, dict] = {}
+    for chunk in chunks:
+        status = getattr(getattr(chunk, "status", None), "value", getattr(chunk, "status", ""))
+        message = getattr(chunk, "error_message", "") or ""
+        if status != "failed" and not message:
+            continue
+        code, label = _classify_translation_error(message)
+        item = failed_categories.setdefault(code, {"code": code, "label": label, "count": 0})
+        item["count"] += 1
+
+    total_chunks = int(stats.get("total_chunks") or stats.get("chunks_total") or len(chunks) or 0)
+    failed_chunks = int(stats.get("failed_chunks") or 0)
+    translated_chunks = int(stats.get("translated_chunks") or 0)
+    cached_chunks = int(stats.get("cached_chunks") or 0)
+    api_calls = int(stats.get("api_calls") or 0)
+    retry_attempts = int(stats.get("retry_attempts") or 0)
+    chunk_latency_avg_ms = round(sum(latencies) / len(latencies)) if latencies else 0
+    avg_model_call_ms = round(model_stage_ms / api_calls) if model_stage_ms and api_calls else 0
+    failure_ratio = (failed_chunks / total_chunks) if total_chunks > 0 else 0.0
+
+    bottleneck = {
+        "primary": "unknown",
+        "title": "主要瓶颈：数据不足",
+        "reason": "当前任务缺少足够的阶段耗时或模型调用数据。",
+        "recommendations": ["跑完一次翻译任务后查看该面板，优先看模型耗时占比、重试次数和失败类别。"],
+    }
+    if retry_attempts > max(3, api_calls * 0.3) or failed_chunks > 0:
+        bottleneck = {
+            "primary": "model_stability",
+            "title": "主要瓶颈：模型响应稳定性 / 重试放大",
+            "reason": "失败段落或重试次数较高，少量坏段落会放大整本书耗时。",
+            "recommendations": [
+                "优先检查失败类别分布，针对未翻译、HTML 标签不匹配、JSON 解析失败分别优化。",
+                "启用动态批大小和动态并发：失败率升高时自动降并发、拆小批次。",
+                "把反复失败段落移入补译队列，避免拖住整本书主流程。",
+            ],
+        }
+    elif model_share >= 0.6:
+        bottleneck = {
+            "primary": "model_latency",
+            "title": "主要瓶颈：大模型响应速度",
+            "reason": f"模型相关阶段占总耗时约 {round(model_share * 100)}%。",
+            "recommendations": [
+                "评估 DeepSeek 当前响应耗时和失败率，必要时增加备用模型路由。",
+                "调优批大小，减少 API 调用总数，同时避免单批过大导致格式失败。",
+                "记录 P95/P99 延迟，识别慢请求并拆分或重试。",
+            ],
+        }
+    elif server_share >= 0.45:
+        bottleneck = {
+            "primary": "server_pipeline",
+            "title": "主要瓶颈：服务器处理 / 打包流程",
+            "reason": f"非模型阶段占总耗时约 {round(server_share * 100)}%。",
+            "recommendations": [
+                "检查服务器 CPU、内存、磁盘 IO 和 swap。",
+                "重点观察预处理、Reduce/打包、EpubCheck 哪个阶段最高。",
+                "若 CPU/IO 长期高位，再考虑升级服务器或拆 worker。",
+            ],
+        }
+    elif api_calls and total_chunks and (total_chunks / max(api_calls, 1)) < 3:
+        bottleneck = {
+            "primary": "orchestration",
+            "title": "主要瓶颈：请求批量偏碎",
+            "reason": "平均每次 API 调用覆盖的段落数偏低，请求开销可能过高。",
+            "recommendations": [
+                "适当提高批大小上限，减少 API 调用次数。",
+                "按章节合并短段落，同时保留 HTML 结构校验。",
+            ],
+        }
+
+    return {
+        "total_ms": total_ms,
+        "model_stage_ms": int(round(model_stage_ms)),
+        "server_stage_ms": int(round(server_stage_ms)),
+        "model_share": round(model_share, 4),
+        "server_share": round(server_share, 4),
+        "api_calls": api_calls,
+        "avg_model_call_ms": avg_model_call_ms,
+        "chunk_latency_avg_ms": chunk_latency_avg_ms,
+        "chunk_latency_p95_ms": _percentile_ms(latencies, 0.95),
+        "chunk_latency_p99_ms": _percentile_ms(latencies, 0.99),
+        "retry_attempts": retry_attempts,
+        "chunk_retry_total": sum(retry_counts),
+        "chunk_retry_max": max(retry_counts) if retry_counts else 0,
+        "total_chunks": total_chunks,
+        "translated_chunks": translated_chunks,
+        "cached_chunks": cached_chunks,
+        "failed_chunks": failed_chunks,
+        "failure_ratio": round(failure_ratio, 4),
+        "tokens": {
+            "prompt": int(stats.get("prompt_tokens") or 0),
+            "completion": int(stats.get("completion_tokens") or 0),
+            "total": int(stats.get("total_tokens") or 0),
+            "cost_usd": _metric_number(stats.get("cost_usd"), 0.0),
+        },
+        "stage_timings": [
+            {
+                "name": s["name"],
+                "ms": int(s["ms"]),
+                "share": round((int(s["ms"]) / total_ms), 4) if total_ms > 0 and str(s.get("name", "")).lower() != "total" else 0,
+            }
+            for s in stages
+        ],
+        "failure_categories": sorted(failed_categories.values(), key=lambda item: item["count"], reverse=True),
+        "bottleneck": bottleneck,
+    }
+
+
 def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     """构建 v2 任务详情响应。"""
     download_url = _attach_download_sig(job.id, download_url_path) if _job_can_download(job) else None
@@ -335,6 +534,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "translation_stats": job.translation_stats or None,
+        "translation_timing": _job_translation_timing(job),
         "qa_report": _job_qa_report(job),
         "metrics_summary": job.metrics_summary or None,
         "stage_summary": _v2_stage_summary(job),
