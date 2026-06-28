@@ -23,6 +23,7 @@ class EpubConverter:
         bilingual: bool = False,
         glossary: dict | None = None,
         temperature: float | None = None,
+        translation_model: str | None = None,
         traditional_variant: str = "auto",
         lexicon_domains: list | None = None,
         enable_proper_noun: bool = True,
@@ -33,27 +34,27 @@ class EpubConverter:
         if suffix == ".epub":
             return self._convert_epub_to_horizontal(
                 input_path, output_path, output_mode, enable_translation, target_lang,
-                device, bilingual, glossary, temperature, traditional_variant,
+                device, bilingual, glossary, temperature, translation_model, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
             )
         if suffix == ".pdf":
             return self._convert_via_html_to_epub(
                 input_path, output_path, output_mode, enable_translation, target_lang,
-                device, bilingual, glossary, temperature, traditional_variant,
+                device, bilingual, glossary, temperature, translation_model, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
                 adapter="pdf",
             )
         if suffix == ".docx":
             return self._convert_via_html_to_epub(
                 input_path, output_path, output_mode, enable_translation, target_lang,
-                device, bilingual, glossary, temperature, traditional_variant,
+                device, bilingual, glossary, temperature, translation_model, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
                 adapter="docx",
             )
         if suffix in (".md", ".markdown"):
             return self._convert_via_html_to_epub(
                 input_path, output_path, output_mode, enable_translation, target_lang,
-                device, bilingual, glossary, temperature, traditional_variant,
+                device, bilingual, glossary, temperature, translation_model, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
                 adapter="markdown",
             )
@@ -77,6 +78,7 @@ class EpubConverter:
         bilingual: bool = False,
         glossary: dict | None = None,
         temperature: float | None = None,
+        translation_model: str | None = None,
         traditional_variant: str = "auto",
         lexicon_domains: list | None = None,
         enable_proper_noun: bool = True,
@@ -94,6 +96,7 @@ class EpubConverter:
             bilingual=bilingual,
             glossary=glossary,
             temperature=temperature,
+            translation_model=translation_model,
             traditional_variant=traditional_variant,
             lexicon_domains=lexicon_domains,
             enable_proper_noun=enable_proper_noun,
@@ -144,6 +147,7 @@ class EpubConverter:
         bilingual: bool = False,
         glossary: dict | None = None,
         temperature: float | None = None,
+        translation_model: str | None = None,
         traditional_variant: str = "auto",
         lexicon_domains: list | None = None,
         enable_proper_noun: bool = True,
@@ -159,7 +163,7 @@ class EpubConverter:
             html_to_epub_builder.build(html_body, metadata, temp_epub)
             return self._convert_epub_to_horizontal(
                 temp_epub, output_path, output_mode, enable_translation, target_lang,
-                device, bilingual, glossary, temperature, traditional_variant,
+                device, bilingual, glossary, temperature, translation_model, traditional_variant,
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
             )
         finally:

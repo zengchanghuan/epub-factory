@@ -61,6 +61,7 @@ class ExtremeCompiler:
                  enable_translation: bool = False, target_lang: str = "zh-CN",
                  device: str = "generic", bilingual: bool = False,
                  glossary: dict | None = None, temperature: float | None = None,
+                 translation_model: str | None = None,
                  traditional_variant: str = "auto",
                  lexicon_domains: list | None = None,
                  enable_proper_noun: bool = True,
@@ -106,6 +107,7 @@ class ExtremeCompiler:
                 bilingual=bilingual,
                 glossary=glossary,
                 temperature=temperature,
+                model=translation_model,
             )
             self.cleaners.append(t)
 

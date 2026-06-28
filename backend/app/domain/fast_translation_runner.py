@@ -142,6 +142,7 @@ async def _translate_book_title_async(
     target_lang: str,
     glossary: dict[str, str],
     temperature: float | None,
+    model: str | None = None,
 ) -> str:
     title = (title or "").strip()
     if not title or not any(ch.isalpha() for ch in title):
@@ -151,6 +152,7 @@ async def _translate_book_title_async(
         bilingual=False,
         glossary=glossary,
         temperature=temperature,
+        model=model,
     )
     result = await translator.translate_single_chunk_async(f"<p>{html.escape(title)}</p>")
     if result.error:
@@ -330,6 +332,7 @@ async def _translate_manifest_async(
         bilingual=job.bilingual,
         glossary=glossary,
         temperature=getattr(job, "temperature", None),
+        model=getattr(job, "translation_model", None) or None,
     )
     translator.cancel_check = cancel_check
 
@@ -665,6 +668,7 @@ def run_fast_translation_job(
             target_lang=job.target_lang,
             glossary=glossary,
             temperature=getattr(job, "temperature", None),
+            model=getattr(job, "translation_model", None) or None,
         ))
         timings.append(("BookTitle", (time.monotonic() - t) * 1000))
         _log_stage(

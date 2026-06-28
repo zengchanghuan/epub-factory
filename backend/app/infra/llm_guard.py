@@ -8,7 +8,8 @@ LLM 模型白名单护栏 — 防止误用高价模型导致成本失控。
 - 黑名单兜底：即便白名单被改宽，BLOCKED_MODELS 里的高价模型永远拒绝
 
 防御对象：
-- DeepSeek：禁止 deepseek-v4-pro / deepseek-reasoner-pro / 任何带 "pro" 后缀的模型
+- DeepSeek：默认禁止 deepseek-reasoner-pro / 未明确放行的 "pro" 模型；
+  deepseek-v4-pro 仅作为 UI 显式选择或坏段落补救模型放行。
 - OpenAI：禁止 gpt-4-turbo / gpt-4 / o1-pro / claude-opus 等贵价模型
 """
 
@@ -24,9 +25,14 @@ logger = logging.getLogger("epub_factory.llm_guard")
 _DEFAULT_ALLOWLIST = {
     "deepseek-chat",
     "deepseek-v4-flash",
+    "deepseek-v4-pro",
     "deepseek-reasoner",
     "deepseek-coder",
     "gpt-4o-mini",
+}
+
+_EXPLICITLY_ALLOWED_PRO_MODELS = {
+    "deepseek-v4-pro",
 }
 
 # ── 黑名单（永远拒绝，无论白名单怎么改）────────────────────────────────────
@@ -55,7 +61,8 @@ def _load_allowlist() -> set[str]:
     if not raw:
         return set(_DEFAULT_ALLOWLIST)
     parsed = {x.strip() for x in raw.split(",") if x.strip()}
-    return parsed or set(_DEFAULT_ALLOWLIST)
+    allowlist = parsed or set(_DEFAULT_ALLOWLIST)
+    return allowlist | _EXPLICITLY_ALLOWED_PRO_MODELS
 
 
 def is_blocked(model: str) -> bool:
@@ -63,6 +70,8 @@ def is_blocked(model: str) -> bool:
     if not model:
         return False
     lower = model.lower()
+    if lower in _EXPLICITLY_ALLOWED_PRO_MODELS:
+        return False
     # 黑名单兜底：gpt-4o-mini 允许，gpt-4o-2024-XX 禁止
     if lower == "gpt-4o-mini":
         return False
@@ -93,7 +102,7 @@ def assert_model_allowed(model: str, *, context: str = "") -> None:
         msg = (
             f"[llm_guard] BLOCKED model '{model}' (context={context!r}); "
             f"this model is too expensive for fixepub and must not be used. "
-            f"Allowed: deepseek-chat / gpt-4o-mini."
+            f"Allowed: deepseek-v4-flash / deepseek-v4-pro / deepseek-chat / gpt-4o-mini."
         )
         logger.error(msg)
         raise ModelNotAllowedError(msg)

@@ -212,15 +212,20 @@ def test_translate_many_chunks_retries_untranslated_response():
 
 def test_translate_many_chunks_uses_multiple_quality_retries():
     """单段补译第一次仍返回原文时，应继续质量重试。"""
-    old_value = os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES")
+    old_values = {
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
+    }
     os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "2"
+    os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "0"
     try:
         t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
     finally:
-        if old_value is None:
-            os.environ.pop("EPUB_TRANSLATION_QUALITY_RETRIES", None)
-        else:
-            os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = old_value
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     original_inner = "This account of the discovery of DNA is unique in several important ways."
     calls = []
@@ -246,6 +251,55 @@ def test_translate_many_chunks_uses_multiple_quality_retries():
     assert out[0].retry_count == 2
     assert t.stats.translated_chunks == 1
     assert t.stats.failed_chunks == 0
+
+
+def test_translate_many_chunks_escalates_quality_retry_to_pro_model():
+    """单段补译反复不过质检后，应把该段补译升级到 deepseek-v4-pro。"""
+    old_values = {
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
+    }
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "2"
+    os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "1"
+    try:
+        t = SemanticsTranslator(
+            target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}",
+            model="deepseek-v4-flash",
+            quality_fallback_model="deepseek-v4-pro",
+        )
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    calls = []
+
+    async def fake_call(payload, *, preferred_model=None):
+        calls.append(preferred_model or t.model)
+        if len(calls) == 1:
+            return (
+                {item["id"]: "这是重要的译文。" for item in payload},
+                {"model": t.model, "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+            )
+        if preferred_model == "deepseek-v4-pro":
+            return (
+                {item["id"]: "这是<strong>重要的</strong>译文。" for item in payload},
+                {"model": preferred_model, "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+            )
+        return (
+            {item["id"]: "这是重要的译文。" for item in payload},
+            {"model": t.model, "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async(["<p>This is <strong>important</strong>.</p>"]))
+
+    assert calls == ["deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-pro"]
+    assert out[0].error is None
+    assert "<strong>" in out[0].translated_html
+    assert t.stats.quality_fallback_attempts == 1
 
 
 def test_translate_many_chunks_emits_final_failure_progress():
@@ -452,6 +506,7 @@ def _run():
         test_translate_many_chunks_splits_failed_batch,
         test_translate_many_chunks_retries_untranslated_response,
         test_translate_many_chunks_uses_multiple_quality_retries,
+        test_translate_many_chunks_escalates_quality_retry_to_pro_model,
         test_translate_many_chunks_emits_final_failure_progress,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,

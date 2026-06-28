@@ -223,6 +223,7 @@ def run_job(job_id: str) -> None:
                 bilingual=job.bilingual,
                 glossary=job.glossary or None,
                 temperature=getattr(job, "temperature", None),
+                translation_model=getattr(job, "translation_model", None),
                 traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
                 lexicon_domains=getattr(job, "lexicon_domains", None),
                 enable_proper_noun=getattr(job, "enable_proper_noun", True),

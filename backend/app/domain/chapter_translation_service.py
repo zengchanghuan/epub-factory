@@ -106,6 +106,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
         target_lang=job.target_lang,
         bilingual=job.bilingual,
         glossary=job.glossary or None,
+        model=getattr(job, "translation_model", None) or None,
     )
     tasks = [translator.translate_single_chunk_async(c["html"]) for c in chunks_spec]
     results = await asyncio.gather(*tasks, return_exceptions=True)

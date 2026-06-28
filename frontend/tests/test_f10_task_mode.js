@@ -32,7 +32,14 @@ test("F10-3 提交参数按当前模式互斥", () => {
   assert.ok(html.includes('form.append("enable_translation", isTranslationMode)'), "AI 翻译参数应由任务模式决定");
 });
 
-test("F10-4 MOBI/AZW3 禁用翻译模式", () => {
+test("F10-4 AI 翻译可选择模型", () => {
+  assert.ok(html.includes('id="translationModel"'), "应有翻译模型下拉");
+  assert.ok(html.includes('value="deepseek-v4-flash" selected'), "默认应使用 flash 模型");
+  assert.ok(html.includes('value="deepseek-v4-pro"'), "应可选择 pro 模型");
+  assert.ok(html.includes('form.append("translation_model", $("translationModel").value || "deepseek-v4-flash")'), "提交时应传 translation_model");
+});
+
+test("F10-5 MOBI/AZW3 禁用翻译模式", () => {
   assert.ok(html.includes('isTranslationSupportedForSelectedFile'), "应有文件类型判断");
   assert.ok(html.includes('[".epub", ".pdf", ".docx", ".md", ".markdown"].includes(ext)'), "仅可翻译合适文件类型");
   assert.ok(html.includes('translationRadio.disabled = !supported'), "不支持时应禁用翻译模式");

@@ -74,6 +74,24 @@ _TRANSLATION_FIXED_PRICE: str = _os.environ.get("TRANSLATION_PRICE_CNY", "").str
 # 历史变量名保留，部分地方仍引用
 TRANSLATION_PRICE_CNY: str = _TRANSLATION_FIXED_PRICE or CONVERSION_PRICE_CNY
 
+TRANSLATION_MODEL_CHOICES = {
+    "deepseek-v4-flash": "DeepSeek V4 Flash",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+}
+DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-flash").strip()
+if DEFAULT_TRANSLATION_MODEL not in TRANSLATION_MODEL_CHOICES:
+    DEFAULT_TRANSLATION_MODEL = "deepseek-v4-flash"
+
+
+def _normalize_translation_model(model: Optional[str], enable_translation: bool) -> str:
+    if not enable_translation:
+        return ""
+    value = (model or DEFAULT_TRANSLATION_MODEL).strip()
+    if value not in TRANSLATION_MODEL_CHOICES:
+        allowed = ", ".join(TRANSLATION_MODEL_CHOICES)
+        raise HTTPException(status_code=400, detail=f"translation_model 仅支持：{allowed}")
+    return value
+
 
 def _estimate_epub_chars(epub_path: str) -> int:
     """快速统计 EPUB 中可翻译的字符数（用于预估 Token 费用）。"""
@@ -610,6 +628,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
+        "translation_model": getattr(job, "translation_model", "") or "",
         "error_code": job.error_code,
         "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
@@ -891,6 +910,7 @@ async def create_job(
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
     bilingual: bool = Form(False),
+    translation_model: str = Form(""),
     glossary_json: Optional[str] = Form(None),  # JSON 字符串: '{"Harry": "哈利"}'
     device: DeviceProfile = Form(DeviceProfile.generic),
     out_trade_no: Optional[str] = Form(None),
@@ -918,6 +938,7 @@ async def create_job(
                 glossary = {str(k): str(v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError):
             raise HTTPException(status_code=400, detail="glossary_json 格式错误，应为 JSON 对象字符串")
+    translation_model = _normalize_translation_model(translation_model, enable_translation)
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
@@ -940,6 +961,7 @@ async def create_job(
         enable_translation=enable_translation,
         target_lang=target_lang,
         bilingual=bilingual,
+        translation_model=translation_model,
         glossary=glossary,
         device=device,
         traditional_variant=traditional_variant.value,
@@ -958,6 +980,7 @@ async def create_job(
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
+        "translation_model": job.translation_model,
         "device": job.device,
         "traditional_variant": job.traditional_variant,
         "message": "任务已创建",
@@ -1023,6 +1046,7 @@ async def create_job_v2(
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
     bilingual: bool = Form(False),
+    translation_model: str = Form(""),
     glossary_json: Optional[str] = Form(None),
     device: DeviceProfile = Form(DeviceProfile.generic),
     out_trade_no: Optional[str] = Form(None),
@@ -1066,6 +1090,7 @@ async def create_job_v2(
         temperature = 1.3
     elif not enable_translation:
         temperature = None
+    translation_model = _normalize_translation_model(translation_model, enable_translation)
 
     # 解析 lexicon_domains
     lexicon_domains = ["general", "tech", "movie"]
@@ -1206,6 +1231,7 @@ async def create_job_v2(
         enable_translation=enable_translation,
         target_lang=target_lang,
         bilingual=bilingual,
+        translation_model=translation_model,
         glossary=glossary,
         device=device,
         temperature=temperature,
@@ -1236,6 +1262,7 @@ async def create_job_v2(
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
+        "translation_model": job.translation_model,
         "device": job.device.value,
         "traditional_variant": job.traditional_variant,
         "created_at": job.created_at.isoformat(),

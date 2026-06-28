@@ -45,6 +45,8 @@ class TranslationStats:
     api_latency_ms_total: int = 0
     api_latency_ms_max: int = 0
     api_latency_samples: int = 0
+    quality_fallback_attempts: int = 0
+    quality_fallback_model: str = ""
     complex_chunks: int = 0
     complex_singleton_batches: int = 0
     inline_tag_repairs: int = 0
@@ -99,6 +101,8 @@ class TranslationStats:
             "api_latency_ms_total": self.api_latency_ms_total,
             "api_latency_ms_max": self.api_latency_ms_max,
             "api_latency_samples": self.api_latency_samples,
+            "quality_fallback_attempts": self.quality_fallback_attempts,
+            "quality_fallback_model": self.quality_fallback_model,
             "complex_chunks": self.complex_chunks,
             "complex_singleton_batches": self.complex_singleton_batches,
             "inline_tag_repairs": self.inline_tag_repairs,
@@ -126,7 +130,8 @@ class SingleChunkResult:
 
 class SemanticsTranslator:
     def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
-                 glossary: dict | None = None, temperature: float | None = None):
+                 glossary: dict | None = None, temperature: float | None = None,
+                 model: str | None = None, quality_fallback_model: str | None = None):
         self.target_lang = target_lang
         self.bilingual = bilingual
         self.glossary: dict[str, str] = glossary or {}
@@ -139,11 +144,15 @@ class SemanticsTranslator:
 
         self.api_key = os.environ.get("OPENAI_API_KEY", "dummy")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        self.model = (model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")).strip()
         self.model_fallbacks = self._parse_csv_env("OPENAI_MODEL_FALLBACKS")
-        # 模型白名单护栏：防止误用 deepseek-v4-pro 等高价模型导致成本失控
+        if quality_fallback_model is None:
+            quality_fallback_model = os.environ.get("EPUB_TRANSLATION_QUALITY_FALLBACK_MODEL", "deepseek-v4-pro")
+        self.quality_fallback_model = (quality_fallback_model or "").strip()
+        self.pro_fallback_after_retries = max(0, int(os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES", "1")))
+        # 模型白名单护栏：仅允许受控的翻译模型，防止客户端绕过 UI 传入高价模型。
         from app.infra.llm_guard import assert_models_allowed
-        assert_models_allowed([self.model, *self.model_fallbacks], context="translator")
+        assert_models_allowed([self.model, *self.model_fallbacks, self.quality_fallback_model], context="translator")
         self.base_url_fallbacks = self._parse_csv_env("OPENAI_BASE_URL_FALLBACKS")
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
         concurrency_cap = int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP", "4"))
@@ -159,6 +168,7 @@ class SemanticsTranslator:
             self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", "1.1"))
         self._clients: dict[str, AsyncOpenAI] = {}
         self.stats = TranslationStats()
+        self.stats.quality_fallback_model = self.quality_fallback_model
 
     @staticmethod
     def _short_error(exc_or_message: Exception | str | None, limit: int = 160) -> str:
@@ -247,12 +257,13 @@ class SemanticsTranslator:
             )
         return self._clients[base_url]
 
-    def _candidate_routes(self) -> list[tuple[str, str]]:
+    def _candidate_routes(self, preferred_model: str | None = None) -> list[tuple[str, str]]:
         routes: list[tuple[str, str]] = []
         base_urls = [self.base_url, *self.base_url_fallbacks]
-        models = [self.model, *self.model_fallbacks]
+        primary_model = (preferred_model or self.model).strip()
+        models = [primary_model] if preferred_model else [self.model, *self.model_fallbacks]
         for base in base_urls:
-            routes.append((base, self.model))
+            routes.append((base, primary_model))
         for model in models[1:]:
             routes.append((self.base_url, model))
         deduped = []
@@ -262,7 +273,16 @@ class SemanticsTranslator:
                 continue
             seen.add(route)
             deduped.append(route)
-        return deduped or [(self.base_url, self.model)]
+        return deduped or [(self.base_url, primary_model)]
+
+    def _quality_retry_preferred_model(self, failed_quality_retries: int) -> str | None:
+        if self.pro_fallback_after_retries <= 0:
+            return None
+        if failed_quality_retries < self.pro_fallback_after_retries:
+            return None
+        if not self.quality_fallback_model or self.quality_fallback_model == self.model:
+            return None
+        return self.quality_fallback_model
 
     def _build_system_prompt(self) -> str:
         prompt = f"""你是一位忠实翻译原版书籍的专业译者。目标语言是：{self.target_lang}。
@@ -606,7 +626,12 @@ class SemanticsTranslator:
             return "".join(str(c) for c in block_tag.contents).strip()
         return (html or "").strip()
 
-    async def _call_llm_json_batch(self, payload: list[dict]) -> tuple[dict[int, str], dict]:
+    async def _call_llm_json_batch(
+        self,
+        payload: list[dict],
+        *,
+        preferred_model: str | None = None,
+    ) -> tuple[dict[int, str], dict]:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         self._raise_if_cancelled()
         system_prompt = self._build_system_prompt()
@@ -621,11 +646,11 @@ class SemanticsTranslator:
             protected_replacements[item_id] = replacements
         user_content = json.dumps(protected_payload, ensure_ascii=False)
         last_error = None
-        routes = self._candidate_routes()
+        routes = self._candidate_routes(preferred_model)
         max_attempts = max(self.max_retries, len(routes))
         timeout_bonus_used = 0
         response = None
-        base_url, model = self.base_url, self.model
+        base_url, model = self.base_url, preferred_model or self.model
         started_call = time.monotonic()
         
         for attempt in range(1, max_attempts + 1):
@@ -966,10 +991,19 @@ class SemanticsTranslator:
             for quality_attempt in range(1, self.quality_retries + 1):
                 self._raise_if_cancelled()
                 t0 = time.monotonic()
+                preferred_model = self._quality_retry_preferred_model(quality_attempt - 1)
                 try:
                     self.stats.retry_attempts += 1
                     async with self.semaphore:
-                        translations_map, meta = await self._call_llm_json_batch([{"id": 0, "html": original_inner}])
+                        if preferred_model:
+                            self.stats.quality_fallback_attempts += 1
+                            self._emit_progress(f"单段补译升级模型：{preferred_model}")
+                            translations_map, meta = await self._call_llm_json_batch(
+                                [{"id": 0, "html": original_inner}],
+                                preferred_model=preferred_model,
+                            )
+                        else:
+                            translations_map, meta = await self._call_llm_json_batch([{"id": 0, "html": original_inner}])
                     last_meta = meta
                     retry_count += max(1, int(meta.get("attempts") or 1))
                     translated = translations_map.get(0, "")

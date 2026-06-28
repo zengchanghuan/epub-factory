@@ -68,6 +68,47 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertIn("created_at", data)
         self.assertEqual(data.get("source_filename"), "skeleton_test.epub")
 
+    def test_v2_create_translation_accepts_model_choice(self):
+        """AI 翻译任务可选择 DeepSeek flash/pro 模型，并持久化到 Job。"""
+        old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
+        os.environ["SKIP_PAYMENT_CHECK"] = "1"
+        try:
+            res = self.client.post(
+                "/api/v2/jobs",
+                files={"file": ("model_choice.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+                data={
+                    "output_mode": "simplified",
+                    "device": "generic",
+                    "enable_translation": "true",
+                    "translation_model": "deepseek-v4-pro",
+                },
+            )
+        finally:
+            if old_skip is None:
+                os.environ.pop("SKIP_PAYMENT_CHECK", None)
+            else:
+                os.environ["SKIP_PAYMENT_CHECK"] = old_skip
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data.get("translation_model"), "deepseek-v4-pro")
+        job = job_store.get(data["job_id"])
+        self.assertIsNotNone(job)
+        self.assertEqual(job.translation_model, "deepseek-v4-pro")
+
+    def test_v2_create_translation_rejects_unknown_model(self):
+        """后端拒绝 UI 外的模型名，避免客户端绕过模型护栏。"""
+        res = self.client.post(
+            "/api/v2/jobs",
+            files={"file": ("bad_model.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+            data={
+                "output_mode": "simplified",
+                "enable_translation": "true",
+                "translation_model": "deepseek-reasoner-pro",
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("translation_model", res.text)
+
     def test_v2_get_job_404(self):
         """GET /api/v2/jobs/{id} 不存在返回 404。"""
         res = self.client.get("/api/v2/jobs/nonexistent_id_xyz")

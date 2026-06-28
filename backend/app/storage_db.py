@@ -82,6 +82,7 @@ class JobRecord(Base):
     quality_stats_json = Column(Text, nullable=True)
     translation_stats_json = Column(Text, nullable=True)
     metrics_summary = Column(Text, nullable=True)
+    translation_model = Column(String(64), nullable=True)
     traditional_variant = Column(String(16), nullable=True)  # auto | tw | hk
     lexicon_domains = Column(Text, nullable=True)             # JSON 数组，如 ["general","tech"]
     enable_proper_noun = Column(Boolean, nullable=False, default=True)
@@ -197,6 +198,8 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_stats_json TEXT")
     if "metrics_summary" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN metrics_summary TEXT")
+    if "translation_model" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_model VARCHAR(64)")
     if "traditional_variant" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN traditional_variant VARCHAR(16)")
     if "access_token" not in columns:
@@ -294,6 +297,7 @@ def _record_to_job(r: JobRecord) -> Job:
         glossary=glossary,
         device=DeviceProfile(r.device),
         temperature=None,
+        translation_model=getattr(r, "translation_model", None) or "deepseek-v4-flash",
         traditional_variant=getattr(r, "traditional_variant", None) or "auto",
         lexicon_domains=lexicon_domains,
         enable_proper_noun=bool(getattr(r, "enable_proper_noun", True)),
@@ -533,6 +537,7 @@ def _job_to_record(job: Job) -> JobRecord:
         quality_stats_json=json.dumps(job.quality_stats.to_dict()) if job.quality_stats else "{}",
         translation_stats_json=json.dumps(job.translation_stats or {}),
         metrics_summary=job.metrics_summary or "",
+        translation_model=getattr(job, "translation_model", None) or "deepseek-v4-flash",
         traditional_variant=getattr(job, "traditional_variant", None) or "auto",
         lexicon_domains=json.dumps(getattr(job, "lexicon_domains", ["general", "tech", "movie"])),
         enable_proper_noun=bool(getattr(job, "enable_proper_noun", True)),
