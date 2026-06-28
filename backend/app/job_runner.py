@@ -134,10 +134,15 @@ def run_job(job_id: str) -> None:
         suffix = _build_output_suffix(job)
         output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
 
-        def on_progress(msg: str) -> None:
-            job_store.update_status(job.id, JobStatus.running, msg)
+        last_progress_event: str | None = None
 
-        def on_stage(stage_name: str, message: str, elapsed_ms: Optional[int] = None) -> None:
+        def record_stage(
+            stage_name: str,
+            message: str,
+            elapsed_ms: Optional[int] = None,
+            *,
+            level: str = "info",
+        ) -> None:
             if not getattr(job_store, "add_stage", None):
                 return
             now = datetime.now(timezone.utc)
@@ -148,9 +153,20 @@ def run_job(job_id: str) -> None:
                 started_at=now,
                 finished_at=now,
                 elapsed_ms=elapsed_ms,
-                metadata={"message": message},
+                metadata={"message": message, "level": level},
             )
             job_store.add_stage(stage)
+
+        def on_progress(msg: str) -> None:
+            nonlocal last_progress_event
+            job_store.update_status(job.id, JobStatus.running, msg)
+            if msg and msg != last_progress_event:
+                last_progress_event = msg
+                record_stage("progress", msg)
+
+        def on_stage(stage_name: str, message: str, elapsed_ms: Optional[int] = None) -> None:
+            level = "error" if "fail" in stage_name or "failed" in stage_name else "info"
+            record_stage(stage_name, message, elapsed_ms, level=level)
 
         input_path = Path(job.input_path)
         if input_path.suffix.lower() in [".mobi", ".azw3"]:
@@ -211,6 +227,7 @@ def run_job(job_id: str) -> None:
                 error_code=error_code,
             )
         if status == JobStatus.failed:
+            on_stage("failed", message or "任务失败")
             job_store.update_status(
                 job.id,
                 status,
@@ -259,6 +276,16 @@ def run_job(job_id: str) -> None:
         error_code = ErrorCode.CONVERT_FAILED
         if "AI 翻译失败" in message or "翻译流程未完成" in message:
             error_code = ErrorCode.TRANSLATION_FAILED
+        if getattr(job_store, "add_stage", None):
+            now = datetime.now(timezone.utc)
+            job_store.add_stage(JobStage(
+                job_id=job.id,
+                stage_name="failed",
+                status=StageStatus.completed,
+                started_at=now,
+                finished_at=now,
+                metadata={"message": message or "任务失败", "level": "error"},
+            ))
         job_store.update_status(job.id, JobStatus.failed, message, error_code=error_code)
         report_error(
             error_code=error_code,

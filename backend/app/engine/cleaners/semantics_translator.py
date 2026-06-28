@@ -143,6 +143,28 @@ class SemanticsTranslator:
         self.stats = TranslationStats()
 
     @staticmethod
+    def _short_error(exc_or_message: Exception | str | None, limit: int = 160) -> str:
+        text = str(exc_or_message or "").replace("\n", " ").strip()
+        if len(text) > limit:
+            return text[:limit].rstrip() + "..."
+        return text
+
+    def _emit_progress(self, message: str) -> None:
+        if self.progress_callback:
+            self.progress_callback(message)
+
+    def _invalid_translation_reason(self, original_html: str, translated_html: str) -> str | None:
+        if not translated_html:
+            return "模型返回空译文"
+        if self._looks_like_error_response(translated_html):
+            return "模型返回错误说明"
+        if self._looks_untranslated(original_html, translated_html):
+            return "疑似仍为原文"
+        if not self._preserves_inline_tags(original_html, translated_html):
+            return "HTML 内联标签不匹配"
+        return None
+
+    @staticmethod
     def _parse_csv_env(name: str) -> list[str]:
         raw = os.environ.get(name, "")
         values = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
@@ -443,8 +465,9 @@ class SemanticsTranslator:
                     if attempt >= max_attempts:
                         raise last_error
                     self.stats.retry_attempts += 1
-                    if self.progress_callback:
-                        self.progress_callback(f"JSON 解析失败，重试 ({attempt}/{max_attempts})")
+                    self._emit_progress(
+                        f"JSON 解析失败，继续重试 ({attempt}/{max_attempts})：{self._short_error(json_err)}"
+                    )
                     await asyncio.sleep(min(2 ** (attempt - 1), 5) + random.uniform(0, 1))
                     continue
 
@@ -453,8 +476,9 @@ class SemanticsTranslator:
                 self.stats.last_error = str(exc)
                 # 鉴权/权限类错误重试也不会恢复，立即失败，避免无意义重试空耗时间与配额
                 if self._is_auth_error(exc):
-                    if self.progress_callback:
-                        self.progress_callback("模型鉴权失败：API Key 无效或无权限，已停止重试")
+                    self._emit_progress(
+                        f"模型鉴权失败，已停止重试：{self._short_error(exc)}"
+                    )
                     raise
                 if self._is_timeout_error(exc):
                     self.stats.timeout_errors += 1
@@ -463,10 +487,14 @@ class SemanticsTranslator:
                         max_attempts += 1
                 if "connection" in str(exc).lower() or "timeout" in str(exc).lower():
                     self.stats.connection_errors += 1
-                if self.progress_callback:
-                    self.progress_callback(f"模型连接波动，正在重试 ({attempt}/{max_attempts})")
                 if attempt >= max_attempts:
+                    self._emit_progress(
+                        f"模型调用失败，已达到最大重试 ({attempt}/{max_attempts})：{self._short_error(exc)}"
+                    )
                     raise
+                self._emit_progress(
+                    f"模型连接波动，继续重试 ({attempt}/{max_attempts})：{self._short_error(exc)}"
+                )
                 self.stats.retry_attempts += 1
                 delay = min(2 ** (attempt - 1), 5) + random.uniform(0, 1)
                 await asyncio.sleep(delay)
@@ -656,6 +684,9 @@ class SemanticsTranslator:
             self.stats.errors += 1
             self.stats.failed_chunks += 1
             self.stats.last_error = error
+            self._emit_progress(
+                f"段落翻译最终失败，已回写原文：{self._short_error(error)}"
+            )
             results[idx] = SingleChunkResult(
                 translated_html=original_inner,
                 cached=False,
@@ -674,6 +705,12 @@ class SemanticsTranslator:
             last_meta: dict | None = None
             last_latency_ms = 0
             retry_count = 0
+            reason_label = {
+                "error-like response": "模型返回错误说明",
+                "untranslated response": "疑似仍为原文",
+                "html tag mismatch": "HTML 内联标签不匹配",
+            }.get(reason, reason)
+            self._emit_progress(f"段落质检未通过，启动单段补译：{reason_label}")
             for quality_attempt in range(1, self.quality_retries + 1):
                 t0 = time.monotonic()
                 try:
@@ -688,27 +725,19 @@ class SemanticsTranslator:
                     reason_detail = f"{reason}; retry failed: {exc}"
                     if self._is_auth_error(exc) or quality_attempt >= self.quality_retries:
                         break
-                    if self.progress_callback:
-                        self.progress_callback(
-                            f"单段补译失败，继续重试 ({quality_attempt}/{self.quality_retries})"
-                        )
+                    self._emit_progress(
+                        f"单段补译失败，继续重试 ({quality_attempt}/{self.quality_retries})：{self._short_error(exc)}"
+                    )
                     await asyncio.sleep(min(quality_attempt, 3) + random.uniform(0, 0.5))
                     continue
 
-                tag_mismatch = translated and not self._preserves_inline_tags(original_inner, translated)
-                invalid = (
-                    not translated
-                    or self._looks_like_error_response(translated)
-                    or self._looks_untranslated(original_inner, translated)
-                    or tag_mismatch
-                )
-                if invalid:
-                    reason_detail = f"{reason}; html tag mismatch" if tag_mismatch else reason
+                invalid_reason = self._invalid_translation_reason(original_inner, translated)
+                if invalid_reason:
+                    reason_detail = f"{reason}; html tag mismatch" if invalid_reason == "HTML 内联标签不匹配" else reason
                     if quality_attempt < self.quality_retries:
-                        if self.progress_callback:
-                            self.progress_callback(
-                                f"单段补译未通过，继续重试 ({quality_attempt}/{self.quality_retries})"
-                            )
+                        self._emit_progress(
+                            f"单段补译未通过，继续重试 ({quality_attempt}/{self.quality_retries})：{invalid_reason}"
+                        )
                         await asyncio.sleep(min(quality_attempt, 3) + random.uniform(0, 0.5))
                         continue
                     break
@@ -749,9 +778,15 @@ class SemanticsTranslator:
                 self.stats.last_error = str(exc)
                 if len(batch) > 1:
                     mid = max(1, len(batch) // 2)
+                    self._emit_progress(
+                        f"批量翻译失败，拆分重试：{len(batch)} 段 -> {mid}+{len(batch) - mid}，原因：{self._short_error(exc)}"
+                    )
                     await asyncio.gather(run_batch(batch[:mid]), run_batch(batch[mid:]))
                 else:
                     idx, original_inner = batch[0]
+                    self._emit_progress(
+                        f"单段翻译失败，无法继续拆分：{self._short_error(exc)}"
+                    )
                     mark_failed(idx, original_inner, str(exc), retry_count=self.max_retries)
                     report_batch_progress(1)
                 return
@@ -790,6 +825,14 @@ class SemanticsTranslator:
 
         if batches:
             await asyncio.gather(*(run_batch(batch) for batch in batches))
+
+        missing = [i for i, r in enumerate(results) if r is None]
+        if missing:
+            error = f"chunk not processed: {len(missing)} 段"
+            self.stats.errors += len(missing)
+            self.stats.failed_chunks += len(missing)
+            self.stats.last_error = error
+            self._emit_progress(f"翻译结果缺失：{len(missing)} 个段落未处理，已回写原文")
 
         return [
             r if r is not None else SingleChunkResult(html_chunks[i], False, None, None, 0, 0, 0, "chunk not processed")
@@ -870,10 +913,13 @@ class SemanticsTranslator:
                         for idx, t in zip(indices, translated_list):
                             uncached_results[idx] = t
                     except Exception as e:
-                        print(f"❌ Batch translation failed: {e}")
+                        self._emit_progress(
+                            f"批量翻译失败，已回写原文：{self._short_error(e)}"
+                        )
                         for idx, h in zip(indices, htmls):
                             self.stats.errors += 1
                             self.stats.failed_chunks += 1
+                            self.stats.last_error = str(e)
                             uncached_results[idx] = h  # fallback to original
 
                     if self.progress_callback:

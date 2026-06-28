@@ -80,9 +80,10 @@ class TestApiV2Skeleton(unittest.TestCase):
             data={"output_mode": "simplified"},
         )
         self.assertEqual(res.status_code, 200)
-        job_id = res.json()["job_id"]
+        created = res.json()
+        job_id = created["job_id"]
 
-        res = self.client.get(f"/api/v2/jobs/{job_id}")
+        res = self.client.get(f"/api/v2/jobs/{job_id}", params={"token": created["access_token"]})
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["job_id"], job_id)
@@ -310,9 +311,10 @@ class TestApiV2Skeleton(unittest.TestCase):
             data={"output_mode": "simplified"},
         )
         self.assertEqual(res.status_code, 200)
-        job_id = res.json()["job_id"]
+        created = res.json()
+        job_id = created["job_id"]
 
-        res = self.client.get(f"/api/v2/jobs/{job_id}/stats")
+        res = self.client.get(f"/api/v2/jobs/{job_id}/stats", params={"token": created["access_token"]})
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("job_id", data)
@@ -335,9 +337,10 @@ class TestApiV2Skeleton(unittest.TestCase):
             data={"output_mode": "simplified"},
         )
         self.assertEqual(res.status_code, 200)
-        job_id = res.json()["job_id"]
+        created = res.json()
+        job_id = created["job_id"]
 
-        res = self.client.get(f"/api/v2/jobs/{job_id}/events")
+        res = self.client.get(f"/api/v2/jobs/{job_id}/events", params={"token": created["access_token"]})
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("items", data)
@@ -356,9 +359,10 @@ class TestApiV2Skeleton(unittest.TestCase):
             data={"output_mode": "simplified"},
         )
         self.assertEqual(res.status_code, 200)
-        job_id = res.json()["job_id"]
+        created = res.json()
+        job_id = created["job_id"]
 
-        res = self.client.post(f"/api/v2/jobs/{job_id}/cancel")
+        res = self.client.post(f"/api/v2/jobs/{job_id}/cancel", params={"token": created["access_token"]})
         self.assertIn(res.status_code, (200, 400), res.text)
         if res.status_code == 200:
             data = res.json()

@@ -1395,6 +1395,7 @@
     let elapsedTimer = null;
     let jobStartMs = null;
     let lastProgressMessage = "";
+    let renderedEventKeys = new Set();
     let currentJobId = null;
     let currentJobIsTranslation = false;
 
@@ -1709,6 +1710,7 @@
           hideQaReport();
           $("metaJobId").textContent = jobId;
       $("metaTraceId").textContent = "-";
+      resetProgressLog();
       startJobTimer();
       statusCard.scrollIntoView({ behavior: "smooth", block: "start" });
       if (pollTimer) clearInterval(pollTimer);
@@ -1753,6 +1755,7 @@
           } else if (statusLineMessage) {
             appendProgressLog(statusLineMessage);
           }
+          pollJobEvents(jobId);
           $("metaFilename").textContent = data.source_filename || "-";
           $("metaMode").textContent = data.output_mode ? formatJobMeta(data) : "-";
           const codeText = typeof formatErrorCode === "function" ? formatErrorCode(data.error_code) : "";
@@ -2040,8 +2043,21 @@
       jobStartMs = null;
     }
 
-    function appendProgressLog(message) {
-      if (!message || message === lastProgressMessage) return;
+    function resetProgressLog() {
+      progressLogEl.innerHTML = "";
+      progressLogEl.classList.remove("visible");
+      lastProgressMessage = "";
+      renderedEventKeys = new Set();
+    }
+
+    function appendProgressLog(message, key) {
+      if (!message) return;
+      if (key) {
+        if (renderedEventKeys.has(key)) return;
+        renderedEventKeys.add(key);
+      } else if (message === lastProgressMessage) {
+        return;
+      }
       lastProgressMessage = message;
       const now = new Date();
       const line = document.createElement("div");
@@ -2056,6 +2072,20 @@
       progressLogEl.scrollTop = progressLogEl.scrollHeight;
     }
 
+    function pollJobEvents(jobId) {
+      if (!jobId) return;
+      fetch(`${API}/api/v2/jobs/${jobId}/events`, { headers: authHeaders(jobId) })
+        .then(r => r.ok ? r.json() : { items: [] })
+        .then(data => {
+          (data.items || []).forEach((item, index) => {
+            const message = item.message || item.stage || "";
+            const key = `${item.time || ""}|${item.stage || ""}|${index}|${message}`;
+            appendProgressLog(message, key);
+          });
+        })
+        .catch(() => {});
+    }
+
     async function pollJob(jobId) {
       try {
         const res = await fetch(`${API}/api/v1/jobs/${jobId}`, { headers: authHeaders(jobId) });
@@ -2065,6 +2095,7 @@
         setTaskUiMode(!!data.enable_translation);
         setStatus(data.status, data.message);
         appendProgressLog(data.message);
+        pollJobEvents(jobId);
         $("metaFilename").textContent = data.source_filename;
         $("metaMode").textContent = formatJobMeta(data);
         const codeText = formatErrorCode(data.error_code);
@@ -2131,9 +2162,7 @@
       setTaskUiMode(isTranslationMode);
       submitBtn.disabled = true;
       setStatus("pending", "正在上传...");
-      progressLogEl.innerHTML = "";
-      progressLogEl.classList.remove("visible");
-      lastProgressMessage = "";
+      resetProgressLog();
 
       const form = new FormData();
       form.append("file", selectedFile);

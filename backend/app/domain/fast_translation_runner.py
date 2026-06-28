@@ -67,6 +67,18 @@ def _log_stage(stage: str, latency_ms: float | None = None, **fields: Any) -> No
     logger.info(f"fast-translation {stage}", extra={"_extra_fields": extra_fields})
 
 
+def _short_log(value: Any, limit: int = 180) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
+    if progress_callback and message:
+        progress_callback(message)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -259,6 +271,7 @@ def _translation_delivery_gate_result(
     failed: int,
     total: int,
     last_error: str,
+    progress_callback: ProgressCallback | None = None,
 ) -> ConversionResult:
     message = (
         f"AI 翻译失败：仍有 {failed}/{total} 个段落未成功翻译。"
@@ -283,6 +296,10 @@ def _translation_delivery_gate_result(
         total=total,
         error=last_error,
         error_code=ErrorCode.PARTIAL_TRANSLATION.value,
+    )
+    _emit_progress(
+        progress_callback,
+        f"翻译交付质检未通过：仍有 {failed}/{total} 个段落失败，已停止打包。最后错误：{_short_log(last_error)}",
     )
     return ConversionResult(
         quality_stats=pre_result.quality_stats,
@@ -363,6 +380,8 @@ async def _translate_manifest_async(
             )
             chunk_results: list[ChunkResult] = []
             chunk_statuses: list[ChunkStatus] = []
+            chapter_audit_fail = 0
+            chapter_audit_warn = 0
             for spec, res in zip(specs, translated):
                 status = ChunkStatus.failed if res.error else (ChunkStatus.cached if res.cached else ChunkStatus.translated)
                 raw_text = BeautifulSoup(spec["html"], "html.parser").get_text()
@@ -393,8 +412,10 @@ async def _translate_manifest_async(
                 risk_level = quality.get("risk_level")
                 if risk_level == "warn":
                     audit["audit_warn_chunks"] += 1
+                    chapter_audit_warn += 1
                 elif risk_level == "fail":
                     audit["audit_failed_chunks"] += 1
+                    chapter_audit_fail += 1
                 for flag in quality.get("flags", []):
                     audit["audit_flags_count"][flag] = audit["audit_flags_count"].get(flag, 0) + 1
                 if risk_level in ("warn", "fail") and len(audit["audit_examples"]) < 20:
@@ -432,8 +453,22 @@ async def _translate_manifest_async(
             if original is not None:
                 reduced = apply_chunk_results(original, chunk_results, job.bilingual)
                 set_chapter_output(job.id, chapter["file_path"], reduced)
+            else:
+                progress_callback(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
 
             failed = sum(1 for c in chunk_results if c.error)
+            if failed:
+                progress_callback(
+                    f"章节翻译存在失败：{chapter['file_path']} 失败 {failed}/{len(chunk_results)} 段。最后错误：{_short_log(translator.stats.last_error)}"
+                )
+            if chapter_audit_fail:
+                progress_callback(
+                    f"章节质检未通过：{chapter['file_path']} {chapter_audit_fail} 段需要重译"
+                )
+            elif chapter_audit_warn:
+                progress_callback(
+                    f"章节质检提示：{chapter['file_path']} {chapter_audit_warn} 段需要复核"
+                )
             # 按最终 status 统计，避免 skip 块（translate_many 返回 cached=True）被误计为缓存命中
             cached = sum(1 for s in chunk_statuses if s == ChunkStatus.cached)
             _upsert_chapter(JobChapter(
@@ -511,6 +546,8 @@ def run_fast_translation_job(
         manifest = build_manifest(str(preprocessed), job.id)
         if manifest.get("error"):
             _log_stage("mapping_failed", error=manifest["error"])
+            progress_callback(f"生成章节 Manifest 失败：{_short_log(manifest['error'])}")
+            stage_callback("mapping_failed", f"生成章节 Manifest 失败：{_short_log(manifest['error'])}", None)
             raise RuntimeError(manifest["error"])
         content_by_file = _load_content_by_file(str(preprocessed))
         original_book_title = _extract_book_title(str(preprocessed))
@@ -582,11 +619,18 @@ def run_fast_translation_job(
         if translation_stats.get("all_failed"):
             last_error = translation_stats.get("last_error") or "上游模型调用失败"
             _log_stage("translating_failed", error=last_error)
+            progress_callback(f"AI 翻译全失败：未成功写入任何译文。最后错误：{_short_log(last_error)}")
+            stage_callback("translating_failed", f"AI 翻译全失败：{_short_log(last_error)}", None)
             raise RuntimeError(f"AI 翻译失败：未成功写入任何译文。最后错误：{last_error}")
         if _translation_failures_exceed_delivery_gate(translation_stats):
             failed = int(translation_stats.get("failed_chunks") or 0)
             total = int(translation_stats.get("total_chunks") or 0)
             last_error = translation_stats.get("last_error") or "部分段落重试后仍未成功翻译"
+            stage_callback(
+                "translation_quality_gate_failed",
+                f"翻译交付质检未通过：仍有 {failed}/{total} 个段落失败，停止打包",
+                None,
+            )
             return _translation_delivery_gate_result(
                 pre_result=pre_result,
                 translation_stats=translation_stats,
@@ -595,6 +639,7 @@ def run_fast_translation_job(
                 failed=failed,
                 total=total,
                 last_error=last_error,
+                progress_callback=progress_callback,
             )
 
         t = time.monotonic()
@@ -610,6 +655,8 @@ def run_fast_translation_job(
         _log_stage("reducing", timings[-1][1])
         if not ok:
             _log_stage("reducing_failed")
+            progress_callback("回写译文并打包 EPUB 失败：Reduce/打包未生成有效结果")
+            stage_callback("reducing_failed", "回写译文并打包 EPUB 失败", None)
             raise RuntimeError("快速翻译 Reduce/打包失败")
 
     t = time.monotonic()
@@ -617,6 +664,9 @@ def run_fast_translation_job(
     validation_passed = _run_epubcheck(output_path)
     timings.append(("EpubCheck", (time.monotonic() - t) * 1000))
     _log_stage("validating", timings[-1][1], passed=validation_passed)
+    if not validation_passed:
+        progress_callback("EPUB 校验未通过：打包结果不可交付")
+        stage_callback("validating_failed", "EPUB 校验未通过：打包结果不可交付", int(timings[-1][1]))
 
     failed = int(translation_stats.get("failed_chunks") or 0)
     done = int(translation_stats.get("translated_chunks") or 0) + int(translation_stats.get("cached_chunks") or 0)

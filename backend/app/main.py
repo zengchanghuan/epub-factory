@@ -1309,15 +1309,17 @@ def _v2_job_events(job_id: str) -> list:
     if not list_stages:
         return []
     stages = list_stages(job_id)
-    return [
-        {
+    items = []
+    for s in stages:
+        metadata = s.metadata if getattr(s, "metadata", None) else {}
+        items.append({
             "time": (s.finished_at or s.started_at).isoformat(),
-            "level": "info",
+            "level": metadata.get("level") or "info",
             "stage": s.stage_name,
-            "message": (s.metadata.get("message") if getattr(s, "metadata", None) else None) or s.stage_name,
-        }
-        for s in stages
-    ]
+            "message": metadata.get("message") or s.stage_name,
+            "elapsed_ms": s.elapsed_ms,
+        })
+    return items
 
 
 @app.get("/api/v2/jobs/{job_id}/events")

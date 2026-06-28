@@ -1070,6 +1070,7 @@
     let elapsedTimer = null;
     let jobStartMs = null;
     let lastProgressMessage = "";
+    let renderedEventKeys = new Set();
     let paymentOrderId = null;
     let currentJobId = null;
 
@@ -1133,6 +1134,7 @@
       statusCard.classList.add("visible");
       $("metaJobId").textContent = jobId;
       $("metaTraceId").textContent = "-";
+      resetProgressLog();
       startJobTimer();
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(() => pollJobV2(jobId), 2000);
@@ -1161,6 +1163,7 @@
           } else if (data.message && !/转换成功/.test(data.message)) {
             appendProgressLog((data.error_code ? "[" + data.error_code + "] " : "") + data.message);
           }
+          pollJobEvents(jobId);
           $("metaFilename").textContent = data.source_filename || "-";
           $("metaMode").textContent = data.output_mode ? (data.output_mode === "simplified" ? "横排简体" : "横排繁体") + " / " + (data.device || "generic") : "-";
           const codeText = typeof formatErrorCode === "function" ? formatErrorCode(data.error_code) : "";
@@ -1370,8 +1373,21 @@
       jobStartMs = null;
     }
 
-    function appendProgressLog(message) {
-      if (!message || message === lastProgressMessage) return;
+    function resetProgressLog() {
+      progressLogEl.innerHTML = "";
+      progressLogEl.classList.remove("visible");
+      lastProgressMessage = "";
+      renderedEventKeys = new Set();
+    }
+
+    function appendProgressLog(message, key) {
+      if (!message) return;
+      if (key) {
+        if (renderedEventKeys.has(key)) return;
+        renderedEventKeys.add(key);
+      } else if (message === lastProgressMessage) {
+        return;
+      }
       lastProgressMessage = message;
       const now = new Date();
       const line = document.createElement("div");
@@ -1386,6 +1402,20 @@
       progressLogEl.scrollTop = progressLogEl.scrollHeight;
     }
 
+    function pollJobEvents(jobId) {
+      if (!jobId) return;
+      fetch(`${API}/api/v2/jobs/${jobId}/events`, { headers: authHeaders(jobId) })
+        .then(r => r.ok ? r.json() : { items: [] })
+        .then(data => {
+          (data.items || []).forEach((item, index) => {
+            const message = item.message || item.stage || "";
+            const key = `${item.time || ""}|${item.stage || ""}|${index}|${message}`;
+            appendProgressLog(message, key);
+          });
+        })
+        .catch(() => {});
+    }
+
     async function pollJob(jobId) {
       try {
         const res = await fetch(`${API}/api/v1/jobs/${jobId}`, { headers: authHeaders(jobId) });
@@ -1394,6 +1424,7 @@
 
         setStatus(data.status, data.message);
         appendProgressLog(data.message);
+        pollJobEvents(jobId);
         $("metaFilename").textContent = data.source_filename;
         $("metaMode").textContent = formatJobMeta(data);
         const codeText = formatErrorCode(data.error_code);
@@ -1458,9 +1489,7 @@
 
       submitBtn.disabled = true;
       setStatus("pending", "正在上传...");
-      progressLogEl.innerHTML = "";
-      progressLogEl.classList.remove("visible");
-      lastProgressMessage = "";
+      resetProgressLog();
 
       const form = new FormData();
       form.append("file", selectedFile);

@@ -156,6 +156,7 @@ def test_delivery_gate_result_keeps_retryable_qa_report():
         "last_error": "untranslated response; retry still invalid",
         "audit_flags_count": {"likely_untranslated": 98},
     }
+    progress = []
 
     result = _translation_delivery_gate_result(
         pre_result=ConversionResult(),
@@ -165,6 +166,7 @@ def test_delivery_gate_result_keeps_retryable_qa_report():
         failed=98,
         total=2414,
         last_error=stats["last_error"],
+        progress_callback=progress.append,
     )
 
     assert result.validation_passed is False
@@ -175,6 +177,7 @@ def test_delivery_gate_result_keeps_retryable_qa_report():
     assert result.translation_stats["qa_report"]["retryable"] is True
     assert "output_missing" not in result.translation_stats["qa_report"]["flags"]
     assert "98/2414" in result.message
+    assert any("翻译交付质检未通过" in msg for msg in progress)
 
 
 if __name__ == "__main__":

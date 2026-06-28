@@ -290,6 +290,9 @@ class ExtremeCompiler:
                     if result_content is not None:
                         content = result_content
                 except Exception as exc:
+                    self.progress_callback(
+                        f"{cleaner.__class__.__name__} 处理 {file_name} 失败，已跳过：{str(exc)[:160]}"
+                    )
                     print(f"⚠️ [{cleaner.__class__.__name__}] skipped on "
                           f"{file_name!r}: {exc}")
                 cleaner_totals[cleaner.__class__.__name__] = (
@@ -318,6 +321,9 @@ class ExtremeCompiler:
                 hint = "模型 API Key 无效或无权限，请检查 OPENAI_API_KEY 配置。"
             else:
                 hint = "请检查模型服务连接。"
+            self.progress_callback(
+                f"AI 翻译全失败：未成功写入任何译文。最后错误：{str(last_error)[:160]}"
+            )
             raise TranslationPipelineError(
                 f"AI 翻译失败：未成功写入任何译文。{hint}最后错误：{last_error}"
             )
@@ -360,7 +366,9 @@ class ExtremeCompiler:
             if not self.validation_passed:
                 self.error_code = self._ErrorCode.EPUB_VALIDATION_FAILED
                 self.final_message = "打包成功但 EPUB 校验未通过，结果不可交付"
+                self.progress_callback("EPUB 校验未通过：打包结果不可交付")
         else:
+            self.progress_callback("打包失败：未能保存 EPUB 输出文件")
             print("❌ [Error] Failed to save EPUB.")
 
         return success

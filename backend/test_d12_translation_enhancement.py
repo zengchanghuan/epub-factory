@@ -153,6 +153,8 @@ def test_translate_many_chunks_splits_failed_batch():
     """整批失败时应自动拆小重试，避免一批原文全部回写。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
     calls = []
+    progress = []
+    t.progress_callback = progress.append
 
     async def fake_call(payload):
         calls.append(len(payload))
@@ -176,6 +178,7 @@ def test_translate_many_chunks_splits_failed_batch():
     assert all(item.translated_html.startswith("译文") for item in out)
     assert t.stats.translated_chunks == 2
     assert t.stats.failed_chunks == 0
+    assert any("批量翻译失败，拆分重试" in msg for msg in progress)
 
 
 def test_translate_many_chunks_retries_untranslated_response():
@@ -244,6 +247,36 @@ def test_translate_many_chunks_uses_multiple_quality_retries():
     assert t.stats.failed_chunks == 0
 
 
+def test_translate_many_chunks_emits_final_failure_progress():
+    """单段补译最终失败时，UI progress 应能看到失败原因。"""
+    old_value = os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES")
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "1"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    finally:
+        if old_value is None:
+            os.environ.pop("EPUB_TRANSLATION_QUALITY_RETRIES", None)
+        else:
+            os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = old_value
+
+    original_inner = "This account of the discovery of DNA is unique in several important ways."
+    progress = []
+    t.progress_callback = progress.append
+
+    async def fake_call(payload):
+        return (
+            {item["id"]: item["html"] for item in payload},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([f"<p>{original_inner}</p>"]))
+
+    assert out[0].error is not None
+    assert any("段落质检未通过，启动单段补译" in msg for msg in progress)
+    assert any("段落翻译最终失败，已回写原文" in msg for msg in progress)
+
+
 def test_extract_json_tolerates_preamble_and_trailing_commas():
     """模型偶尔会包一层说明或留下尾随逗号，解析器应尽量容错。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -292,6 +325,7 @@ def _run():
         test_translate_many_chunks_splits_failed_batch,
         test_translate_many_chunks_retries_untranslated_response,
         test_translate_many_chunks_uses_multiple_quality_retries,
+        test_translate_many_chunks_emits_final_failure_progress,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,
     ]

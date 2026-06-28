@@ -7,13 +7,14 @@ D5 测试：阶段状态与结构化日志
 
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi.testclient import TestClient
 from app.main import app
-from app.models import Job, OutputMode
+from app.models import Job, JobStage, OutputMode, StageStatus
 from app.storage import job_store
 from app.job_runner import run_job
 
@@ -56,8 +57,9 @@ def test_v2_events_api_returns_stage_items():
         data={"output_mode": "simplified"},
     )
     assert res.status_code == 200
-    job_id = res.json()["job_id"]
-    res = client.get(f"/api/v2/jobs/{job_id}/events")
+    created = res.json()
+    job_id = created["job_id"]
+    res = client.get(f"/api/v2/jobs/{job_id}/events", params={"token": created["access_token"]})
     assert res.status_code == 200
     data = res.json()
     assert "items" in data
@@ -69,9 +71,42 @@ def test_v2_events_api_returns_stage_items():
         assert "message" in one
 
 
+def test_v2_events_exposes_metadata_level():
+    """GET /events 应透出 progress/error level，方便 UI 直接展示诊断日志。"""
+    job_id = uuid.uuid4().hex[:12]
+    job = Job(
+        id=job_id,
+        trace_id=uuid.uuid4().hex,
+        source_filename="events_level.epub",
+        input_path="/tmp/events_level.epub",
+        output_mode=OutputMode.simplified,
+        access_token="events-level-token",
+    )
+    job_store.add(job)
+    now = datetime.now(timezone.utc)
+    job_store.add_stage(JobStage(
+        job_id=job_id,
+        stage_name="translation_quality_gate_failed",
+        status=StageStatus.completed,
+        started_at=now,
+        finished_at=now,
+        metadata={"message": "翻译交付质检未通过：仍有 98/2414 个段落失败", "level": "error"},
+    ))
+
+    res = client.get(f"/api/v2/jobs/{job_id}/events", params={"token": "events-level-token"})
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert items[-1]["level"] == "error"
+    assert "翻译交付质检未通过" in items[-1]["message"]
+
+
 if __name__ == "__main__":
     passed = failed = 0
-    for name, fn in [("stage_events_recorded", test_stage_events_recorded_on_run), ("v2_events_api", test_v2_events_api_returns_stage_items)]:
+    for name, fn in [
+        ("stage_events_recorded", test_stage_events_recorded_on_run),
+        ("v2_events_api", test_v2_events_api_returns_stage_items),
+        ("v2_events_metadata_level", test_v2_events_exposes_metadata_level),
+    ]:
         try:
             fn()
             passed += 1
