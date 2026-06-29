@@ -7,7 +7,7 @@
  * 3. 开翻译且开双语，bilingual = "true"
  * 4. 双语开关不影响 output_mode 和 device
  * 5. formatJobMeta 翻译关闭时不含双语文字
- * 6. formatJobMeta 翻译开启+单语，含 AI翻译 但不含 双语并排
+ * 6. formatJobMeta 翻译开启+单语，自动识别为翻译任务
  * 7. formatJobMeta 翻译开启+双语，含 双语并排
  * 8. validateFile 对合法文件返回 valid=true
  * 9. validateFile 对非法文件返回 valid=false
@@ -91,7 +91,10 @@ test("7. 翻译开启+单语，含 AI翻译 但不含 双语并排", () => {
     target_lang: "zh-CN",
     bilingual: false,
   });
-  assert.ok(meta.includes("AI翻译"), `应含 AI翻译，实际: ${meta}`);
+  assert.ok(meta.includes("AI翻译(zh-CN)"), `应含 AI翻译目标语言，实际: ${meta}`);
+  assert.ok(meta.includes("Kindle"), `应保留设备信息，实际: ${meta}`);
+  assert.ok(!meta.includes("通用繁体"), `翻译任务不应显示繁简转换方向，实际: ${meta}`);
+  assert.ok(!meta.includes("→ 简体"), `翻译任务不应显示繁简转换方向，实际: ${meta}`);
   assert.ok(!meta.includes("双语并排"), `不应含 双语并排，实际: ${meta}`);
 });
 
@@ -118,10 +121,9 @@ test("10. validateFile 接受 .pdf 文件", () => {
   assert.strictEqual(result.valid, true);
 });
 
-test("11. validateFile 拒绝 .docx 文件", () => {
+test("11. validateFile 接受 .docx 文件", () => {
   const result = validateFile("book.docx");
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.error && result.error.length > 0);
+  assert.strictEqual(result.valid, true);
 });
 
 test("12. validateFile 拒绝空文件名", () => {

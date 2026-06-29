@@ -126,6 +126,13 @@ function formatDevice(device) {
  * @returns {string}
  */
 function formatJobMeta(job) {
+  const device = formatDevice(job.device);
+  if (job.enable_translation) {
+    const parts = [`AI翻译(${job.target_lang || "zh-CN"}) / ${device}`];
+    if (job.bilingual) parts.push("双语并排");
+    return parts.join(" · ");
+  }
+
   const variant = job.traditional_variant || "auto";
   const variantLabel = { tw: "台湾正体", hk: "港澳繁体", auto: "通用繁体" }[variant] || variant;
   let dirLabel;
@@ -134,13 +141,7 @@ function formatJobMeta(job) {
   } else {
     dirLabel = `简体 → ${variantLabel}`;
   }
-  const device = formatDevice(job.device);
-  const parts = [`${dirLabel} / ${device}`];
-  if (job.enable_translation) {
-    parts.push(`AI翻译(${job.target_lang})`);
-    if (job.bilingual) parts.push("双语并排");
-  }
-  return parts.join(" · ");
+  return `${dirLabel} / ${device}`;
 }
 
 // ─── Pipeline 耗时格式化 ───────────────────────────────────────────────────
