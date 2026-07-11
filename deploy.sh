@@ -9,12 +9,12 @@ PROJECT_NAME="epub-factory"
 ZIP_FILE="epub-factory.zip"
 KEY_FILE="fix_epub.pem"
 REMOTE_HOST="fixepub" # This should be configured in your ~/.ssh/config
-REMOTE_ZIP_PATH="/tmp/$ZIP_FILE"
+REMOTE_ZIP_PATH="/tmp/${PROJECT_NAME}-deploy-$(date +%Y%m%d%H%M%S)-$$.zip"
 
 echo "📦 Packaging project..."
 rm -f "$ZIP_FILE"
 # Exclude git metadata, virtual environments, and temporary files
-zip -r "$ZIP_FILE" . \
+zip -rq "$ZIP_FILE" . \
     -x "*.git*" \
     -x "*__pycache__*" \
     -x "*.venv*" \
@@ -58,11 +58,18 @@ zip -r "$ZIP_FILE" . \
     -x "tools/epubcheck.zip" \
     -x ".cursor/*"
 
+echo "🔎 Validating local deployment archive..."
+unzip -tq "$ZIP_FILE" >/dev/null
+
 echo "🚀 Uploading to server ($REMOTE_HOST:$REMOTE_ZIP_PATH)..."
 scp -i "$KEY_FILE" "$ZIP_FILE" "$REMOTE_HOST:$REMOTE_ZIP_PATH"
 
 echo "🛠  Deploying on server..."
 ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
+  set -e
+  echo "--- Validating uploaded archive ---"
+  unzip -tq "$REMOTE_ZIP_PATH" >/dev/null
+
   echo "--- Extracting files ---"
   mkdir -p "$PROJECT_NAME"
   unzip -o "$REMOTE_ZIP_PATH" -d "$PROJECT_NAME"
