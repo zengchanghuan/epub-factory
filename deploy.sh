@@ -27,6 +27,11 @@ zip -r "$ZIP_FILE" . \
     -x "*secret*" \
     -x "*Secret*" \
     -x "*.csv" \
+    -x "*.log" \
+    -x "*.DS_Store" \
+    -x "*.pdf" \
+    -x "*.mobi" \
+    -x "*.azw3" \
     -x "$ZIP_FILE" \
     -x "$KEY_FILE" \
     -x "AWS_访问证书/*" \
@@ -34,6 +39,8 @@ zip -r "$ZIP_FILE" . \
     -x "backend/feedback.jsonl" \
     -x "backend/uploads/*" \
     -x "backend/outputs/*" \
+    -x "backend/reduce_work/*" \
+    -x "backend/reduce_work/**" \
     -x "backend/failed_chunks/*" \
     -x "backend/failed_chunks/**" \
     -x "backend/failed_chunks_remote/*" \
@@ -46,6 +53,8 @@ zip -r "$ZIP_FILE" . \
     -x "./*.sqlite*" \
     -x "./*.epub" \
     -x "*.epub" \
+    -x "test_测试用例书/*" \
+    -x "test_测试用例书/**" \
     -x "tools/epubcheck.zip" \
     -x ".cursor/*"
 
