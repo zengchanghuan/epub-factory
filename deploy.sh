@@ -36,6 +36,8 @@ zip -r "$ZIP_FILE" . \
     -x "backend/outputs/*" \
     -x "backend/failed_chunks/*" \
     -x "backend/failed_chunks/**" \
+    -x "backend/failed_chunks_remote/*" \
+    -x "backend/failed_chunks_remote/**" \
     -x "backend/*.db*" \
     -x "./*.db" \
     -x "./*.db-*" \

@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup, Tag, NavigableString
 from openai import AsyncOpenAI
 import httpx
 from app.cancellation import raise_if_cancelled
+from app.engine.chunk_extractor import should_skip_image_note_block
 from ..translation_cache import TranslationCache
 
 
@@ -50,6 +51,13 @@ class TranslationStats:
     complex_chunks: int = 0
     complex_singleton_batches: int = 0
     inline_tag_repairs: int = 0
+    text_segment_rescue_attempts: int = 0
+    text_segment_rescue_successes: int = 0
+    chunk_rescue_attempts: int = 0
+    chunk_rescue_successes: int = 0
+    structured_note_attempts: int = 0
+    structured_note_successes: int = 0
+    retry_budget_exhausted_chunks: int = 0
 
     @property
     def elapsed_seconds(self) -> float:
@@ -106,6 +114,13 @@ class TranslationStats:
             "complex_chunks": self.complex_chunks,
             "complex_singleton_batches": self.complex_singleton_batches,
             "inline_tag_repairs": self.inline_tag_repairs,
+            "text_segment_rescue_attempts": self.text_segment_rescue_attempts,
+            "text_segment_rescue_successes": self.text_segment_rescue_successes,
+            "chunk_rescue_attempts": self.chunk_rescue_attempts,
+            "chunk_rescue_successes": self.chunk_rescue_successes,
+            "structured_note_attempts": self.structured_note_attempts,
+            "structured_note_successes": self.structured_note_successes,
+            "retry_budget_exhausted_chunks": self.retry_budget_exhausted_chunks,
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "last_error": self.last_error,
@@ -154,21 +169,50 @@ class SemanticsTranslator:
         from app.infra.llm_guard import assert_models_allowed
         assert_models_allowed([self.model, *self.model_fallbacks, self.quality_fallback_model], context="translator")
         self.base_url_fallbacks = self._parse_csv_env("OPENAI_BASE_URL_FALLBACKS")
+        self.tokenhub_base_url = os.environ.get("TOKENHUB_BASE_URL", "").strip().rstrip("/")
+        self.provider_base_urls: list[str] = []
+        self._route_provider_by_base_url: dict[str, str] = {}
+        self._route_api_key_by_base_url: dict[str, str] = {}
+        self._register_llm_provider("primary", self.base_url, self.api_key)
+        for index, fallback_base_url in enumerate(self.base_url_fallbacks, start=1):
+            self._register_llm_provider(f"fallback_{index}", fallback_base_url, self.api_key)
+        if self.tokenhub_base_url:
+            self._register_llm_provider(
+                "tokenhub",
+                self.tokenhub_base_url,
+                os.environ.get("TOKENHUB_API_KEY", "").strip() or self.api_key,
+            )
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
         concurrency_cap = int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP", "4"))
         env_concurrency = min(env_concurrency, max(1, concurrency_cap))
         self.semaphore = asyncio.Semaphore(max(1, env_concurrency))
         self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "4")))
         self.quality_retries = max(1, int(os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES", "2")))
+        self.chunk_retry_budget = max(1, int(os.environ.get("EPUB_TRANSLATION_CHUNK_RETRY_BUDGET", "6")))
         self.timeout_extra_retries = max(0, int(os.environ.get("OPENAI_TIMEOUT_EXTRA_RETRIES", "2")))
         self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "90"))
         if temperature is not None:
             self.temperature = float(temperature)
         else:
             self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", "1.1"))
-        self._clients: dict[str, AsyncOpenAI] = {}
+        self._clients: dict[tuple[str, str], AsyncOpenAI] = {}
         self.stats = TranslationStats()
         self.stats.quality_fallback_model = self.quality_fallback_model
+
+    def _register_llm_provider(self, provider: str, base_url: str, api_key: str) -> None:
+        base = (base_url or "").strip().rstrip("/")
+        if not base:
+            return
+        if base not in self.provider_base_urls:
+            self.provider_base_urls.append(base)
+        self._route_provider_by_base_url[base] = provider or "fallback"
+        self._route_api_key_by_base_url[base] = api_key or self.api_key
+
+    def _provider_for_base_url(self, base_url: str) -> str:
+        return self._route_provider_by_base_url.get((base_url or "").rstrip("/"), "primary")
+
+    def _api_key_for_base_url(self, base_url: str) -> str:
+        return self._route_api_key_by_base_url.get((base_url or "").rstrip("/"), self.api_key)
 
     @staticmethod
     def _short_error(exc_or_message: Exception | str | None, limit: int = 160) -> str:
@@ -229,7 +273,7 @@ class SemanticsTranslator:
         if exc_or_message is None:
             return None
         msg = str(exc_or_message).lower()
-        if "untranslated" in msg:
+        if "untranslated" in msg or "疑似仍为原文" in msg or "仍为原文" in msg:
             return "untranslated_response"
         if "html tag mismatch" in msg:
             return "html_mismatch"
@@ -246,26 +290,27 @@ class SemanticsTranslator:
         return "model_error"
 
     def _get_client(self, base_url: str) -> AsyncOpenAI:
-        if base_url not in self._clients:
+        api_key = self._api_key_for_base_url(base_url)
+        client_key = (base_url, api_key)
+        if client_key not in self._clients:
             limits = httpx.Limits(max_keepalive_connections=10, max_connections=20)
             http_client = httpx.AsyncClient(timeout=self.request_timeout, limits=limits)
-            self._clients[base_url] = AsyncOpenAI(
-                api_key=self.api_key,
+            self._clients[client_key] = AsyncOpenAI(
+                api_key=api_key,
                 base_url=base_url,
                 max_retries=0,
                 http_client=http_client,
             )
-        return self._clients[base_url]
+        return self._clients[client_key]
 
     def _candidate_routes(self, preferred_model: str | None = None) -> list[tuple[str, str]]:
         routes: list[tuple[str, str]] = []
-        base_urls = [self.base_url, *self.base_url_fallbacks]
+        base_urls = self.provider_base_urls or [self.base_url]
         primary_model = (preferred_model or self.model).strip()
         models = [primary_model] if preferred_model else [self.model, *self.model_fallbacks]
-        for base in base_urls:
-            routes.append((base, primary_model))
-        for model in models[1:]:
-            routes.append((self.base_url, model))
+        for model in models:
+            for base in base_urls:
+                routes.append((base, model))
         deduped = []
         seen = set()
         for route in routes:
@@ -284,6 +329,24 @@ class SemanticsTranslator:
             return None
         return self.quality_fallback_model
 
+    @staticmethod
+    def _quality_retry_hint(reason: str, failed_attempts: int, preferred_model: str | None = None) -> str:
+        label = {
+            "error-like response": "上一轮输出像错误说明，而不是译文。",
+            "untranslated response": "上一轮输出疑似仍为英文原文。",
+            "html tag mismatch": "上一轮输出破坏了 HTML 内联标签结构。",
+        }.get(reason, f"上一轮质检失败：{reason}")
+        parts = [
+            label,
+            "请务必把英文自然语言翻译成目标语言；数学符号、变量名、公式、编号和 HTML 标签占位符保持原样。",
+            "不要直接复制原文，也不要删除、移动、合并或新增任何标签。",
+        ]
+        if preferred_model:
+            parts.append(f"本轮已升级到 {preferred_model}，优先修复该坏段落。")
+        if failed_attempts > 0:
+            parts.append(f"此前已失败 {failed_attempts} 次，请避免重复上一轮输出。")
+        return " ".join(parts)
+
     def _build_system_prompt(self) -> str:
         prompt = f"""你是一位忠实翻译原版书籍的专业译者。目标语言是：{self.target_lang}。
 你将收到一个包含多段待翻译内容的 JSON 数组（输入格式为：[{{"id": 0, "html": "..."}}, ...]）。
@@ -300,7 +363,10 @@ class SemanticsTranslator:
     {{"id": 1, "translation": "..."}}
   ]
 }}
-7. 返回的 JSON 必须包含输入中的每一个 id，绝对不能遗漏、合并、拆分或重排！"""
+7. 返回的 JSON 必须包含输入中的每一个 id，绝对不能遗漏、合并、拆分或重排！
+8. 如果输入对象包含 html_marker_requirement 字段，它列出本段必须逐字保留的 HTML 标签占位符；translation 中必须包含这些占位符，数量、拼写和先后顺序都不能改变。
+9. 如果输入对象包含 retry_hint 字段，它只说明上一轮质检失败原因；必须按 retry_hint 修正，但仍只翻译 html 字段并只返回 translation。
+10. 如果输入对象包含 text_node_rescue=true，html 字段是从同一 HTML 段落抽出的纯文本节点；必须翻译其中自然语言，保留变量名、数学公式、编号、标点和原有前后空白语义。"""
 
         if self.glossary:
             lines = "\n".join(f"  {src} → {dst}" for src, dst in self.glossary.items())
@@ -505,6 +571,16 @@ class SemanticsTranslator:
         return restored
 
     @staticmethod
+    def _html_marker_requirement(replacements: dict[str, str]) -> str:
+        markers = sorted(replacements)
+        if not markers:
+            return ""
+        return (
+            "必须逐字保留以下 HTML 标签占位符，且数量、拼写、先后顺序都不能改变："
+            + ", ".join(markers)
+        )
+
+    @staticmethod
     def _missing_inline_tags(source_html: str, translated_html: str) -> bool:
         source = SemanticsTranslator._inline_tag_counter(source_html)
         translated = SemanticsTranslator._inline_tag_counter(translated_html)
@@ -626,6 +702,129 @@ class SemanticsTranslator:
             return "".join(str(c) for c in block_tag.contents).strip()
         return (html or "").strip()
 
+    @staticmethod
+    def _text_segment_rescue_enabled() -> bool:
+        return os.environ.get("EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE", "1").lower() not in {
+            "0", "false", "no", "off"
+        }
+
+    @staticmethod
+    def _should_translate_text_node(text: str) -> bool:
+        stripped = (text or "").strip()
+        if not stripped or not re.search(r"[A-Za-z]", stripped):
+            return False
+        words = re.findall(r"[A-Za-z][A-Za-z'\-]{0,}", stripped)
+        if not words:
+            return False
+        if len(words) == 1 and len(words[0].replace("-", "")) <= 2:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9\s+\-*/=<>≤≥≈≠.,;:(){}\[\]^_–—|]+", stripped):
+            long_words = [w for w in words if len(w.replace("-", "")) >= 3]
+            if not long_words:
+                return False
+        return True
+
+    @staticmethod
+    def _preserve_text_node_whitespace(source_text: str, translated_text: str) -> str:
+        source = source_text or ""
+        translated = (translated_text or "").strip()
+        leading = re.match(r"^\s*", source).group(0)
+        trailing = re.search(r"\s*$", source).group(0)
+        if not translated:
+            return source
+        return f"{leading}{translated}{trailing}"
+
+    def _text_segment_still_untranslated(self, source_text: str, translated_text: str) -> bool:
+        source_words = self._latin_words(source_text)
+        if len(source_words) < 2:
+            return False
+        normalize = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()
+        if normalize(source_text) == normalize(translated_text):
+            return True
+        translated_words = self._latin_words(translated_text)
+        translated_cjk = self._cjk_char_count(translated_text)
+        return translated_cjk == 0 and len(translated_words) >= max(2, int(len(source_words) * 0.7))
+
+    @staticmethod
+    def _text_segment_rescue_hint(reason: str) -> str:
+        return (
+            f"上一轮整段补译仍未通过：{reason}。"
+            "本轮是文本节点级补译，html 字段不含 HTML 标签，只是同一段落中的一个纯文本片段。"
+            "请翻译自然语言；数学变量、公式片段、编号和标点保持原样。"
+        )
+
+    async def _translate_text_segments_rescue(
+        self,
+        original_inner: str,
+        reason: str,
+        *,
+        preferred_model: str | None = None,
+        count_as_rescue: bool = True,
+    ) -> tuple[str, dict, int]:
+        """Translate only natural-language text nodes while preserving all HTML tags in place."""
+        if not self._text_segment_rescue_enabled():
+            raise ValueError("text segment rescue disabled")
+
+        soup = BeautifulSoup(original_inner or "", "html.parser")
+        segments: list[tuple[int, NavigableString, str]] = []
+        for node in list(soup.find_all(string=True)):
+            if not isinstance(node, NavigableString):
+                continue
+            parent_name = getattr(getattr(node, "parent", None), "name", "")
+            if parent_name in {"script", "style"}:
+                continue
+            text = str(node)
+            if self._should_translate_text_node(text):
+                segments.append((len(segments), node, text))
+
+        if not segments:
+            raise ValueError("no text nodes eligible for segment rescue")
+
+        if count_as_rescue:
+            self.stats.text_segment_rescue_attempts += 1
+            self.stats.retry_attempts += 1
+        payload = [
+            {
+                "id": segment_id,
+                "html": text,
+                "text_node_rescue": True,
+                "retry_hint": self._text_segment_rescue_hint(reason),
+            }
+            for segment_id, _node, text in segments
+        ]
+
+        t0 = time.monotonic()
+        async with self.semaphore:
+            if preferred_model:
+                self.stats.quality_fallback_attempts += 1
+                self._emit_progress(f"文本片段补译升级模型：{preferred_model}")
+            translations_map, meta = await self._call_llm_json_batch(
+                payload,
+                preferred_model=preferred_model,
+            )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        for segment_id, node, source_text in segments:
+            translated_text = translations_map.get(segment_id, "")
+            if not translated_text:
+                raise ValueError("text segment rescue returned empty translation")
+            if self._looks_like_error_response(translated_text):
+                raise ValueError("text segment rescue returned error-like response")
+            if self._text_segment_still_untranslated(source_text, translated_text):
+                raise ValueError("text segment rescue returned untranslated text")
+            node.replace_with(NavigableString(
+                self._preserve_text_node_whitespace(source_text, translated_text)
+            ))
+
+        translated_inner = "".join(str(item) for item in soup.contents)
+        invalid_reason = self._invalid_translation_reason(original_inner, translated_inner)
+        if invalid_reason:
+            raise ValueError(f"text segment rescue invalid: {invalid_reason}")
+
+        if count_as_rescue:
+            self.stats.text_segment_rescue_successes += 1
+        return translated_inner, meta, latency_ms
+
     async def _call_llm_json_batch(
         self,
         payload: list[dict],
@@ -639,9 +838,16 @@ class SemanticsTranslator:
         protected_replacements: dict[int, dict[str, str]] = {}
         for item in payload:
             item_id = int(item["id"])
-            protected_html, replacements = self._protect_inline_tags(str(item.get("html", "") or ""))
+            if item.get("text_node_rescue"):
+                protected_html = str(item.get("html", "") or "")
+                replacements = {}
+            else:
+                protected_html, replacements = self._protect_inline_tags(str(item.get("html", "") or ""))
             protected_item = dict(item)
             protected_item["html"] = protected_html
+            marker_requirement = self._html_marker_requirement(replacements)
+            if marker_requirement:
+                protected_item["html_marker_requirement"] = marker_requirement
             protected_payload.append(protected_item)
             protected_replacements[item_id] = replacements
         user_content = json.dumps(protected_payload, ensure_ascii=False)
@@ -651,11 +857,13 @@ class SemanticsTranslator:
         timeout_bonus_used = 0
         response = None
         base_url, model = self.base_url, preferred_model or self.model
+        provider = self._provider_for_base_url(base_url)
         started_call = time.monotonic()
         
         for attempt in range(1, max_attempts + 1):
             self._raise_if_cancelled()
             base_url, model = routes[(attempt - 1) % len(routes)]
+            provider = self._provider_for_base_url(base_url)
             try:
                 kwargs = {
                     "model": model,
@@ -701,7 +909,7 @@ class SemanticsTranslator:
                         )
                     
                     if model != self.model or base_url != self.base_url:
-                        print(f"⚠️ LLM fallback route succeeded: model={model}, base_url={base_url}")
+                        print(f"⚠️ LLM fallback route succeeded: provider={provider}, model={model}, base_url={base_url}")
                     break
                 except (json.JSONDecodeError, ValueError) as json_err:
                     last_error = ValueError(f"Failed to parse LLM JSON: {json_err}")
@@ -720,6 +928,16 @@ class SemanticsTranslator:
                 self.stats.last_error = str(exc)
                 # 鉴权/权限类错误重试也不会恢复，立即失败，避免无意义重试空耗时间与配额
                 if self._is_auth_error(exc):
+                    has_distinct_provider_left = any(
+                        next_base != base_url
+                        for next_base, _next_model in routes[attempt:]
+                    )
+                    if has_distinct_provider_left and attempt < max_attempts:
+                        self.stats.retry_attempts += 1
+                        self._emit_progress(
+                            f"模型通道鉴权失败，切换备用通道：{provider} {self._short_error(exc)}"
+                        )
+                        continue
                     self._emit_progress(
                         f"模型鉴权失败，已停止重试：{self._short_error(exc)}"
                     )
@@ -761,6 +979,7 @@ class SemanticsTranslator:
         meta = {
             "model": model,
             "base_url": base_url,
+            "provider": provider,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "attempts": attempt,
@@ -879,6 +1098,8 @@ class SemanticsTranslator:
         self,
         html_chunks: list[str],
         progress_label: str | None = None,
+        translation_strategies: list[str] | None = None,
+        prior_retry_counts: list[int] | None = None,
     ) -> list["SingleChunkResult"]:
         """
         批量翻译多个 chunk，供快速 MapReduce 链路使用。
@@ -889,6 +1110,12 @@ class SemanticsTranslator:
         """
         results: list[SingleChunkResult | None] = [None] * len(html_chunks)
         uncached: list[tuple[int, str]] = []
+        structured_notes: list[tuple[int, str]] = []
+        inner_html_by_index: dict[int, str] = {}
+        strategies = translation_strategies or ["html"] * len(html_chunks)
+        prior_retries = prior_retry_counts or [0] * len(html_chunks)
+        if len(strategies) != len(html_chunks) or len(prior_retries) != len(html_chunks):
+            raise ValueError("translation strategy/retry metadata length mismatch")
 
         for i, html in enumerate(html_chunks):
             self._raise_if_cancelled()
@@ -899,8 +1126,10 @@ class SemanticsTranslator:
                 continue
 
             inner_html = self._extract_inner_html(html)
+            inner_html_by_index[i] = inner_html
             self.stats.total_chunks += 1
             cached = self.cache.get(inner_html, self._cache_lang_key)
+            strategy = strategies[i] or "html"
             if cached:
                 if (
                     not self._looks_like_error_response(cached)
@@ -910,9 +1139,9 @@ class SemanticsTranslator:
                     self.stats.cached_chunks += 1
                     results[i] = SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
                 else:
-                    uncached.append((i, inner_html))
+                    (structured_notes if strategy == "text_nodes" else uncached).append((i, inner_html))
             else:
-                uncached.append((i, inner_html))
+                (structured_notes if strategy == "text_nodes" else uncached).append((i, inner_html))
 
         batches: list[list[tuple[int, str]]] = []
         cur_batch: list[tuple[int, str]] = []
@@ -938,7 +1167,7 @@ class SemanticsTranslator:
 
         completed_batches = 0
         completed_chunks = 0
-        total_batches = len(batches)
+        total_batches = len(batches) + len(structured_notes)
 
         def report_batch_progress(batch_size: int) -> None:
             nonlocal completed_batches, completed_chunks
@@ -976,12 +1205,28 @@ class SemanticsTranslator:
                 error_type=self._classify_error(error),
             )
 
-        async def retry_one(idx: int, original_inner: str, reason: str) -> bool:
+        async def retry_one(
+            idx: int,
+            original_inner: str,
+            reason: str,
+            *,
+            prior_retry_count: int = 0,
+        ) -> bool:
             self._raise_if_cancelled()
+            self.stats.chunk_rescue_attempts += 1
             reason_detail = reason
             last_meta: dict | None = None
             last_latency_ms = 0
-            retry_count = 0
+            retry_count = max(0, int(prior_retry_count or 0))
+            if retry_count >= self.chunk_retry_budget:
+                self.stats.retry_budget_exhausted_chunks += 1
+                mark_failed(
+                    idx,
+                    original_inner,
+                    f"{reason}; chunk retry budget exhausted ({self.chunk_retry_budget})",
+                    retry_count=retry_count,
+                )
+                return False
             reason_label = {
                 "error-like response": "模型返回错误说明",
                 "untranslated response": "疑似仍为原文",
@@ -990,20 +1235,32 @@ class SemanticsTranslator:
             self._emit_progress(f"段落质检未通过，启动单段补译：{reason_label}")
             for quality_attempt in range(1, self.quality_retries + 1):
                 self._raise_if_cancelled()
+                if retry_count >= self.chunk_retry_budget:
+                    self.stats.retry_budget_exhausted_chunks += 1
+                    break
                 t0 = time.monotonic()
                 preferred_model = self._quality_retry_preferred_model(quality_attempt - 1)
                 try:
                     self.stats.retry_attempts += 1
+                    retry_payload = [{
+                        "id": 0,
+                        "html": original_inner,
+                        "retry_hint": self._quality_retry_hint(
+                            reason,
+                            quality_attempt - 1,
+                            preferred_model,
+                        ),
+                    }]
                     async with self.semaphore:
                         if preferred_model:
                             self.stats.quality_fallback_attempts += 1
                             self._emit_progress(f"单段补译升级模型：{preferred_model}")
                             translations_map, meta = await self._call_llm_json_batch(
-                                [{"id": 0, "html": original_inner}],
+                                retry_payload,
                                 preferred_model=preferred_model,
                             )
                         else:
-                            translations_map, meta = await self._call_llm_json_batch([{"id": 0, "html": original_inner}])
+                            translations_map, meta = await self._call_llm_json_batch(retry_payload)
                     last_meta = meta
                     retry_count += max(1, int(meta.get("attempts") or 1))
                     translated = translations_map.get(0, "")
@@ -1023,7 +1280,7 @@ class SemanticsTranslator:
                     self._emit_progress("HTML 标签结构已自动修复，跳过额外补译")
                 invalid_reason = self._invalid_translation_reason(original_inner, translated)
                 if invalid_reason:
-                    reason_detail = f"{reason}; html tag mismatch" if invalid_reason == "HTML 内联标签不匹配" else reason
+                    reason_detail = f"{reason}; {invalid_reason}"
                     if quality_attempt < self.quality_retries:
                         self._emit_progress(
                             f"单段补译未通过，继续重试 ({quality_attempt}/{self.quality_retries})：{invalid_reason}"
@@ -1045,7 +1302,39 @@ class SemanticsTranslator:
                     error=None,
                     retry_count=max(1, retry_count),
                 )
+                self.stats.chunk_rescue_successes += 1
                 return True
+
+            if self._text_segment_rescue_enabled() and retry_count < self.chunk_retry_budget:
+                self._emit_progress("单段补译仍未通过，启动文本片段级补译")
+                segment_meta: dict | None = None
+                try:
+                    preferred_model = self._quality_retry_preferred_model(self.quality_retries)
+                    translated, segment_meta, segment_latency_ms = await self._translate_text_segments_rescue(
+                        original_inner,
+                        reason_detail,
+                        preferred_model=preferred_model,
+                    )
+                    retry_count += max(1, int(segment_meta.get("attempts") or 1))
+                    self.cache.set(original_inner, translated, self._cache_lang_key)
+                    self.stats.translated_chunks += 1
+                    results[idx] = SingleChunkResult(
+                        translated_html=translated,
+                        cached=False,
+                        model=segment_meta.get("model"),
+                        base_url=segment_meta.get("base_url"),
+                        prompt_tokens=segment_meta.get("prompt_tokens", 0),
+                        completion_tokens=segment_meta.get("completion_tokens", 0),
+                        latency_ms=segment_latency_ms,
+                        error=None,
+                        retry_count=max(1, retry_count),
+                    )
+                    self.stats.chunk_rescue_successes += 1
+                    return True
+                except Exception as exc:
+                    reason_detail = f"{reason_detail}; text segment rescue failed: {exc}"
+                    if segment_meta:
+                        last_meta = segment_meta
 
             mark_failed(
                 idx,
@@ -1056,6 +1345,91 @@ class SemanticsTranslator:
                 retry_count=max(1, retry_count),
             )
             return False
+
+        async def run_structured_note(idx: int, original_inner: str) -> None:
+            self._raise_if_cancelled()
+            prior_retry_count = max(0, int(prior_retries[idx] or 0))
+            if prior_retry_count >= self.chunk_retry_budget:
+                self.stats.retry_budget_exhausted_chunks += 1
+                mark_failed(
+                    idx,
+                    original_inner,
+                    f"structured note retry budget exhausted ({self.chunk_retry_budget})",
+                    retry_count=prior_retry_count,
+                )
+                report_batch_progress(1)
+                return
+            self.stats.structured_note_attempts += 1
+            retry_count = prior_retry_count
+            last_error: Exception | None = None
+            budget_exhausted = False
+
+            # 结构化脚注只翻译文本节点，但仍需要独立的质量重试：Flash 返回原文时，
+            # 下一次在同一分块预算内升级质量模型。这里按真实的质量失败次数计数，
+            # 不能再用 OPENAI_MAX_RETRIES 一次性虚增 retry_count。
+            max_quality_attempts = self.quality_retries + 1
+            for quality_attempt in range(max_quality_attempts):
+                self._raise_if_cancelled()
+                if retry_count >= self.chunk_retry_budget:
+                    self.stats.retry_budget_exhausted_chunks += 1
+                    budget_exhausted = True
+                    break
+
+                preferred_model = self._quality_retry_preferred_model(retry_count)
+                if quality_attempt > 0 or prior_retry_count > 0:
+                    self.stats.retry_attempts += 1
+                try:
+                    translated, meta, latency_ms = await self._translate_text_segments_rescue(
+                        original_inner,
+                        "脚注专项文本节点翻译",
+                        preferred_model=preferred_model,
+                        count_as_rescue=False,
+                    )
+                    retry_count = min(
+                        self.chunk_retry_budget,
+                        retry_count + max(0, int(meta.get("attempts") or 1) - 1),
+                    )
+                    self.cache.set(original_inner, translated, self._cache_lang_key)
+                    self.stats.translated_chunks += 1
+                    self.stats.structured_note_successes += 1
+                    results[idx] = SingleChunkResult(
+                        translated_html=translated,
+                        cached=False,
+                        model=meta.get("model"),
+                        base_url=meta.get("base_url"),
+                        prompt_tokens=meta.get("prompt_tokens", 0),
+                        completion_tokens=meta.get("completion_tokens", 0),
+                        latency_ms=latency_ms,
+                        error=None,
+                        retry_count=retry_count,
+                    )
+                    report_batch_progress(1)
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    retry_count += 1
+                    if retry_count >= self.chunk_retry_budget:
+                        self.stats.retry_budget_exhausted_chunks += 1
+                        budget_exhausted = True
+                        break
+                    if quality_attempt + 1 < max_quality_attempts:
+                        next_model = self._quality_retry_preferred_model(retry_count)
+                        upgrade = f"，下一次升级模型：{next_model}" if next_model else ""
+                        self._emit_progress(
+                            f"脚注文本节点翻译未通过，继续重试 "
+                            f"({quality_attempt + 1}/{max_quality_attempts}){upgrade}：{self._short_error(exc)}"
+                        )
+
+            error_detail = f"structured note translation failed: {last_error}"
+            if budget_exhausted:
+                error_detail += f"; chunk retry budget exhausted ({self.chunk_retry_budget})"
+            mark_failed(
+                idx,
+                original_inner,
+                error_detail,
+                retry_count=max(1, min(self.chunk_retry_budget, retry_count)),
+            )
+            report_batch_progress(1)
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
             self._raise_if_cancelled()
@@ -1077,9 +1451,14 @@ class SemanticsTranslator:
                 else:
                     idx, original_inner = batch[0]
                     self._emit_progress(
-                        f"单段翻译失败，无法继续拆分：{self._short_error(exc)}"
+                        f"单段翻译失败，进入最终补译：{self._short_error(exc)}"
                     )
-                    mark_failed(idx, original_inner, str(exc), retry_count=self.max_retries)
+                    await retry_one(
+                        idx,
+                        original_inner,
+                        f"single chunk call failed: {exc}",
+                        prior_retry_count=max(int(prior_retries[idx] or 0), self.max_retries),
+                    )
                     report_batch_progress(1)
                 return
 
@@ -1092,17 +1471,35 @@ class SemanticsTranslator:
             for local_id, (idx, original_inner) in enumerate(batch):
                 self._raise_if_cancelled()
                 translated = translations_map.get(local_id, "")
+                initial_retry_count = max(0, int(prior_retries[idx] or 0)) + max(
+                    0, int(meta.get("attempts") or 1) - 1
+                )
                 if self._looks_like_error_response(translated):
-                    await retry_one(idx, original_inner, "error-like response")
+                    await retry_one(
+                        idx,
+                        original_inner,
+                        "error-like response",
+                        prior_retry_count=initial_retry_count,
+                    )
                     continue
                 if not translated or self._looks_untranslated(original_inner, translated):
-                    await retry_one(idx, original_inner, "untranslated response")
+                    await retry_one(
+                        idx,
+                        original_inner,
+                        "untranslated response",
+                        prior_retry_count=initial_retry_count,
+                    )
                     continue
                 translated, repaired = self._repair_inline_tags_if_safe(original_inner, translated)
                 if repaired:
                     self._emit_progress("HTML 标签结构已自动修复，跳过单段补译")
                 if not self._preserves_inline_tags(original_inner, translated):
-                    await retry_one(idx, original_inner, "html tag mismatch")
+                    await retry_one(
+                        idx,
+                        original_inner,
+                        "html tag mismatch",
+                        prior_retry_count=initial_retry_count,
+                    )
                     continue
                 self.cache.set(original_inner, translated, self._cache_lang_key)
                 self.stats.translated_chunks += 1
@@ -1115,22 +1512,29 @@ class SemanticsTranslator:
                     completion_tokens=completion_each,
                     latency_ms=latency_ms,
                     error=None,
-                    retry_count=max(0, int(meta.get("attempts") or 1) - 1),
+                    retry_count=initial_retry_count,
                 )
             report_batch_progress(len(batch))
 
-        if batches:
+        if batches or structured_notes:
             self._raise_if_cancelled()
-            await asyncio.gather(*(run_batch(batch) for batch in batches))
+            await asyncio.gather(
+                *(run_batch(batch) for batch in batches),
+                *(run_structured_note(idx, html) for idx, html in structured_notes),
+            )
 
         self._raise_if_cancelled()
         missing = [i for i, r in enumerate(results) if r is None]
         if missing:
-            error = f"chunk not processed: {len(missing)} 段"
-            self.stats.errors += len(missing)
-            self.stats.failed_chunks += len(missing)
-            self.stats.last_error = error
-            self._emit_progress(f"翻译结果缺失：{len(missing)} 个段落未处理，已回写原文")
+            self._emit_progress(f"翻译结果缺失：{len(missing)} 个段落未处理，进入最终补译")
+            for idx in missing:
+                original_inner = inner_html_by_index.get(idx) or self._extract_inner_html(html_chunks[idx])
+                await retry_one(
+                    idx,
+                    original_inner,
+                    "chunk not processed",
+                    prior_retry_count=max(0, int(prior_retries[idx] or 0)),
+                )
 
         return [
             r if r is not None else SingleChunkResult(html_chunks[i], False, None, None, 0, 0, 0, "chunk not processed")
@@ -1161,6 +1565,8 @@ class SemanticsTranslator:
             for block in blocks:
                 has_block_child = block.find(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'])
                 if has_block_child:
+                    continue
+                if should_skip_image_note_block(block):
                     continue
                 # 不取整个 block，而是抽取其 inner_html
                 inner_html = "".join(str(c) for c in block.contents).strip()

@@ -83,7 +83,14 @@ def _should_archive(chunk: Any, status: Any) -> bool:
     return retry_count >= min_retries
 
 
-def archive_failed_chunk(*, job_id: str, chapter_id: str, chunk: Any, status: Any) -> Path | None:
+def archive_failed_chunk(
+    *,
+    job_id: str,
+    chapter_id: str,
+    chunk: Any,
+    status: Any,
+    attempt_id: str = "",
+) -> Path | None:
     """Persist a failed chunk snapshot and return its path.
 
     This function must never break the translation pipeline; callers can invoke
@@ -100,6 +107,7 @@ def archive_failed_chunk(*, job_id: str, chapter_id: str, chunk: Any, status: An
         "schema_version": 1,
         "archived_at": datetime.now(timezone.utc).isoformat(),
         "job_id": job_id,
+        "attempt_id": attempt_id or "",
         "chapter_id": chapter_id,
         "chunk_id": chunk_id,
         "sequence": sequence,
@@ -125,6 +133,8 @@ def archive_failed_chunk(*, job_id: str, chapter_id: str, chunk: Any, status: An
 
     try:
         root = archive_root() / _safe_name(job_id)
+        if attempt_id:
+            root = root / _safe_name(attempt_id)
         root.mkdir(parents=True, exist_ok=True)
         name = f"{sequence:06d}-{_safe_name(chapter_id)}-{_safe_name(chunk_id)}.json"
         path = root / name

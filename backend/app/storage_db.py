@@ -34,6 +34,7 @@ from .models import (
     StageStatus,
     User,
 )
+from .domain.translation_attempt import restarted_translation_stats
 
 
 # ─── ORM 模型 ────────────────────────────────────────────────────────────────
@@ -297,7 +298,7 @@ def _record_to_job(r: JobRecord) -> Job:
         glossary=glossary,
         device=DeviceProfile(r.device),
         temperature=None,
-        translation_model=getattr(r, "translation_model", None) or "deepseek-v4-pro",
+        translation_model=getattr(r, "translation_model", None) or "deepseek-v4-flash",
         traditional_variant=getattr(r, "traditional_variant", None) or "auto",
         lexicon_domains=lexicon_domains,
         enable_proper_noun=bool(getattr(r, "enable_proper_noun", True)),
@@ -537,7 +538,7 @@ def _job_to_record(job: Job) -> JobRecord:
         quality_stats_json=json.dumps(job.quality_stats.to_dict()) if job.quality_stats else "{}",
         translation_stats_json=json.dumps(job.translation_stats or {}),
         metrics_summary=job.metrics_summary or "",
-        translation_model=getattr(job, "translation_model", None) or "deepseek-v4-pro",
+        translation_model=getattr(job, "translation_model", None) or "deepseek-v4-flash",
         traditional_variant=getattr(job, "traditional_variant", None) or "auto",
         lexicon_domains=json.dumps(getattr(job, "lexicon_domains", ["general", "tech", "movie"])),
         enable_proper_noun=bool(getattr(job, "enable_proper_noun", True)),
@@ -676,11 +677,21 @@ class PersistentJobStore:
         translation_stats=None,
         metrics_summary: Optional[str] = None,
         allow_cancelled_transition: bool = False,
+        expected_attempt_id: Optional[str] = None,
     ) -> Optional[Job]:
         with self._Session() as session:
             r = session.get(JobRecord, job_id)
             if not r:
                 return None
+            if expected_attempt_id:
+                import json
+                current_stats = {}
+                try:
+                    current_stats = json.loads(r.translation_stats_json or "{}")
+                except Exception:
+                    current_stats = {}
+                if str((current_stats or {}).get("attempt_id") or "") != expected_attempt_id:
+                    return _record_to_job(r)
             if r.status == JobStatus.cancelled.value and status != JobStatus.cancelled and not allow_cancelled_transition:
                 return _record_to_job(r)
             r.status = status.value
@@ -693,7 +704,20 @@ class PersistentJobStore:
                 r.quality_stats_json = json.dumps(quality_stats.to_dict())
             if translation_stats is not None:
                 import json
-                r.translation_stats_json = json.dumps(translation_stats)
+                existing_stats = {}
+                if r.translation_stats_json:
+                    try:
+                        existing_stats = json.loads(r.translation_stats_json)
+                        if not isinstance(existing_stats, dict):
+                            existing_stats = {}
+                    except Exception:
+                        existing_stats = {}
+                merged = dict(existing_stats)
+                if isinstance(translation_stats, dict):
+                    merged.update(translation_stats)
+                else:
+                    merged = translation_stats
+                r.translation_stats_json = json.dumps(merged)
             if metrics_summary is not None:
                 r.metrics_summary = metrics_summary
             r.updated_at = datetime.now(timezone.utc)
@@ -701,8 +725,17 @@ class PersistentJobStore:
             session.refresh(r)
             return _record_to_job(r)
 
-    def upsert_chapter(self, chapter: JobChapter) -> JobChapter:
+    def upsert_chapter(self, chapter: JobChapter, expected_attempt_id: Optional[str] = None) -> JobChapter:
         with self._Session() as session:
+            if expected_attempt_id:
+                import json
+                job_record = session.get(JobRecord, chapter.job_id)
+                try:
+                    job_stats = json.loads(job_record.translation_stats_json or "{}") if job_record else {}
+                except Exception:
+                    job_stats = {}
+                if str((job_stats or {}).get("attempt_id") or "") != expected_attempt_id:
+                    return chapter
             record_id = f"{chapter.job_id}:{chapter.chapter_id}"
             existing = session.get(ChapterRecord, record_id)
             if existing:
@@ -730,8 +763,17 @@ class PersistentJobStore:
             rows = session.query(ChapterRecord).filter_by(job_id=job_id).order_by(ChapterRecord.chapter_id).all()
             return [_record_to_chapter(r) for r in rows]
 
-    def upsert_chunk(self, chunk: JobChunk) -> JobChunk:
+    def upsert_chunk(self, chunk: JobChunk, expected_attempt_id: Optional[str] = None) -> JobChunk:
         with self._Session() as session:
+            if expected_attempt_id:
+                import json
+                job_record = session.get(JobRecord, chunk.job_id)
+                try:
+                    job_stats = json.loads(job_record.translation_stats_json or "{}") if job_record else {}
+                except Exception:
+                    job_stats = {}
+                if str((job_stats or {}).get("attempt_id") or "") != expected_attempt_id:
+                    return chunk
             record_id = f"{chunk.job_id}:{chunk.chunk_id}"
             existing = session.get(ChunkRecord, record_id)
             if existing:
@@ -761,6 +803,80 @@ class PersistentJobStore:
             session.commit()
             session.refresh(record)
             return _record_to_chunk(record)
+
+    def clear_translation_progress(self, job_id: str) -> None:
+        from sqlalchemy import delete
+        with self._Session() as session:
+            session.execute(delete(ChunkRecord).where(ChunkRecord.job_id == job_id))
+            session.execute(delete(ChapterRecord).where(ChapterRecord.job_id == job_id))
+            session.commit()
+
+    def restart_translation_attempt(
+        self,
+        job_id: str,
+        *,
+        attempt_id: str,
+        action_label: str,
+        max_free_retries: int,
+        started_at: datetime,
+    ) -> tuple[Optional[Job], str]:
+        """Atomically claim a terminal job and replace all per-attempt state."""
+        import json
+        from sqlalchemy import delete, update
+
+        terminal_statuses = [
+            JobStatus.success.value,
+            JobStatus.failed.value,
+            JobStatus.cancelled.value,
+        ]
+        with self._Session() as session:
+            record = session.get(JobRecord, job_id)
+            if not record:
+                return None, "missing"
+            if record.status not in terminal_statuses:
+                return _record_to_job(record), "active"
+            try:
+                previous = json.loads(record.translation_stats_json or "{}")
+                if not isinstance(previous, dict):
+                    previous = {}
+            except Exception:
+                previous = {}
+            free_retry_count = int(previous.get("free_retry_count") or 0)
+            if max_free_retries >= 0 and free_retry_count >= max_free_retries:
+                return _record_to_job(record), "retry_limit"
+
+            stats = restarted_translation_stats(
+                previous,
+                attempt_id=attempt_id,
+                started_at=started_at,
+                model=record.translation_model or "",
+                max_free_retries=max_free_retries,
+                action_label=action_label,
+            )
+            claimed = session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job_id)
+                .where(JobRecord.status.in_(terminal_statuses))
+                .values(
+                    status=JobStatus.pending.value,
+                    message=f"{action_label}已排队（第 {stats['translation_attempt']} 次尝试）",
+                    error_code=None,
+                    output_path=None,
+                    quality_stats_json="{}",
+                    translation_stats_json=json.dumps(stats, ensure_ascii=False),
+                    metrics_summary="",
+                    updated_at=started_at,
+                )
+            )
+            if (claimed.rowcount or 0) != 1:
+                session.rollback()
+                refreshed = self.get(job_id)
+                return refreshed, "active"
+            session.execute(delete(ChunkRecord).where(ChunkRecord.job_id == job_id))
+            session.execute(delete(ChapterRecord).where(ChapterRecord.job_id == job_id))
+            session.commit()
+            refreshed = session.get(JobRecord, job_id)
+            return (_record_to_job(refreshed) if refreshed else None), "ok"
 
     def list_chunks(self, job_id: str, chapter_id: Optional[str] = None) -> list[JobChunk]:
         with self._Session() as session:

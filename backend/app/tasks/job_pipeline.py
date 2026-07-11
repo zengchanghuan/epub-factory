@@ -10,6 +10,6 @@ from app.job_runner import run_job
 
 
 @celery_app.task(name="jobs.run_conversion")
-def run_conversion(job_id: str) -> None:
+def run_conversion(job_id: str, expected_attempt_id: str | None = None) -> None:
     """在 Celery Worker 中执行整本转换。"""
-    run_job(job_id)
+    run_job(job_id, expected_attempt_id=expected_attempt_id)

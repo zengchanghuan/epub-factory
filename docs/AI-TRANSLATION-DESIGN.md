@@ -1,6 +1,7 @@
 ---
 title: "EPUB Fixer AI 翻译模块设计"
 date: 2026-03-05
+updated: 2026-07-11
 tags: ["EPUB", "AI翻译", "架构设计", "大模型", "出海", "asyncio", "SQLite缓存"]
 status: "active"
 merged_from:
@@ -91,33 +92,53 @@ BeautifulSoup 的 XML 解析器会把 SVG 大小写敏感属性强制小写（`p
 
 ---
 
-## 二、当前实现架构（MVP）
+## 二、当前实现架构
+
+> 当前实现的完整系统图、attempt 隔离、质量门禁和代码索引以 [当前架构](ARCHITECTURE-DIAGRAM.md) 为准。本节只概括 AI 翻译主路径。
 
 ```mermaid
 flowchart TD
-    A[HTML文件内容] --> B[快速判断: 是否含英文?]
-    B -- 否 --> Z[原样返回]
-    B -- 是 --> C[纯正则: SVG/图片 → 占位符]
-    C --> D[BeautifulSoup 解析]
-    D --> E[提取块级元素 p/h1-h6/li/blockquote]
-    E --> F{命中 SQLite 缓存?}
-    F -- 是 --> G[直接使用缓存译文]
-    F -- 否 --> H[asyncio + Semaphore 并发调用 LLM]
-    H --> I[tenacity 自动重试]
-    I --> J[写入 SQLite 缓存]
-    G --> K[BeautifulSoup 替换原 tag]
+    A["run_job + attempt_id"] --> B["非 LLM 预处理"]
+    B --> C["Manifest：文档分类 + 稳定 locator"]
+    C --> D["Chunk 分类"]
+    D --> D1["正文和文本型 caption：HTML 翻译"]
+    D --> D2["解释型脚注/尾注：text_nodes 翻译"]
+    D --> D3["纯引用脚注、含媒体块：原样保留"]
+    D1 --> E["全书术语表 + 书名翻译"]
+    D2 --> E
+    E --> F["章节 asyncio 并发 + JSON batch"]
+    F --> G{"SQLite 缓存命中?"}
+    G -->|"是"| H["使用缓存译文"]
+    G -->|"否"| I["LLM 调用 + HTML/漏译质检"]
+    I --> J["质量重试 / 模型升级 / 文本节点救援"]
+    H --> K["按 locator 回写章节"]
     J --> K
-    K --> L[还原 SVG/图片占位符]
-    L --> M[返回翻译后内容]
+    K --> L["失败 chunk 补译队列"]
+    L --> M{"预打包失败率门禁"}
+    M -->|"通过"| N["全书 Reduce + TOC + 打包"]
+    M -->|"失败"| X["PARTIAL_TRANSLATION，不交付"]
+    N --> O["EpubCheck"]
+    O --> P["成品残留扫描：正文 + 文本型 caption"]
+    P -->|"通过"| Q["原子发布 attempt 成品"]
+    P -->|"失败"| X
 ```
+
+当前 Celery 只投递整本 `jobs.run_conversion`；章节并发发生在 Worker 内的 `fast_translation_runner`，不是每章各自一个 Celery Task。重启翻译会生成新的 `attempt_id`，旧 attempt 的统计、迟到写入和临时成品不会污染新 attempt。
 
 ### 文件结构
 
 | 文件 | 职责 |
 |---|---|
-| `engine/translation_cache.py` | SQLite 初始化、SHA-256 哈希、读写操作 |
-| `engine/cleaners/semantics_translator.py` | 核心翻译器：占位符保护、并发控制、LLM 调用、统计报告 |
-| `engine/compiler.py` | 通过 `enable_translation=True` 参数激活翻译器 |
+| `app/job_runner.py` | 整本任务生命周期、attempt 隔离、最终成品审计与原子发布 |
+| `app/domain/fast_translation_runner.py` | Manifest、术语表、章节并发、chunk QA、失败救援、Reduce 与校验编排 |
+| `app/domain/manifest_service.py` | 文档类型判断与 Chunk Manifest |
+| `app/engine/chunk_extractor.py` | 正文、caption、媒体块、脚注/尾注分类与 locator |
+| `app/engine/translation_cache.py` | SQLite 初始化、SHA-256 哈希、读写操作 |
+| `app/engine/cleaners/semantics_translator.py` | 模型路由、批处理、缓存、质量重试、结构化脚注和文本节点救援 |
+| `app/domain/chapter_reduce_service.py` | 按 locator 回写单章，支持单语与双语 |
+| `app/domain/book_reduce_service.py` | 全书 Reduce、书名同步、TOC 重建与打包 |
+| `app/domain/translation_attempt.py` | attempt 身份和重启统计重置 |
+| `app/domain/translation_qa_service.py` | 成品 EPUB 残留扫描和 QA 报告 |
 
 ---
 
@@ -318,22 +339,26 @@ OPENAI_MODEL=deepseek-chat                     # 或 gpt-4o-mini
 
 ### 已知翻译质量问题
 
-| 问题类型 | 示例 | 原因 |
+| 问题类型 | 当前处理 | 状态 |
 |---|---|---|
-| 导航文件未翻译 | `nav.xhtml` 中的章节目录 | 导航文件被 TocRebuilder 排除处理 |
-| 长度比异常（> 3 或 < 0.2） | 模型扩写或截断 | 需在 Prompt 中补充"保持内容完整性"要求 |
+| 文本型图片说明漏译 | `caption` / `figcaption` / `legend` 已纳入主翻译与成品 QA | ✅ 已解决 |
+| 普通正文因脚注标记被跳过 | 只有真实脚注容器才走脚注策略；正文中的引用标记不再触发整段跳过 | ✅ 已解决 |
+| 解释型脚注/尾注结构复杂 | 使用 `text_nodes` 策略并在质量失败后升级模型/重试 | ✅ 已处理 |
+| 纯 DOI、URL、书目型脚注 | 保留原文，避免破坏引用 | 设计行为 |
+| 图片像素内部文字 | 当前不能提取或翻译，需要 OCR、位置框和安全回写 | 🔲 TODO |
+| 长度比异常、模型扩写或截断 | Chunk QA、HTML 校验、质量重试、文本节点救援和最终残留扫描 | 持续优化 |
 
 ---
 
-## 七、未来演进方向（P2）
+## 七、能力状态与未来演进
 
 ### 7.1 术语表注入（RAG）
 
-允许用户上传专有名词映射表，在 Prompt 中作为 Context 传入，保证人名、地名翻译统一。
+✅ 已实现。用户术语表与自动/全局术语表合并后注入 Prompt，并通过术语表哈希隔离翻译缓存。
 
 ### 7.2 双语对照输出
 
-不直接覆盖原标签，而是将翻译后的标签插入原标签下方，配合特殊 CSS class 实现双屏对照阅读体验：
+✅ 已实现。不直接覆盖原标签，而是将原文与译文写入 `epub-original` / `epub-translated` 包装：
 
 ```html
 <p class="original">She was very angry.</p>
@@ -348,20 +373,28 @@ OPENAI_MODEL=deepseek-chat                     # 或 gpt-4o-mini
 
 由于涉及密集 API 调用，建议作为**高级订阅功能（Pro/Premium）**，按字数或 Token 计费，确保商业模式跑通。
 
+### 7.5 图片像素文字 OCR 翻译
+
+🔲 TODO。当前只翻译 XHTML 中可提取的图片说明；图片本身的嵌字、扫描页文字和图表标注不在主链路覆盖范围内。计划增加默认关闭的 OCR 阶段，复用术语表和模型路由，并为低置信度、重绘失败和原图回退建立独立 QA。详细设计见 [当前架构中的 OCR TODO](ARCHITECTURE-DIAGRAM.md#8-todo图片像素文字-ocr-翻译)。
+
 ---
 
 ## 八、目标架构：方案 B（后台任务化 + MapReduce）
 
+> 历史目标说明：后台任务、Manifest、章节内并发、Chunk 持久化、Reduce、通知和 QA 已在当前代码中落地；实际实现选择“整本 Celery Task + Worker 内章节并发”，并未采用每章一个 Celery Task。当前事实以 [当前架构](ARCHITECTURE-DIAGRAM.md) 为准，本章保留作设计决策背景。
+
 ### 8.1 目标
 
-当前翻译链路仍偏向"前端发起后持续轮询"的同步体验，不适合长篇 EPUB 翻译。下一阶段直接采用 **方案 B**：
+方案 B 原始目标如下；当前代码已经实现后台任务、持久化数据模型、Manifest/Reduce、通知与质量门禁，但主链路采用“整本 Celery Task + Worker 内章节并发”的落地方式：
 
-- 将翻译改造成真正的后台任务，用户关闭页面后任务继续执行
-- 引入 `Redis + Celery + PostgreSQL` 作为正式任务底座
-- 将 EPUB 翻译过程重构为 **章节级任务调度 + 章节内块级 Map + 全书级 Reduce**
-- 在任务完成后通过站内通知/邮件通知用户，而不是要求用户长时间停留在前端页面
+- ✅ 翻译是后台任务，用户关闭页面后任务继续执行
+- ✅ 支持 `Redis + Celery`；未配置时回退 `BackgroundTasks` 或本地线程
+- ✅ JobStore 支持内存与 SQLAlchemy SQLite/PostgreSQL 两种后端
+- ✅ EPUB 已采用章节内块级 Map、失败补译和全书级 Reduce
+- ✅ 任务完成后写入站内通知，并可选发送邮件
+- ⏸️ 每章独立 Celery Task 已有辅助模块，但不是当前生产主入口
 
-### 8.2 目标架构
+### 8.2 历史目标架构（非当前运行拓扑）
 
 ```mermaid
 flowchart LR
@@ -386,6 +419,8 @@ flowchart LR
 ```
 
 ### 8.3 MapReduce 设计原则
+
+以下是原方案的拆分原则。当前主入口保留章节级隔离和 chunk 持久化语义，但由一个整本 Worker 任务在进程内用 `asyncio` 执行章节并发。
 
 #### Map 阶段
 
@@ -417,8 +452,8 @@ flowchart LR
 
 ### 9.1 底座与数据模型
 
-- [ ] 基础设施起盘：引入 `Redis + Celery + PostgreSQL`，补齐 `.env.example`、依赖与启动脚本
-- [ ] 任务数据模型与建表：新增 `jobs / job_chapters / job_chunks / job_stages / notifications`
+- [x] 基础设施起盘：已引入 Redis/Celery 依赖、Worker/Beat、Docker Compose 与环境变量；JobStore 支持 PostgreSQL
+- [x] 任务数据模型与建表：已新增 `jobs / job_chapters / job_chunks / job_stages / notifications`
 - [x] API v2 骨架：新增 `POST /api/v2/jobs`、`GET /api/v2/jobs`、`GET /api/v2/jobs/{id}`（含 download/stats/events/cancel/notifications，见 test_d3_api_v2_skeleton.py）
 
 ### 9.2 后台任务化

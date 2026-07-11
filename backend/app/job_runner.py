@@ -16,7 +16,8 @@ from .cancellation import JobCancelled, raise_if_cancelled
 from .converter import converter
 from .domain.notification_service import notify_job_completed
 from .domain.status_resolver import resolve_after_conversion
-from .domain.translation_qa_service import attach_translation_qa_report
+from .domain.translation_qa_service import attach_translation_qa_report, audit_translated_epub_output
+from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats
 from .error_reporter import report_error
 from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
 from .storage import job_store
@@ -87,6 +88,47 @@ def _rename_output_with_translated_title(job, result, output_path: Path, suffix:
     return output_path
 
 
+def _finalize_attempt_output(job, result, working_path: Path, default_path: Path, suffix: str) -> Path:
+    """Move an attempt-scoped artifact to its user-facing final filename."""
+    translated_path = _rename_output_with_translated_title(job, result, working_path, suffix)
+    if translated_path != working_path:
+        return translated_path
+    final_path = _unique_output_path(default_path)
+    if working_path.exists() and working_path != final_path:
+        working_path.replace(final_path)
+    return final_path
+
+
+def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
+    if not getattr(job, "enable_translation", False):
+        return
+    audit = audit_translated_epub_output(output_path, target_lang=getattr(job, "target_lang", "zh-CN"))
+    stats = dict(getattr(result, "translation_stats", {}) or {})
+    stats["artifact_audit"] = audit
+    result.translation_stats = stats
+
+    if audit.get("status") not in {"failed", "scan_error"}:
+        return
+
+    residual = int(audit.get("residual_blocks") or 0)
+    checked = int(audit.get("checked_text_blocks") or 0)
+    stats["delivery_gate_failed"] = True
+    stats["deliverable"] = False
+    result.translation_stats = stats
+    result.error_code = ErrorCode.PARTIAL_TRANSLATION.value
+    result.validation_passed = False
+    if audit.get("status") == "scan_error":
+        result.message = (
+            f"翻译交付质检执行失败：{audit.get('reason') or '无法读取成品 EPUB'}。"
+            "已停止交付，请重新翻译或联系管理员。"
+        )
+    else:
+        result.message = (
+            f"翻译交付质检未通过：成品 EPUB 仍有 {residual}/{checked} "
+            "个正文段落疑似未翻译。已停止交付，请重新翻译。"
+        )
+
+
 def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditional_variant: str) -> str:
     """
     根据输出模式对文件名主体做繁简转换，保证下载文件名与正文方向一致。
@@ -116,7 +158,7 @@ def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditio
         return stem
 
 
-def run_job(job_id: str) -> None:
+def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
     """从 store 加载 job 并执行整本转换，更新状态与输出路径。"""
     job = job_store.get(job_id)
     if not job:
@@ -125,9 +167,50 @@ def run_job(job_id: str) -> None:
     if job.status == JobStatus.cancelled:
         logger.info("run_job: job already cancelled", extra={"job_id": job_id})
         return
+    job = job_store.get(job_id) or job
+    now_utc = datetime.now(timezone.utc)
+    translation_stats = None
+    attempt_id = ""
+    if getattr(job, "enable_translation", False):
+        existing_stats = dict(getattr(job, "translation_stats", {}) or {})
+        existing_attempt_id = attempt_id_from_stats(existing_stats)
+        if expected_attempt_id and existing_attempt_id and expected_attempt_id != existing_attempt_id:
+            logger.info(
+                "run_job: stale translation attempt ignored",
+                extra={"job_id": job.id, "expected_attempt_id": expected_attempt_id},
+            )
+            return
+        stats = initial_translation_stats(existing_stats)
+        stats.setdefault("attempt_started_at", now_utc.isoformat())
+        attempt_id = expected_attempt_id or attempt_id_from_stats(stats)
+        stats["attempt_id"] = attempt_id
+        translation_stats = stats
+        job.translation_stats = stats
+        if not existing_attempt_id:
+            job_store.update_status(
+                job.id,
+                job.status,
+                job.message,
+                translation_stats=stats,
+            )
+
+    def update_job_status(status: JobStatus, message: str = "", **kwargs):
+        return job_store.update_status(
+            job.id,
+            status,
+            message,
+            expected_attempt_id=attempt_id or None,
+            **kwargs,
+        )
 
     logger.info("job started", extra={"trace_id": job.trace_id, "job_id": job.id})
-    job_store.update_status(job.id, JobStatus.running, "开始转换")
+    update_job_status(
+        JobStatus.running,
+        "开始转换",
+        translation_stats=translation_stats,
+    )
+    output_path: Path | None = None
+    attempt_scoped_output = False
     try:
         source_name_raw = Path(job.source_filename).stem
         source_name = _convert_filename_stem_for_mode(
@@ -136,7 +219,12 @@ def run_job(job_id: str) -> None:
             getattr(job, "traditional_variant", "auto") or "auto",
         )
         suffix = _build_output_suffix(job)
-        output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
+        default_output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
+        if attempt_id:
+            output_path = OUTPUT_DIR / f".{job.id}-{attempt_id}.epub"
+            attempt_scoped_output = True
+        else:
+            output_path = default_output_path
 
         last_progress_event: str | None = None
 
@@ -157,13 +245,23 @@ def run_job(job_id: str) -> None:
                 started_at=now,
                 finished_at=now,
                 elapsed_ms=elapsed_ms,
-                metadata={"message": message, "level": level},
+                metadata={
+                    "message": message,
+                    "level": level,
+                    **({"attempt_id": attempt_id} if attempt_id else {}),
+                },
             )
             job_store.add_stage(stage)
 
         def is_cancelled() -> bool:
             current = job_store.get(job.id)
-            return bool(current and current.status == JobStatus.cancelled)
+            if not current:
+                return True
+            if current.status == JobStatus.cancelled:
+                return True
+            if attempt_id and attempt_id_from_stats(current.translation_stats) != attempt_id:
+                return True
+            return False
 
         def check_cancelled() -> None:
             raise_if_cancelled(is_cancelled)
@@ -171,7 +269,7 @@ def run_job(job_id: str) -> None:
         def on_progress(msg: str) -> None:
             nonlocal last_progress_event
             check_cancelled()
-            job_store.update_status(job.id, JobStatus.running, msg)
+            update_job_status(JobStatus.running, msg)
             if msg and msg != last_progress_event:
                 last_progress_event = msg
                 record_stage("progress", msg)
@@ -231,8 +329,27 @@ def run_job(job_id: str) -> None:
                 stage_callback=on_stage,
             )
         check_cancelled()
+        if job.enable_translation:
+            current_attempt_stats = dict(job.translation_stats or {})
+            current_attempt_stats.update(dict(getattr(result, "translation_stats", {}) or {}))
+            result.translation_stats = current_attempt_stats
+        _apply_final_artifact_audit(job, result, output_path)
+        if (
+            job.enable_translation
+            and result.error_code == ErrorCode.PARTIAL_TRANSLATION.value
+            and not getattr(result, "validation_passed", True)
+        ):
+            on_stage("translation_quality_gate_failed", result.message or "翻译交付质检未通过")
         status, message, error_code = resolve_after_conversion(result)
-        output_path = _rename_output_with_translated_title(job, result, output_path, suffix)
+        if status != JobStatus.failed:
+            output_path = _finalize_attempt_output(
+                job,
+                result,
+                output_path,
+                default_output_path,
+                suffix,
+            )
+            attempt_scoped_output = False
         if job.enable_translation:
             qa_output_path = (
                 None
@@ -246,8 +363,7 @@ def run_job(job_id: str) -> None:
             )
         if status == JobStatus.failed:
             on_stage("failed", message or "任务失败")
-            job_store.update_status(
-                job.id,
+            update_job_status(
                 status,
                 message,
                 error_code=error_code,
@@ -255,6 +371,8 @@ def run_job(job_id: str) -> None:
                 translation_stats=result.translation_stats,
                 metrics_summary=result.metrics_summary,
             )
+            if attempt_scoped_output and output_path:
+                output_path.unlink(missing_ok=True)
             report_error(
                 error_code=error_code or ErrorCode.CONVERT_FAILED,
                 message=message,
@@ -272,8 +390,7 @@ def run_job(job_id: str) -> None:
                 extra={"trace_id": job.trace_id, "job_id": job.id},
             )
             return
-        job_store.update_status(
-            job.id,
+        update_job_status(
             status,
             message,
             output_path=str(output_path),
@@ -290,7 +407,18 @@ def run_job(job_id: str) -> None:
         )
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
     except JobCancelled as exc:
+        current = job_store.get(job.id)
+        if attempt_id and current and attempt_id_from_stats(current.translation_stats) != attempt_id:
+            if attempt_scoped_output and output_path:
+                output_path.unlink(missing_ok=True)
+            logger.info(
+                "job attempt superseded",
+                extra={"trace_id": job.trace_id, "job_id": job.id, "attempt_id": attempt_id},
+            )
+            return
         message = str(exc) or "用户已停止翻译"
+        if attempt_scoped_output and output_path:
+            output_path.unlink(missing_ok=True)
         if getattr(job_store, "add_stage", None):
             now = datetime.now(timezone.utc)
             job_store.add_stage(JobStage(
@@ -299,9 +427,13 @@ def run_job(job_id: str) -> None:
                 status=StageStatus.completed,
                 started_at=now,
                 finished_at=now,
-                metadata={"message": message, "level": "warning"},
+                metadata={
+                    "message": message,
+                    "level": "warning",
+                    **({"attempt_id": attempt_id} if attempt_id else {}),
+                },
             ))
-        job_store.update_status(job.id, JobStatus.cancelled, message)
+        update_job_status(JobStatus.cancelled, message)
         notify_job_completed(
             job.id,
             JobStatus.cancelled,
@@ -310,7 +442,18 @@ def run_job(job_id: str) -> None:
         )
         logger.info("job cancelled", extra={"trace_id": job.trace_id, "job_id": job.id})
     except Exception as exc:
+        current = job_store.get(job.id)
+        if attempt_id and current and attempt_id_from_stats(current.translation_stats) != attempt_id:
+            if attempt_scoped_output and output_path:
+                output_path.unlink(missing_ok=True)
+            logger.info(
+                "stale job failure ignored",
+                extra={"trace_id": job.trace_id, "job_id": job.id, "attempt_id": attempt_id},
+            )
+            return
         message = str(exc)
+        if attempt_scoped_output and output_path:
+            output_path.unlink(missing_ok=True)
         error_code = ErrorCode.CONVERT_FAILED
         if "AI 翻译失败" in message or "翻译流程未完成" in message:
             error_code = ErrorCode.TRANSLATION_FAILED
@@ -322,9 +465,13 @@ def run_job(job_id: str) -> None:
                 status=StageStatus.completed,
                 started_at=now,
                 finished_at=now,
-                metadata={"message": message or "任务失败", "level": "error"},
+                metadata={
+                    "message": message or "任务失败",
+                    "level": "error",
+                    **({"attempt_id": attempt_id} if attempt_id else {}),
+                },
             ))
-        job_store.update_status(job.id, JobStatus.failed, message, error_code=error_code)
+        update_job_status(JobStatus.failed, message, error_code=error_code)
         report_error(
             error_code=error_code,
             message=message,

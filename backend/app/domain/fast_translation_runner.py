@@ -30,6 +30,7 @@ from app.domain.book_reduce_service import make_get_chapter_content, reduce_and_
 from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
 from app.domain.failed_chunk_archive import archive_failed_chunk
+from app.domain.translation_attempt import attempt_id_from_stats
 from app.domain.manifest_service import build_manifest
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_qa_service import attach_translation_qa_report
@@ -173,13 +174,20 @@ def _chapter_status(chunk_results: list[ChunkResult]) -> ChapterStatus:
     return ChapterStatus.partial_completed
 
 
-def _upsert_chapter(chapter: JobChapter) -> None:
+def _upsert_chapter(chapter: JobChapter, *, expected_attempt_id: str = "") -> None:
     upsert = getattr(job_store, "upsert_chapter", None)
     if upsert:
-        upsert(chapter)
+        upsert(chapter, expected_attempt_id=expected_attempt_id or None)
 
 
-def _upsert_chunk(job_id: str, chapter_id: str, cr: ChunkResult, status: ChunkStatus) -> None:
+def _upsert_chunk(
+    job_id: str,
+    chapter_id: str,
+    cr: ChunkResult,
+    status: ChunkStatus,
+    *,
+    expected_attempt_id: str = "",
+) -> None:
     upsert = getattr(job_store, "upsert_chunk", None)
     if not upsert:
         return
@@ -208,8 +216,14 @@ def _upsert_chunk(job_id: str, chapter_id: str, cr: ChunkResult, status: ChunkSt
         error_message=cr.error,
         created_at=now,
         updated_at=now,
-    ))
-    archive_failed_chunk(job_id=job_id, chapter_id=chapter_id, chunk=cr, status=status)
+    ), expected_attempt_id=expected_attempt_id or None)
+    archive_failed_chunk(
+        job_id=job_id,
+        chapter_id=chapter_id,
+        chunk=cr,
+        status=status,
+        attempt_id=expected_attempt_id,
+    )
 
 
 def _run_epubcheck(output_path: Path) -> bool:
@@ -335,12 +349,18 @@ async def _translate_manifest_async(
         model=getattr(job, "translation_model", None) or None,
     )
     translator.cancel_check = cancel_check
+    expected_attempt_id = attempt_id_from_stats(job.translation_stats)
 
     body_chapters = [
         ch for ch in manifest.get("chapters", [])
         if ch.get("chapter_kind") == ChapterKind.body.value and (ch.get("chunks") or [])
     ]
     manifest_body_chunk_total = sum(len(ch.get("chunks") or []) for ch in body_chapters)
+    manifest_stats = manifest.get("stats") if isinstance(manifest.get("stats"), dict) else {}
+    image_note_chunks_skipped = int(manifest_stats.get("image_note_chunks_skipped") or 0)
+    image_caption_chunks = int(manifest_stats.get("image_caption_chunks") or 0)
+    reference_note_chunks_skipped = int(manifest_stats.get("reference_note_chunks_skipped") or 0)
+    structured_note_chunks = int(manifest_stats.get("structured_note_chunks") or 0)
     configured_chapter_limit = int(os.environ.get("EPUB_CHAPTER_CONCURRENCY", "4"))
     chapter_limit_cap = int(os.environ.get("EPUB_CHAPTER_CONCURRENCY_CAP", "2"))
     chapter_limit = max(1, min(configured_chapter_limit, max(1, chapter_limit_cap)))
@@ -356,24 +376,196 @@ async def _translate_manifest_async(
         "audit_flags_count": {},
         "audit_examples": [],
     }
+    rescue_stats = {
+        "failed_chunk_rescue_enabled": os.environ.get("EPUB_FAILED_CHUNK_RESCUE", "1").lower()
+        not in {"0", "false", "no", "off"},
+        "failed_chunk_rescue_candidates": 0,
+        "failed_chunk_rescue_attempted": 0,
+        "failed_chunk_rescue_succeeded": 0,
+        "failed_chunk_rescue_failed": 0,
+        "failed_chunk_rescue_concurrency": 0,
+    }
+
+    def _record_quality_audit(chapter: dict, spec: dict, quality: dict) -> tuple[bool, bool]:
+        risk_level = quality.get("risk_level")
+        warned = risk_level == "warn"
+        failed = risk_level == "fail"
+        if warned:
+            audit["audit_warn_chunks"] += 1
+        elif failed:
+            audit["audit_failed_chunks"] += 1
+        for flag in quality.get("flags", []):
+            audit["audit_flags_count"][flag] = audit["audit_flags_count"].get(flag, 0) + 1
+        if risk_level in ("warn", "fail") and len(audit["audit_examples"]) < 20:
+            audit["audit_examples"].append({
+                "chapter_id": chapter["chapter_id"],
+                "chunk_id": spec["chunk_id"],
+                "risk_level": risk_level,
+                "flags": quality.get("flags", []),
+                "source_text": quality.get("source_text", "")[:160],
+                "translated_text": quality.get("translated_text", "")[:160],
+            })
+        return warned, failed
+
+    def _audit_summary_from_results(flat_results: list[ChunkResult]) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "audit_warn_chunks": 0,
+            "audit_failed_chunks": 0,
+            "audit_flags_count": {},
+            "audit_examples": [],
+        }
+        for cr in flat_results:
+            quality = cr.audit_json or {}
+            risk_level = quality.get("risk_level")
+            if risk_level == "warn":
+                summary["audit_warn_chunks"] += 1
+            elif risk_level == "fail":
+                summary["audit_failed_chunks"] += 1
+            for flag in quality.get("flags", []):
+                summary["audit_flags_count"][flag] = summary["audit_flags_count"].get(flag, 0) + 1
+            if risk_level in ("warn", "fail") and len(summary["audit_examples"]) < 20:
+                summary["audit_examples"].append({
+                    "chapter_id": quality.get("chapter_id"),
+                    "file_path": quality.get("file_path"),
+                    "chunk_id": cr.chunk_id,
+                    "risk_level": risk_level,
+                    "flags": quality.get("flags", []),
+                    "source_text": quality.get("source_text", "")[:160],
+                    "translated_text": quality.get("translated_text", "")[:160],
+                })
+        return summary
+
+    def _build_chunk_result(chapter: dict, spec: dict, res: Any) -> tuple[ChunkResult, ChunkStatus, bool, bool]:
+        status = ChunkStatus.failed if res.error else (ChunkStatus.cached if res.cached else ChunkStatus.translated)
+        raw_text = BeautifulSoup(spec["html"], "html.parser").get_text()
+        if not translator._should_translate(raw_text):
+            status = ChunkStatus.skipped
+
+        translated_html = res.translated_html
+        if glossary and not res.error and status != ChunkStatus.skipped:
+            fixed_html, verify = verify_and_fix(spec["html"], translated_html, glossary)
+            translated_html = fixed_html
+            if verify.fixed_count:
+                audit["glossary_fixed_count"] += verify.fixed_count
+                for term, count in verify.fixed_terms.items():
+                    audit["glossary_fixed_terms"][term] = audit["glossary_fixed_terms"].get(term, 0) + count
+            for item in verify.unfixable_examples:
+                if len(audit["glossary_unfixable_examples"]) < 20:
+                    audit["glossary_unfixable_examples"].append(item)
+
+        quality = audit_translation_chunk(
+            original_html=spec["html"],
+            translated_html=translated_html,
+            glossary=glossary if status != ChunkStatus.skipped else {},
+            error_like_checker=translator._looks_like_error_response,
+        ).to_dict()
+        quality["chapter_id"] = chapter["chapter_id"]
+        quality["file_path"] = chapter["file_path"]
+        quality["chunk_id"] = spec["chunk_id"]
+        if res.error:
+            quality["flags"] = list(dict.fromkeys([*quality.get("flags", []), "translation_error"]))
+            quality["risk_level"] = "fail"
+        warned, failed = _record_quality_audit(chapter, spec, quality)
+
+        return (
+            ChunkResult(
+                chunk_id=spec["chunk_id"],
+                sequence=spec["sequence"],
+                locator=spec["locator"],
+                original_html=spec["html"],
+                translated_html=translated_html,
+                cached=res.cached,
+                error=res.error,
+                model=res.model,
+                base_url=res.base_url,
+                prompt_tokens=res.prompt_tokens,
+                completion_tokens=res.completion_tokens,
+                latency_ms=res.latency_ms,
+                retry_count=getattr(res, "retry_count", 0),
+                error_type=getattr(res, "error_type", None),
+                audit_json=quality,
+            ),
+            status,
+            warned,
+            failed,
+        )
+
+    def _rewrite_chapter_output(chapter: dict, chunk_results: list[ChunkResult]) -> None:
+        original = content_by_file.get(chapter["file_path"])
+        raise_if_cancelled(cancel_check)
+        if original is not None:
+            reduced = apply_chunk_results(original, chunk_results, job.bilingual)
+            set_chapter_output(job.id, chapter["file_path"], reduced)
+        else:
+            emit_progress(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
+
+    def _finish_chapter(
+        chapter: dict,
+        *,
+        chunk_results: list[ChunkResult],
+        chunk_statuses: list[ChunkStatus],
+        started: datetime,
+        message_prefix: str,
+    ) -> None:
+        failed = sum(1 for c in chunk_results if c.error)
+        cached = sum(1 for s in chunk_statuses if s == ChunkStatus.cached)
+        _upsert_chapter(JobChapter(
+            job_id=job.id,
+            chapter_id=chapter["chapter_id"],
+            file_path=chapter["file_path"],
+            chapter_kind=ChapterKind.body,
+            status=_chapter_status(chunk_results),
+            chunk_total=len(chunk_results),
+            chunk_success=len(chunk_results) - failed,
+            chunk_failed=failed,
+            chunk_cached=cached,
+            started_at=started,
+            finished_at=_now(),
+            error_message=translator.stats.last_error if failed else None,
+        ), expected_attempt_id=expected_attempt_id)
+        _publish_live_translation_stats(
+            message=f"{message_prefix}：{chapter['file_path']}（失败 {failed}/{len(chunk_results)} 段）",
+            force=True,
+        )
 
     def _build_translation_stats(*, live: bool, flat_results: list[ChunkResult] | None = None) -> dict[str, Any]:
         stats = translator.stats.to_dict(translator.model)
+        audit_summary = dict(audit)
+        if flat_results is not None:
+            audit_summary.update(_audit_summary_from_results(flat_results))
         stats.update({
             "chapters_total": len(body_chapters),
             "manifest_chunks_total": manifest_body_chunk_total,
+            "total_chunks": len(flat_results) if flat_results is not None else manifest_body_chunk_total,
             "chunks_total": len(flat_results) if flat_results is not None else manifest_body_chunk_total,
+            "image_note_chunks_skipped": image_note_chunks_skipped,
+            "image_caption_chunks": image_caption_chunks,
+            "reference_note_chunks_skipped": reference_note_chunks_skipped,
+            "structured_note_chunks": structured_note_chunks,
             "chunks_processed": int(stats.get("translated_chunks") or 0)
             + int(stats.get("cached_chunks") or 0)
             + int(stats.get("failed_chunks") or 0),
             "live": live,
-            **audit,
+            "artifact_audit": {},
+            "delivery_gate_failed": False,
+            **audit_summary,
+            **rescue_stats,
         })
         if flat_results is not None:
-            stats["chunks_skipped"] = sum(
-                1 for cr in flat_results
+            skipped_ids = {
+                cr.chunk_id for cr in flat_results
                 if not translator._should_translate(BeautifulSoup(cr.original_html, "html.parser").get_text())
-            )
+            }
+            skipped = len(skipped_ids)
+            failed = sum(1 for cr in flat_results if cr.error)
+            cached = sum(1 for cr in flat_results if cr.cached and not cr.error and cr.chunk_id not in skipped_ids)
+            translated = len(flat_results) - failed - cached - skipped
+            stats["chunks_skipped"] = skipped
+            stats["failed_chunks"] = failed
+            stats["cached_chunks"] = cached
+            stats["translated_chunks"] = max(0, translated)
+            stats["chunks_processed"] = len(flat_results)
+            stats["all_failed"] = (translated + cached + skipped) == 0 and failed > 0
         return stats
 
     def _publish_translation_stats(
@@ -404,6 +596,7 @@ async def _translate_manifest_async(
                 current_status,
                 current_message,
                 translation_stats=stats,
+                expected_attempt_id=attempt_id_from_stats(job.translation_stats) or None,
             )
         except Exception:
             logger.warning("failed to publish live translation stats", exc_info=True)
@@ -432,12 +625,15 @@ async def _translate_manifest_async(
             chapter_kind=kind,
             status=status,
             chunk_total=len(chunks),
-        ))
+        ), expected_attempt_id=expected_attempt_id)
+
+    chapter_started_at_by_id: dict[str, datetime] = {}
 
     async def run_chapter(chapter: dict) -> list[ChunkResult]:
         async with chapter_sem:
             raise_if_cancelled(cancel_check)
             started = _now()
+            chapter_started_at_by_id[chapter["chapter_id"]] = started
             specs = chapter.get("chunks") or []
             _upsert_chapter(JobChapter(
                 job_id=job.id,
@@ -447,13 +643,14 @@ async def _translate_manifest_async(
                 status=ChapterStatus.running,
                 chunk_total=len(specs),
                 started_at=started,
-            ))
+            ), expected_attempt_id=expected_attempt_id)
             emit_progress(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
             raise_if_cancelled(cancel_check)
 
             translated = await translator.translate_many_chunks_async(
                 [c["html"] for c in specs],
                 progress_label=f"快速翻译 {chapter['file_path']}",
+                translation_strategies=[c.get("translation_strategy") or "html" for c in specs],
             )
             raise_if_cancelled(cancel_check)
             chunk_results: list[ChunkResult] = []
@@ -462,79 +659,22 @@ async def _translate_manifest_async(
             chapter_audit_warn = 0
             for spec, res in zip(specs, translated):
                 raise_if_cancelled(cancel_check)
-                status = ChunkStatus.failed if res.error else (ChunkStatus.cached if res.cached else ChunkStatus.translated)
-                raw_text = BeautifulSoup(spec["html"], "html.parser").get_text()
-                if not translator._should_translate(raw_text):
-                    status = ChunkStatus.skipped
-
-                translated_html = res.translated_html
-                if glossary and not res.error and status != ChunkStatus.skipped:
-                    fixed_html, verify = verify_and_fix(spec["html"], translated_html, glossary)
-                    translated_html = fixed_html
-                    if verify.fixed_count:
-                        audit["glossary_fixed_count"] += verify.fixed_count
-                        for term, count in verify.fixed_terms.items():
-                            audit["glossary_fixed_terms"][term] = audit["glossary_fixed_terms"].get(term, 0) + count
-                    for item in verify.unfixable_examples:
-                        if len(audit["glossary_unfixable_examples"]) < 20:
-                            audit["glossary_unfixable_examples"].append(item)
-
-                quality = audit_translation_chunk(
-                    original_html=spec["html"],
-                    translated_html=translated_html,
-                    glossary=glossary if status != ChunkStatus.skipped else {},
-                    error_like_checker=translator._looks_like_error_response,
-                ).to_dict()
-                if res.error:
-                    quality["flags"] = list(dict.fromkeys([*quality.get("flags", []), "translation_error"]))
-                    quality["risk_level"] = "fail"
-                risk_level = quality.get("risk_level")
-                if risk_level == "warn":
-                    audit["audit_warn_chunks"] += 1
+                cr, status, warned, failed_quality = _build_chunk_result(chapter, spec, res)
+                if warned:
                     chapter_audit_warn += 1
-                elif risk_level == "fail":
-                    audit["audit_failed_chunks"] += 1
+                elif failed_quality:
                     chapter_audit_fail += 1
-                for flag in quality.get("flags", []):
-                    audit["audit_flags_count"][flag] = audit["audit_flags_count"].get(flag, 0) + 1
-                if risk_level in ("warn", "fail") and len(audit["audit_examples"]) < 20:
-                    audit["audit_examples"].append({
-                        "chapter_id": chapter["chapter_id"],
-                        "chunk_id": spec["chunk_id"],
-                        "risk_level": risk_level,
-                        "flags": quality.get("flags", []),
-                        "source_text": quality.get("source_text", "")[:160],
-                        "translated_text": quality.get("translated_text", "")[:160],
-                    })
-
-                cr = ChunkResult(
-                    chunk_id=spec["chunk_id"],
-                    sequence=spec["sequence"],
-                    locator=spec["locator"],
-                    original_html=spec["html"],
-                    translated_html=translated_html,
-                    cached=res.cached,
-                    error=res.error,
-                    model=res.model,
-                    base_url=res.base_url,
-                    prompt_tokens=res.prompt_tokens,
-                    completion_tokens=res.completion_tokens,
-                    latency_ms=res.latency_ms,
-                    retry_count=getattr(res, "retry_count", 0),
-                    error_type=getattr(res, "error_type", None),
-                    audit_json=quality,
-                )
                 chunk_results.append(cr)
                 chunk_statuses.append(status)
-                _upsert_chunk(job.id, chapter["chapter_id"], cr, status)
+                _upsert_chunk(
+                    job.id,
+                    chapter["chapter_id"],
+                    cr,
+                    status,
+                    expected_attempt_id=expected_attempt_id,
+                )
 
-            original = content_by_file.get(chapter["file_path"])
-            raise_if_cancelled(cancel_check)
-            if original is not None:
-                reduced = apply_chunk_results(original, chunk_results, job.bilingual)
-                set_chapter_output(job.id, chapter["file_path"], reduced)
-            else:
-                emit_progress(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
+            _rewrite_chapter_output(chapter, chunk_results)
 
             failed = sum(1 for c in chunk_results if c.error)
             if failed:
@@ -549,30 +689,156 @@ async def _translate_manifest_async(
                 emit_progress(
                     f"章节质检提示：{chapter['file_path']} {chapter_audit_warn} 段需要复核"
                 )
-            # 按最终 status 统计，避免 skip 块（translate_many 返回 cached=True）被误计为缓存命中
-            cached = sum(1 for s in chunk_statuses if s == ChunkStatus.cached)
-            _upsert_chapter(JobChapter(
-                job_id=job.id,
-                chapter_id=chapter["chapter_id"],
-                file_path=chapter["file_path"],
-                chapter_kind=ChapterKind.body,
-                status=_chapter_status(chunk_results),
-                chunk_total=len(chunk_results),
-                chunk_success=len(chunk_results) - failed,
-                chunk_failed=failed,
-                chunk_cached=cached,
-                started_at=started,
-                finished_at=_now(),
-                error_message=translator.stats.last_error if failed else None,
-            ))
-            _publish_live_translation_stats(
-                message=f"章节翻译完成：{chapter['file_path']}（失败 {failed}/{len(chunk_results)} 段）",
-                force=True,
+            _finish_chapter(
+                chapter,
+                chunk_results=chunk_results,
+                chunk_statuses=chunk_statuses,
+                started=started,
+                message_prefix="章节翻译完成",
             )
             return chunk_results
 
+    def _final_chunk_status(cr: ChunkResult) -> ChunkStatus:
+        raw_text = BeautifulSoup(cr.original_html, "html.parser").get_text()
+        if not translator._should_translate(raw_text):
+            return ChunkStatus.skipped
+        if cr.error:
+            return ChunkStatus.failed
+        return ChunkStatus.cached if cr.cached else ChunkStatus.translated
+
+    async def rescue_failed_chunks_async(
+        chapter_results_by_id: dict[str, list[ChunkResult]],
+    ) -> None:
+        if not rescue_stats["failed_chunk_rescue_enabled"]:
+            return
+
+        rescue_items: list[tuple[dict, list[ChunkResult], int, dict, ChunkResult]] = []
+        for chapter in body_chapters:
+            chapter_id = chapter["chapter_id"]
+            specs = chapter.get("chunks") or []
+            specs_by_chunk_id = {spec["chunk_id"]: spec for spec in specs}
+            chunk_results = chapter_results_by_id.get(chapter_id, [])
+            for position, cr in enumerate(chunk_results):
+                if not cr.error:
+                    continue
+                if int(getattr(cr, "retry_count", 0) or 0) >= translator.chunk_retry_budget:
+                    continue
+                spec = specs_by_chunk_id.get(cr.chunk_id)
+                if spec is None and 0 <= position < len(specs):
+                    spec = specs[position]
+                if spec is not None:
+                    rescue_items.append((chapter, chunk_results, position, spec, cr))
+
+        rescue_stats["failed_chunk_rescue_candidates"] = len(rescue_items)
+        if not rescue_items:
+            return
+
+        configured = int(os.environ.get("EPUB_FAILED_CHUNK_RESCUE_CONCURRENCY", "2"))
+        cap = int(os.environ.get("EPUB_FAILED_CHUNK_RESCUE_CONCURRENCY_CAP", "2"))
+        rescue_concurrency = max(1, min(configured, max(1, cap)))
+        rescue_stats["failed_chunk_rescue_concurrency"] = rescue_concurrency
+        queue: asyncio.Queue[tuple[dict, list[ChunkResult], int, dict, ChunkResult]] = asyncio.Queue()
+        for item in rescue_items:
+            queue.put_nowait(item)
+
+        emit_progress(f"失败段落补译队列启动：{len(rescue_items)} 段，{rescue_concurrency} 并发")
+        _log_stage(
+            "failed_chunk_rescue_start",
+            candidates=len(rescue_items),
+            concurrency=rescue_concurrency,
+        )
+        touched_chapters: set[str] = set()
+
+        async def worker() -> None:
+            while True:
+                try:
+                    chapter, chunk_results, position, spec, old_cr = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    raise_if_cancelled(cancel_check)
+                    rescue_stats["failed_chunk_rescue_attempted"] += 1
+                    _upsert_chunk(
+                        job.id,
+                        chapter["chapter_id"],
+                        old_cr,
+                        ChunkStatus.retrying,
+                        expected_attempt_id=expected_attempt_id,
+                    )
+                    emit_progress(
+                        f"失败段落补译中：{chapter['file_path']} #{old_cr.sequence}"
+                    )
+                    translated = await translator.translate_many_chunks_async(
+                        [old_cr.original_html],
+                        progress_label=f"失败段落补译 {chapter['file_path']}",
+                        translation_strategies=[spec.get("translation_strategy") or "html"],
+                        prior_retry_counts=[int(getattr(old_cr, "retry_count", 0) or 0)],
+                    )
+                    res = translated[0]
+                    new_cr, status, _warned, _failed_quality = _build_chunk_result(chapter, spec, res)
+                    chunk_results[position] = new_cr
+                    _upsert_chunk(
+                        job.id,
+                        chapter["chapter_id"],
+                        new_cr,
+                        status,
+                        expected_attempt_id=expected_attempt_id,
+                    )
+                    if new_cr.error:
+                        rescue_stats["failed_chunk_rescue_failed"] += 1
+                        emit_progress(
+                            f"失败段落补译仍失败：{chapter['file_path']} #{new_cr.sequence}，原因：{_short_log(new_cr.error)}"
+                        )
+                    else:
+                        rescue_stats["failed_chunk_rescue_succeeded"] += 1
+                        touched_chapters.add(chapter["chapter_id"])
+                        emit_progress(
+                            f"失败段落补译成功：{chapter['file_path']} #{new_cr.sequence}"
+                        )
+                    _publish_live_translation_stats(
+                        message=(
+                            f"失败段落补译进度："
+                            f"{rescue_stats['failed_chunk_rescue_attempted']}/{len(rescue_items)}"
+                        ),
+                        force=True,
+                    )
+                finally:
+                    queue.task_done()
+
+        await asyncio.gather(*(worker() for _ in range(rescue_concurrency)))
+        raise_if_cancelled(cancel_check)
+
+        for chapter in body_chapters:
+            chapter_id = chapter["chapter_id"]
+            if chapter_id not in touched_chapters:
+                continue
+            chunk_results = chapter_results_by_id.get(chapter_id, [])
+            chunk_statuses = [_final_chunk_status(cr) for cr in chunk_results]
+            _rewrite_chapter_output(chapter, chunk_results)
+            _finish_chapter(
+                chapter,
+                chunk_results=chunk_results,
+                chunk_statuses=chunk_statuses,
+                started=chapter_started_at_by_id.get(chapter_id) or _now(),
+                message_prefix="章节补译完成",
+            )
+
+        _log_stage(
+            "failed_chunk_rescue_done",
+            candidates=rescue_stats["failed_chunk_rescue_candidates"],
+            attempted=rescue_stats["failed_chunk_rescue_attempted"],
+            succeeded=rescue_stats["failed_chunk_rescue_succeeded"],
+            failed=rescue_stats["failed_chunk_rescue_failed"],
+        )
+
     raise_if_cancelled(cancel_check)
     chapter_results = await asyncio.gather(*(run_chapter(ch) for ch in body_chapters))
+    raise_if_cancelled(cancel_check)
+    chapter_results_by_id = {
+        ch["chapter_id"]: results
+        for ch, results in zip(body_chapters, chapter_results)
+    }
+    await rescue_failed_chunks_async(chapter_results_by_id)
     raise_if_cancelled(cancel_check)
     flat_results = [cr for chapter in chapter_results for cr in chapter]
     stats = _build_translation_stats(live=False, flat_results=flat_results)

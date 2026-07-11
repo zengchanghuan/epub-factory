@@ -37,3 +37,16 @@ test("F14-3 点击重启会调用 restart 接口并写入 UI 日志", () => {
   assert.ok(html.includes("restartRequestedJobId"), "重启请求中不应被轮询重新启用按钮");
   assert.ok(html.includes("已请求重启翻译，正在重新加入队列"), "UI 日志应提示重启请求");
 });
+
+test("F14-4 运行中不应重复发送重启请求并应清空旧日志", () => {
+  assert.ok(html.includes("let currentJobStatus"), "应记录当前任务状态");
+  assert.ok(
+    html.includes('currentJobStatus === "queued" || currentJobStatus === "running" || currentJobStatus === "pending_payment"'),
+    "运行中、排队中、待支付状态应被前端拦截"
+  );
+  assert.ok(
+    html.includes("任务仍在处理中；如需重启，请先停止当前翻译。"),
+    "运行中重启提示应说明先停止当前翻译"
+  );
+  assert.ok(html.includes("resetProgressLog();"), "重启成功后应清空上一轮日志");
+});

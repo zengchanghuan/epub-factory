@@ -1030,6 +1030,7 @@
       border-radius: 999px;
     }
     .timing-bar-fill.server { background: #64748b; }
+    .timing-bar-fill.unattributed { background: #f59e0b; }
     .timing-section-title {
       margin: 10px 0 5px;
       color: var(--muted);
@@ -1050,6 +1051,71 @@
       border-bottom: 1px solid var(--border);
     }
     .timing-list-row:last-child { border-bottom: none; }
+    .timing-location-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .timing-location-row:last-child { border-bottom: none; }
+    .timing-location-code {
+      display: block;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      word-break: break-word;
+    }
+    .timing-location-title {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .timing-location-hint {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .timing-location-snippet {
+      display: block;
+      margin-top: 4px;
+      color: var(--subtle);
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .timing-location-details {
+      margin-top: 4px;
+      color: var(--subtle);
+    }
+    .timing-location-details summary {
+      cursor: pointer;
+      user-select: none;
+    }
+    .timing-location-detail-line {
+      margin-top: 3px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      word-break: break-word;
+    }
+    .timing-location-meta {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .timing-location-state {
+      color: var(--subtle);
+      white-space: nowrap;
+    }
+    @media (max-width: 520px) {
+      .timing-location-row { grid-template-columns: 1fr; }
+      .timing-location-state { white-space: normal; }
+    }
 
     /* ── Quality card ────────────────────────────────────────────────────── */
     .quality-card {
@@ -1406,21 +1472,21 @@
             <div class="model-picker">
               <div class="model-picker-head">
                 <strong>翻译模型</strong>
-                <span class="model-picker-badge">默认 Pro</span>
+                <span class="model-picker-badge">默认 Flash</span>
               </div>
-              <input type="hidden" id="translationModel" value="deepseek-v4-pro" />
+              <input type="hidden" id="translationModel" value="deepseek-v4-flash" />
               <div class="model-options">
                 <label class="model-option">
-                  <input type="radio" name="translationModelChoice" value="deepseek-v4-pro" checked>
+                  <input type="radio" name="translationModelChoice" value="deepseek-v4-pro">
                   <span class="model-option-title">
                     <span class="model-radio-dot"></span>
                     <strong>DeepSeek V4 Pro</strong>
                     <span class="model-current">当前使用</span>
                   </span>
-                  <span class="model-option-desc">优先稳定性，适合复杂 EPUB 与反复重试段落。</span>
+                  <span class="model-option-desc">优先稳定性，适合手动指定复杂 EPUB；坏段落补译会自动升级。</span>
                 </label>
                 <label class="model-option">
-                  <input type="radio" name="translationModelChoice" value="deepseek-v4-flash">
+                  <input type="radio" name="translationModelChoice" value="deepseek-v4-flash" checked>
                   <span class="model-option-title">
                     <span class="model-radio-dot"></span>
                     <strong>DeepSeek V4 Flash</strong>
@@ -1620,6 +1686,8 @@
             <div class="timing-list" id="translationTimingStages"></div>
             <div class="timing-section-title" id="translationFailureTitle">失败类别</div>
             <div class="timing-list" id="translationTimingFailures"></div>
+            <div class="timing-section-title" id="translationFailedLocationTitle">失败段落定位</div>
+            <div class="timing-list" id="translationTimingFailedLocations"></div>
             <div class="timing-section-title">建议动作</div>
             <div class="timing-list" id="translationTimingRecommendations"></div>
           </div>
@@ -1722,7 +1790,10 @@
     let lastProgressMessage = "";
     let renderedEventKeys = new Set();
     let currentJobId = null;
+    let currentJobStatus = "";
     let currentJobIsTranslation = false;
+    let currentTranslationAttemptStartedAt = "";
+    let currentTranslationAttemptId = "";
     let lastTranslationTimingLog = "";
     let translationTimingCopyTimer = null;
 
@@ -1797,6 +1868,72 @@
       return map[code] || code || "未知";
     }
 
+    function shortChunkText(text, limit = 120) {
+      const clean = String(text || "").replace(/\s+/g, " ").trim();
+      if (!clean) return "";
+      return clean.length > limit ? `${clean.slice(0, limit).trim()}...` : clean;
+    }
+
+    function compactFileName(path) {
+      return String(path || "").split("/").filter(Boolean).pop() || "";
+    }
+
+    function formatHumanChunkLocation(chunk) {
+      if (!chunk) {
+        return { title: "原书：位置暂不可识别", hint: "在电子书里搜索原文片段定位。", technical: "", sourceSnippet: "" };
+      }
+      const chapterTitle = chunk.reference_chapter_title || chunk.source_chapter_title || "";
+      const page = chunk.reference_page || chunk.source_page || "";
+      const chapterFallback = chunk.reference_chapter_number ? `Chapter ${chunk.reference_chapter_number}` : "";
+      const chapter = chapterTitle || chapterFallback;
+      const footnote = chunk.footnote_number ? String(chunk.footnote_number) : "";
+      const sourceSnippet = shortChunkText(chunk.source_text || chunk.translated_text || "");
+      let title = "";
+      let hint = "";
+      if (footnote) {
+        title = `原书：${chapter ? `${chapter} · ` : ""}${page ? `第 ${page} 页 · ` : ""}脚注 ${footnote}`;
+        hint = page
+          ? `打开原 EPUB 到第 ${page} 页，找脚注 ${footnote} 对应的注释文字。`
+          : `打开原 EPUB 的${chapter ? ` ${chapter}` : "对应章节"}，找脚注 ${footnote}。`;
+      } else if (chapter || page) {
+        title = `原书：${chapter || "未知章节"}${page ? ` · 第 ${page} 页` : ""}`;
+        hint = page
+          ? `打开原 EPUB 到第 ${page} 页，搜索下面的原文片段。`
+          : `打开原 EPUB 的 ${chapter}，搜索下面的原文片段。`;
+      } else {
+        const file = compactFileName(chunk.source_file || "");
+        title = file ? `原书：暂无页码，先按原文搜索（内部文件 ${file}）` : "原书：页码/章节暂不可识别";
+        hint = "在电子书里搜索下面的原文片段定位；技术定位只用于排查程序内部位置。";
+      }
+
+      const technicalParts = [];
+      if (chunk.chapter_id || chunk.chunk_id) {
+        technicalParts.push(`chunk=${[chunk.chapter_id, chunk.chunk_id].filter(Boolean).join("/")}`);
+      }
+      if (chunk.reference_file || chunk.reference_anchor) {
+        const ref = `${chunk.reference_file || ""}${chunk.reference_anchor ? `#${chunk.reference_anchor}` : ""}`;
+        if (ref) technicalParts.push(`ref=${ref}`);
+      }
+      if (chunk.source_file) technicalParts.push(`file=${chunk.source_file}`);
+      if (chunk.locator) technicalParts.push(`locator=${chunk.locator}`);
+      return {
+        title,
+        hint,
+        technical: technicalParts.join(" · "),
+        sourceSnippet,
+      };
+    }
+
+    function formatChunkLocation(chunk) {
+      const human = formatHumanChunkLocation(chunk);
+      return [
+        human.title,
+        human.hint,
+        human.sourceSnippet ? `原文片段：${human.sourceSnippet}` : "",
+        human.technical ? `技术定位：${human.technical}` : "",
+      ].filter(Boolean).join(" | ");
+    }
+
     function renderTranslationDiagnostics(data) {
       if (!translationDiagnostics) return;
       const summary = data.summary || {};
@@ -1811,14 +1948,22 @@
       const causesText = causes.length
         ? `<ul class="diagnostic-list">${causes.map(c => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
         : "";
-      const chunksText = failedChunks.slice(0, 5).map(chunk => `
-        <div class="diagnostic-chunk">
-          <div class="diagnostic-chunk-code">${escapeHtml(chunk.chapter_id || "")} / ${escapeHtml(chunk.chunk_id || "")} · ${escapeHtml(diagnosticCategoryLabel(chunk.category))} · 重试 ${Number(chunk.retry_count || 0)} 次 · ${Number(chunk.latency_ms || 0)} ms</div>
-          <div>原文：${escapeHtml(chunk.source_text || "-")}</div>
-          <div>译文：${escapeHtml(chunk.translated_text || "-")}</div>
-          ${chunk.error_message ? `<div>错误：${escapeHtml(chunk.error_message)}</div>` : ""}
-        </div>
-      `).join("");
+      const chunksText = failedChunks.slice(0, 5).map(chunk => {
+        const human = formatHumanChunkLocation(chunk);
+        return `
+          <div class="diagnostic-chunk">
+            <div class="diagnostic-chunk-code">${escapeHtml(human.title)} · ${escapeHtml(diagnosticCategoryLabel(chunk.category))} · 重试 ${Number(chunk.retry_count || 0)} 次 · ${Number(chunk.latency_ms || 0)} ms</div>
+            <div>${escapeHtml(human.hint)}</div>
+            ${human.sourceSnippet ? `<div>原文片段：${escapeHtml(human.sourceSnippet)}</div>` : ""}
+            <details class="timing-location-details">
+              <summary>技术定位</summary>
+              <div class="timing-location-detail-line">${escapeHtml(human.technical || "-")}</div>
+            </details>
+            <div>译文：${escapeHtml(shortChunkText(chunk.translated_text || "-", 120))}</div>
+            ${chunk.error_message ? `<div>错误：${escapeHtml(chunk.error_message)}</div>` : ""}
+          </div>
+        `;
+      }).join("");
       translationDiagnostics.innerHTML = `
         <div class="diagnostic-grid">
           <div class="diagnostic-metric"><strong>${Number(summary.failed_chunks || 0)}</strong><span>失败段落</span></div>
@@ -1918,10 +2063,14 @@
 
     function restartTranslation(jobId) {
       if (!jobId || !restartTranslationBtn) return;
+      if (currentJobStatus === "queued" || currentJobStatus === "running" || currentJobStatus === "pending_payment") {
+        errorMsg.textContent = "任务仍在处理中；如需重启，请先停止当前翻译。";
+        errorMsg.style.display = "block";
+        return;
+      }
       restartRequestedJobId = jobId;
       restartTranslationBtn.disabled = true;
       restartTranslationBtn.textContent = "排队中...";
-      appendProgressLog("已请求重启翻译，正在重新加入队列...");
       fetch(`${API}/api/v2/jobs/${jobId}/restart-translation`, {
         method: "POST",
         headers: authHeaders(jobId),
@@ -1934,9 +2083,14 @@
         .then(data => {
           restartRequestedJobId = "";
           hideQaReport();
+          resetProgressLog();
           setRestartActionsVisible(false);
           setRunningActionsVisible(false);
+          currentJobStatus = data.status || "queued";
+          currentTranslationAttemptStartedAt = data.translation_stats?.attempt_started_at || "";
+          currentTranslationAttemptId = data.translation_stats?.attempt_id || "";
           setStatus("pending", data.message || "重启翻译已排队");
+          appendProgressLog("已请求重启翻译，正在重新加入队列...");
           appendProgressLog(data.message || "重启翻译已排队");
           startJobTimer();
           if (pollTimer) clearInterval(pollTimer);
@@ -1949,6 +2103,7 @@
           restartTranslationBtn.textContent = "重启翻译";
           errorMsg.textContent = err.message;
           errorMsg.style.display = "block";
+          pollJobV2(jobId);
         });
     }
 
@@ -1973,6 +2128,7 @@
         })
         .then(data => {
           cancelRequestedJobId = "";
+          currentJobStatus = "cancelled";
           setRunningActionsVisible(false);
           setStatus("failed", data.message || "用户已停止翻译");
           statusBadge.textContent = "已取消";
@@ -2139,6 +2295,9 @@
 
     function openJobDetail(jobId) {
       currentJobId = jobId;
+      currentJobStatus = "";
+      currentTranslationAttemptStartedAt = "";
+      currentTranslationAttemptId = "";
       statusCard.classList.add("visible");
       const detailPanel = $("detailPanel");
       if (detailPanel) detailPanel.open = true;
@@ -2163,6 +2322,33 @@
         .then(data => {
           setTaskUiMode(!!data.enable_translation);
           const s = data.status || "";
+          const previousJobStatus = currentJobStatus;
+          currentJobStatus = s;
+          const attemptStartedAt = data.enable_translation && data.translation_stats
+            ? data.translation_stats.attempt_started_at || ""
+            : "";
+          const attemptId = data.enable_translation && data.translation_stats
+            ? data.translation_stats.attempt_id || ""
+            : "";
+          if (
+            (attemptId && currentTranslationAttemptId && attemptId !== currentTranslationAttemptId)
+            || (
+              !attemptId
+              && attemptStartedAt
+              && currentTranslationAttemptStartedAt
+              && attemptStartedAt !== currentTranslationAttemptStartedAt
+            )
+          ) {
+            resetProgressLog();
+          } else if (
+            data.enable_translation
+            && (s === "queued" || s === "running")
+            && canRestartTranslationStatus(previousJobStatus)
+          ) {
+            resetProgressLog();
+          }
+          if (attemptStartedAt) currentTranslationAttemptStartedAt = attemptStartedAt;
+          if (attemptId) currentTranslationAttemptId = attemptId;
           let legacy = "running";
           if (s === "completed") legacy = "success";
           else if (isTerminalFailureStatus(s)) legacy = "failed";
@@ -2390,10 +2576,16 @@
       const bottleneck = report.bottleneck || {};
       const stages = Array.isArray(report.stage_timings) ? report.stage_timings : [];
       const failures = Array.isArray(report.failure_categories) ? report.failure_categories : [];
+      const failedLocations = Array.isArray(report.failed_chunk_locations) ? report.failed_chunk_locations : [];
       const recommendations = Array.isArray(bottleneck.recommendations) ? bottleneck.recommendations : [];
       const tokens = report.tokens || {};
       const optimization = report.optimization_counters || {};
       const filename = $("metaFilename") ? $("metaFilename").textContent : "";
+      const attributedTotalMs = Number(report.attributed_total_ms || report.total_ms || 0);
+      const wallElapsedMs = Number(report.wall_elapsed_ms || 0);
+      const unattributedElapsedMs = Number(report.unattributed_elapsed_ms || Math.max(0, wallElapsedMs - attributedTotalMs));
+      const attributionCoverage = Number(report.attribution_coverage || (wallElapsedMs ? attributedTotalMs / wallElapsedMs : 0));
+      const timingTotalSource = report.timing_total_source || "unknown";
       const apiCallsSource = report.api_calls_source || (report.api_calls_estimated ? "estimated_from_chunk_latency_samples" : "translation_stats");
       const apiCallsSuffix = report.api_calls_estimated
         ? " (estimated_from_chunk_latency_samples)"
@@ -2407,6 +2599,9 @@
       const failureLines = failures.map(item => (
         `- ${cleanLogValue(item.code || item.label)}: ${Number(item.count || 0)} 段, label=${cleanLogValue(item.label || item.code)}`
       ));
+      const locationLines = failedLocations.slice(0, 8).map(chunk => (
+        `- ${cleanLogValue(chunk.chapter_id)}/${cleanLogValue(chunk.chunk_id)}: ${cleanLogValue(formatChunkLocation(chunk))}; status=${cleanLogValue(chunk.status)}, category=${cleanLogValue(diagnosticCategoryLabel(chunk.category))}, retry=${Number(chunk.retry_count || 0)}`
+      ));
       const recommendationLines = recommendations.map((item, index) => `${index + 1}. ${cleanLogValue(item)}`);
 
       return [
@@ -2417,8 +2612,10 @@
         `bottleneck=${cleanLogValue(bottleneck.type || bottleneck.title)}`,
         `bottleneck_title=${cleanLogValue(bottleneck.title)}`,
         `reason=${cleanLogValue(bottleneck.reason)}`,
-        `total=${formatLogDuration(report.total_ms)}`,
-        `wall_elapsed=${formatLogDuration(report.wall_elapsed_ms)}`,
+        "[elapsed_breakdown]",
+        `wall_elapsed=${formatLogDuration(wallElapsedMs)}`,
+        `attributed_processing=${formatLogDuration(attributedTotalMs)}, source=${cleanLogValue(timingTotalSource)}`,
+        `unattributed_wait_or_gap=${formatLogDuration(unattributedElapsedMs)}, attribution_coverage=${formatPercent(attributionCoverage)}`,
         `model_stage=${formatLogDuration(report.model_stage_ms)}${modelStageSuffix}, model_share=${formatPercent(report.model_share)}`,
         `server_stage=${formatLogDuration(report.server_stage_ms)}, server_share=${formatPercent(report.server_share)}`,
         `api_calls=${Number(report.api_calls || 0)}${apiCallsSuffix}, source=${cleanLogValue(apiCallsSource)}, avg_model_call=${formatLogDuration(report.avg_model_call_ms)}`,
@@ -2427,12 +2624,14 @@
         `chunk_latency_avg=${formatLogDuration(report.chunk_latency_avg_ms)}, p95=${formatLogDuration(report.chunk_latency_p95_ms)}, p99=${formatLogDuration(report.chunk_latency_p99_ms)}`,
         `retry_attempts=${Number(report.retry_attempts || 0)}, chunk_retry_total=${Number(report.chunk_retry_total || 0)}, chunk_retry_max=${Number(report.chunk_retry_max || 0)}`,
         `chunks=total:${Number(report.total_chunks || 0)}, translated:${Number(report.translated_chunks || 0)}, cached:${Number(report.cached_chunks || 0)}, failed:${Number(report.failed_chunks || 0)}, failure_ratio=${formatPercent(report.failure_ratio)}`,
-        `optimizations=complex_chunks:${Number(optimization.complex_chunks || 0)}, singleton_batches:${Number(optimization.complex_singleton_batches || 0)}, inline_tag_repairs:${Number(optimization.inline_tag_repairs || 0)}`,
+        `optimizations=complex_chunks:${Number(optimization.complex_chunks || 0)}, singleton_batches:${Number(optimization.complex_singleton_batches || 0)}, inline_tag_repairs:${Number(optimization.inline_tag_repairs || 0)}, image_note_skipped:${Number(optimization.image_note_chunks_skipped || 0)}, image_captions:${Number(optimization.image_caption_chunks || 0)}, reference_note_skipped:${Number(optimization.reference_note_chunks_skipped || 0)}, structured_notes:${Number(optimization.structured_note_successes || 0)}/${Number(optimization.structured_note_chunks || 0)}, retry_budget_exhausted:${Number(optimization.retry_budget_exhausted_chunks || 0)}`,
         `tokens=prompt:${Number(tokens.prompt || 0)}, completion:${Number(tokens.completion || 0)}, total:${Number(tokens.total || 0)}`,
         "[stage_timings]",
         ...(stageLines.length ? stageLines : ["- 暂无阶段耗时"]),
         "[failure_categories]",
         ...(failureLines.length ? failureLines : ["- 暂无失败类别"]),
+        "[failed_chunk_locations]",
+        ...(locationLines.length ? locationLines : ["- 暂无反复失败段落"]),
         "[recommendations]",
         ...(recommendationLines.length ? recommendationLines : ["- 暂无建议"]),
       ].join("\n");
@@ -2494,8 +2693,16 @@
       }
       const bottleneck = report.bottleneck || {};
       const totalMs = Number(report.total_ms || 0);
+      const attributedTotalMs = Number(report.attributed_total_ms || totalMs || 0);
+      const wallElapsedMs = Number(report.wall_elapsed_ms || 0);
+      const unattributedElapsedMs = Number(report.unattributed_elapsed_ms || Math.max(0, wallElapsedMs - attributedTotalMs));
+      const attributionCoverage = Number(report.attribution_coverage || (wallElapsedMs ? attributedTotalMs / wallElapsedMs : 0));
       const modelShare = Number(report.model_share || 0);
       const serverShare = Number(report.server_share || 0);
+      const wallBasisMs = wallElapsedMs || attributedTotalMs || totalMs;
+      const modelWallShare = wallBasisMs ? Number(report.model_stage_ms || 0) / wallBasisMs : modelShare;
+      const serverWallShare = wallBasisMs ? Number(report.server_stage_ms || 0) / wallBasisMs : serverShare;
+      const unattributedShare = wallBasisMs ? unattributedElapsedMs / wallBasisMs : 0;
       const retryAttempts = Number(report.retry_attempts || 0);
       const failedChunks = Number(report.failed_chunks || 0);
       const totalChunks = Number(report.total_chunks || 0);
@@ -2517,7 +2724,10 @@
         ${escapeHtml(bottleneck.reason || "当前任务缺少足够的归因数据。")}
       `;
       $("translationTimingGrid").innerHTML = [
-        ["总耗时", totalMs ? formatDuration(totalMs) : "-"],
+        ["墙钟耗时", wallElapsedMs ? formatDuration(wallElapsedMs) : "-"],
+        ["已归因耗时", attributedTotalMs ? formatDuration(attributedTotalMs) : "-"],
+        ["未归因", unattributedElapsedMs ? formatDuration(unattributedElapsedMs) : "-"],
+        ["归因覆盖", formatPercent(attributionCoverage)],
         ["模型占比", formatPercent(modelShare)],
         ["服务器占比", formatPercent(serverShare)],
         [apiCallsLabel, apiCalls ? `${apiCalls} 次` : "-"],
@@ -2526,6 +2736,11 @@
         ["平均调用", report.avg_model_call_ms ? formatDuration(report.avg_model_call_ms) : "-"],
         ["P95 段延迟", report.chunk_latency_p95_ms ? formatDuration(report.chunk_latency_p95_ms) : "-"],
         ["标签修复", `${Number(optimization.inline_tag_repairs || 0)} 次`],
+        ["图片注释跳过", `${Number(optimization.image_note_chunks_skipped || 0)} 段`],
+        ["图片注释纳入翻译", `${Number(optimization.image_caption_chunks || 0)} 段`],
+        ["解释型脚注", `${Number(optimization.structured_note_successes || 0)}/${Number(optimization.structured_note_chunks || 0)}`],
+        ["纯引用脚注", `${Number(optimization.reference_note_chunks_skipped || 0)} 段`],
+        ["重试预算耗尽", `${Number(optimization.retry_budget_exhausted_chunks || 0)} 段`],
         ["Token", report.tokens && report.tokens.total ? `${Number(report.tokens.total).toLocaleString()}` : "-"],
       ].map(([label, value]) => `
         <div class="timing-item">
@@ -2535,8 +2750,9 @@
       `).join("");
 
       $("translationTimingBars").innerHTML = [
-        ["模型相关", modelShare, report.model_stage_ms, ""],
-        ["服务器", serverShare, report.server_stage_ms, "server"],
+        ["模型相关", modelWallShare, report.model_stage_ms, ""],
+        ["服务器", serverWallShare, report.server_stage_ms, "server"],
+        ["未归因", unattributedShare, unattributedElapsedMs, "unattributed"],
       ].map(([label, share, ms, cls]) => `
         <div class="timing-bar-row">
           <span>${escapeHtml(label)}</span>
@@ -2568,6 +2784,28 @@
           <span>${Number(item.count || 0)} 段</span>
         </div>
       `).join("");
+
+      const failedLocations = Array.isArray(report.failed_chunk_locations) ? report.failed_chunk_locations : [];
+      $("translationFailedLocationTitle").style.display = failedLocations.length ? "block" : "none";
+      $("translationTimingFailedLocations").style.display = failedLocations.length ? "grid" : "none";
+      $("translationTimingFailedLocations").innerHTML = failedLocations.slice(0, 8).map(chunk => {
+        const human = formatHumanChunkLocation(chunk);
+        const state = `${escapeHtml(diagnosticCategoryLabel(chunk.category))} · 重试 ${Number(chunk.retry_count || 0)} 次`;
+        return `
+          <div class="timing-location-row">
+            <span>
+              <span class="timing-location-title">${escapeHtml(human.title)}</span>
+              <span class="timing-location-hint">${escapeHtml(human.hint)}</span>
+              ${human.sourceSnippet ? `<span class="timing-location-snippet">原文片段：${escapeHtml(human.sourceSnippet)}</span>` : ""}
+              <details class="timing-location-details">
+                <summary>技术定位</summary>
+                <div class="timing-location-detail-line">${escapeHtml(human.technical || "-")}</div>
+              </details>
+            </span>
+            <span class="timing-location-state">${state}</span>
+          </div>
+        `;
+      }).join("");
 
       const recommendations = Array.isArray(bottleneck.recommendations) ? bottleneck.recommendations : [];
       $("translationTimingRecommendations").innerHTML = recommendations.length
@@ -2759,6 +2997,9 @@
         .then(r => r.ok ? r.json() : { items: [] })
         .then(data => {
           (data.items || []).forEach((item, index) => {
+            if ((currentJobStatus === "queued" || currentJobStatus === "running") && item.stage === "cancelled") {
+              return;
+            }
             const message = item.message || item.stage || "";
             const key = `${item.time || ""}|${item.stage || ""}|${index}|${message}`;
             appendProgressLog(message, key);
@@ -2856,7 +3097,7 @@
       if (isTranslationMode) {
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
-        form.append("translation_model", $("translationModel").value || "deepseek-v4-pro");
+        form.append("translation_model", $("translationModel").value || "deepseek-v4-flash");
         const tempVal = parseFloat($("temperature").value);
         if (!isNaN(tempVal) && tempVal >= 0 && tempVal <= 2) form.append("temperature", tempVal);
 

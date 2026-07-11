@@ -17,6 +17,14 @@ from app.cancellation import JobCancelled
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 
 
+def _restore_env(old_values: dict[str, str | None]) -> None:
+    for key, value in old_values.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 def test_looks_like_error_response():
     assert SemanticsTranslator._looks_like_error_response("Error: rate limit") is True
     assert SemanticsTranslator._looks_like_error_response("Sorry, I cannot translate.") is True
@@ -40,29 +48,84 @@ def test_faithful_translation_prompt_constraints():
 
 def test_candidate_routes_default():
     """无 fallback 时仅返回主 base_url + 主 model。"""
-    t = SemanticsTranslator(target_lang="zh-CN")
-    routes = t._candidate_routes()
-    assert len(routes) >= 1
-    assert routes[0] == (t.base_url, t.model)
+    old_values = {key: os.environ.get(key) for key in (
+        "OPENAI_BASE_URL_FALLBACKS",
+        "OPENAI_MODEL_FALLBACKS",
+        "TOKENHUB_BASE_URL",
+        "TOKENHUB_API_KEY",
+    )}
+    try:
+        for key in old_values:
+            os.environ.pop(key, None)
+        t = SemanticsTranslator(target_lang="zh-CN")
+        routes = t._candidate_routes()
+        assert len(routes) == 1
+        assert routes[0] == (t.base_url, t.model)
+    finally:
+        _restore_env(old_values)
 
 
 def test_candidate_routes_with_fallbacks():
     """有 OPENAI_BASE_URL_FALLBACKS / OPENAI_MODEL_FALLBACKS 时路由含备选。"""
+    old_values = {key: os.environ.get(key) for key in (
+        "OPENAI_BASE_URL_FALLBACKS",
+        "OPENAI_MODEL_FALLBACKS",
+        "TOKENHUB_BASE_URL",
+        "TOKENHUB_API_KEY",
+    )}
     os.environ["OPENAI_BASE_URL_FALLBACKS"] = "https://fallback1.com/v1,https://fallback2.com/v1"
     os.environ["OPENAI_MODEL_FALLBACKS"] = "deepseek-chat"
+    os.environ.pop("TOKENHUB_BASE_URL", None)
+    os.environ.pop("TOKENHUB_API_KEY", None)
     try:
         t = SemanticsTranslator(target_lang="zh-CN")
         routes = t._candidate_routes()
-        assert len(routes) >= 2
+        assert len(routes) >= 6
         bases = {r[0] for r in routes}
         models = {r[1] for r in routes}
         assert t.base_url in bases
         assert "https://fallback1.com/v1" in bases or "https://fallback2.com/v1" in bases
         assert t.model in models
         assert "deepseek-chat" in models
+        assert ("https://fallback1.com/v1", "deepseek-chat") in routes
     finally:
+        _restore_env(old_values)
+
+
+def test_candidate_routes_with_tokenhub_provider():
+    """配置 TOKENHUB_BASE_URL 后，同一 DeepSeek 模型可切到 TokenHub 备用通道。"""
+    old_values = {key: os.environ.get(key) for key in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "OPENAI_BASE_URL_FALLBACKS",
+        "OPENAI_MODEL_FALLBACKS",
+        "TOKENHUB_BASE_URL",
+        "TOKENHUB_API_KEY",
+    )}
+    try:
+        os.environ["OPENAI_API_KEY"] = "primary-key"
+        os.environ["OPENAI_BASE_URL"] = "https://api.deepseek.com/v1"
+        os.environ["OPENAI_MODEL"] = "deepseek-v4-pro"
+        os.environ["OPENAI_MODEL_FALLBACKS"] = "deepseek-v4-flash"
         os.environ.pop("OPENAI_BASE_URL_FALLBACKS", None)
-        os.environ.pop("OPENAI_MODEL_FALLBACKS", None)
+        os.environ["TOKENHUB_BASE_URL"] = "https://tokenhub.example.com/v1"
+        os.environ["TOKENHUB_API_KEY"] = "tokenhub-key"
+
+        t = SemanticsTranslator(target_lang="zh-CN")
+        routes = t._candidate_routes()
+
+        assert routes[:2] == [
+            ("https://api.deepseek.com/v1", "deepseek-v4-pro"),
+            ("https://tokenhub.example.com/v1", "deepseek-v4-pro"),
+        ]
+        assert ("https://api.deepseek.com/v1", "deepseek-v4-flash") in routes
+        assert ("https://tokenhub.example.com/v1", "deepseek-v4-flash") in routes
+        assert t._provider_for_base_url("https://tokenhub.example.com/v1") == "tokenhub"
+        assert t._api_key_for_base_url("https://tokenhub.example.com/v1") == "tokenhub-key"
+        assert t._api_key_for_base_url("https://api.deepseek.com/v1") == "primary-key"
+    finally:
+        _restore_env(old_values)
 
 
 def test_translation_stability_caps_env_concurrency_and_batch_size():
@@ -100,7 +163,7 @@ def test_translate_many_chunks_uses_one_json_batch():
     async def fake_call(payload):
         calls.append(payload)
         return (
-            {item["id"]: f"译文:{item['html']}" for item in payload},
+            {item["id"]: f"译文:{item['id']} 已完成翻译" for item in payload},
             {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 30, "completion_tokens": 60},
         )
 
@@ -110,7 +173,7 @@ def test_translate_many_chunks_uses_one_json_batch():
         f"<p>Bob visits London {uuid.uuid4().hex}</p>",
     ]
     out = asyncio.run(t.translate_many_chunks_async(chunks))
-    assert len(calls) == 1
+    assert len(calls) == 1, [len(call) for call in calls]
     assert len(calls[0]) == 2
     assert out[0].translated_html.startswith("译文:")
     assert out[1].translated_html.startswith("译文:")
@@ -180,6 +243,45 @@ def test_translate_many_chunks_splits_failed_batch():
     assert t.stats.translated_chunks == 2
     assert t.stats.failed_chunks == 0
     assert any("批量翻译失败，拆分重试" in msg for msg in progress)
+
+
+def test_translate_many_chunks_rescues_singleton_call_failure():
+    """单段 API/JSON 失败后，应进入最终补译，而不是立刻记 failed。"""
+    old_values = {
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
+    }
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "2"
+    os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "0"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    finally:
+        _restore_env(old_values)
+
+    calls = []
+    progress = []
+    t.progress_callback = progress.append
+
+    async def fake_call(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            raise ValueError("Failed to parse LLM JSON: truncated")
+        return (
+            {0: "这是补译成功的中文内容。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([f"<p>Alice visits London {uuid.uuid4().hex}</p>"]))
+
+    assert len(calls) == 2
+    assert out[0].error is None
+    assert "补译成功" in out[0].translated_html
+    assert t.stats.translated_chunks == 1
+    assert t.stats.failed_chunks == 0
+    assert t.stats.chunk_rescue_attempts == 1
+    assert t.stats.chunk_rescue_successes == 1
+    assert any("单段翻译失败，进入最终补译" in msg for msg in progress)
 
 
 def test_translate_many_chunks_retries_untranslated_response():
@@ -328,8 +430,278 @@ def test_translate_many_chunks_emits_final_failure_progress():
     out = asyncio.run(t.translate_many_chunks_async([f"<p>{original_inner}</p>"]))
 
     assert out[0].error is not None
+    assert "疑似仍为原文" in out[0].error
+    assert out[0].error_type == "untranslated_response"
     assert any("段落质检未通过，启动单段补译" in msg for msg in progress)
     assert any("段落翻译最终失败，已回写原文" in msg for msg in progress)
+
+
+def test_translate_many_chunks_adds_retry_hint_for_untranslated_math_chunk():
+    """数学/公式密集段落若被原样返回，补译请求应明确要求翻译正文并保留公式。"""
+    old_value = os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES")
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "1"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    finally:
+        if old_value is None:
+            os.environ.pop("EPUB_TRANSLATION_QUALITY_RETRIES", None)
+        else:
+            os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = old_value
+
+    calls = []
+    html = (
+        "<p>If to the generating period of an <i>n</i>-free alternative we add "
+        "the first <i>n</i> elements, then we obtain a sequence of length "
+        "2<sup><i>n</i> + 1</sup> + <i>n</i>.</p>"
+    )
+
+    async def fake_call(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            return (
+                {item["id"]: item["html"] for item in payload},
+                {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+            )
+        hint = payload[0].get("retry_hint", "")
+        assert "疑似仍为英文原文" in hint
+        assert "数学符号、变量名、公式" in hint
+        assert "不要直接复制原文" in hint
+        return (
+            {0: "如果在一个<i>n</i>-自由替代的生成周期中加入前 <i>n</i> 个元素，就得到长度为 2<sup><i>n</i> + 1</sup> + <i>n</i> 的序列。"},
+            {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([html]))
+
+    assert len(calls) == 2
+    assert out[0].error is None
+    assert out[0].retry_count == 1
+    assert "序列" in out[0].translated_html
+
+
+def test_translate_many_chunks_rescues_formula_chunk_by_text_segments():
+    """整段补译仍失败时，应只翻译文本节点并原位保留公式/内联标签。"""
+    old_values = {
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
+        "EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE": os.environ.get("EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE"),
+    }
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "1"
+    os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "0"
+    os.environ["EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE"] = "1"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+
+        inner = (
+            "If to the generating period of an <i>n</i>-free alternative we add "
+            "the first <i>n</i> elements, then we obtain a sequence of length "
+            "2<sup><i>n</i> + 1</sup> + <i>n</i>."
+        )
+        calls = []
+
+        async def fake_call(payload, *, preferred_model=None):
+            calls.append(payload)
+            if len(calls) <= 2:
+                return (
+                    {item["id"]: item["html"] for item in payload},
+                    {"model": preferred_model or "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+                )
+            assert all(item.get("text_node_rescue") is True for item in payload)
+            assert all("<" not in item["html"] and ">" not in item["html"] for item in payload)
+            translations = {}
+            for item in payload:
+                text = item["html"]
+                if "generating period" in text:
+                    translations[item["id"]] = "如果在一个"
+                elif "free alternative" in text:
+                    translations[item["id"]] = "-自由备择的生成周期中加入前"
+                elif "elements" in text:
+                    translations[item["id"]] = "个元素，那么我们得到长度为 2"
+                else:
+                    translations[item["id"]] = text
+            return (
+                translations,
+                {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 12, "completion_tokens": 24},
+            )
+
+        t._call_llm_json_batch = fake_call
+        out = asyncio.run(t.translate_many_chunks_async([f"<p>{inner}</p>"]))
+
+        assert len(calls) == 3
+        assert out[0].error is None
+        assert "自由备择" in out[0].translated_html
+        assert "<i>n</i>" in out[0].translated_html
+        assert "<sup><i>n</i> + 1</sup>" in out[0].translated_html
+        assert t.stats.text_segment_rescue_attempts == 1
+        assert t.stats.text_segment_rescue_successes == 1
+        assert t.stats.failed_chunks == 0
+    finally:
+        _restore_env(old_values)
+
+
+def test_translate_many_chunks_routes_structured_note_through_text_nodes():
+    """解释型脚注只翻译文本节点，链接、编号和嵌套标签必须原位保留。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+    html = (
+        '<p class="footnote"><sup><a href="chapter.xhtml#fn1">1</a></sup>'
+        'This note explains why Watson changed the argument.</p>'
+    )
+
+    async def fake_call(payload, *, preferred_model=None):
+        calls.append(payload)
+        assert all(item.get("text_node_rescue") is True for item in payload)
+        return (
+            {item["id"]: "这条注释解释了沃森为何修改论证。" for item in payload},
+            {
+                "model": preferred_model or "fake-model",
+                "base_url": "fake://llm",
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "attempts": 1,
+            },
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
+
+    assert len(calls) == 1
+    assert out[0].error is None
+    assert "这条注释解释了" in out[0].translated_html
+    assert '<a href="chapter.xhtml#fn1">1</a>' in out[0].translated_html
+    assert t.stats.structured_note_attempts == 1
+    assert t.stats.structured_note_successes == 1
+
+
+def test_structured_note_upgrades_model_after_untranslated_response():
+    """Flash 对长脚注返回原文时，应在同一预算内升级质量模型。"""
+    old_values = {
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
+        "EPUB_TRANSLATION_CHUNK_RETRY_BUDGET": os.environ.get("EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"),
+    }
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "1"
+    os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "1"
+    os.environ["EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"] = "3"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+        calls = []
+        html = (
+            '<p class="footnote"><sup>4</sup>'
+            'According to the dictionary, this long explanatory note clarifies the usage.'
+            '</p>'
+        )
+
+        async def fake_call(payload, *, preferred_model=None):
+            calls.append(preferred_model)
+            translation = (
+                "根据词典，这条较长的解释性脚注阐明了该词的用法。"
+                if preferred_model == "deepseek-v4-pro"
+                else payload[0]["html"]
+            )
+            return (
+                {payload[0]["id"]: translation},
+                {
+                    "model": preferred_model or "deepseek-v4-flash",
+                    "base_url": "fake://llm",
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "attempts": 1,
+                },
+            )
+
+        t._call_llm_json_batch = fake_call
+        out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
+
+        assert calls == [None, "deepseek-v4-pro"]
+        assert out[0].error is None
+        assert "根据词典" in out[0].translated_html
+        assert out[0].retry_count == 1
+        assert t.stats.quality_fallback_attempts == 1
+        assert t.stats.structured_note_successes == 1
+        assert t.stats.retry_budget_exhausted_chunks == 0
+    finally:
+        _restore_env(old_values)
+
+
+def test_structured_note_reports_exact_retry_budget_exhaustion():
+    """结构化脚注连续返回原文时，按实际质量失败次数耗尽预算。"""
+    old_values = {
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
+        "EPUB_TRANSLATION_CHUNK_RETRY_BUDGET": os.environ.get("EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"),
+    }
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "3"
+    os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "1"
+    os.environ["EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"] = "2"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+        calls = []
+        html = '<p class="footnote"><sup>2</sup>This explanatory note remains untranslated.</p>'
+
+        async def fake_call(payload, *, preferred_model=None):
+            calls.append(preferred_model)
+            return (
+                {payload[0]["id"]: payload[0]["html"]},
+                {
+                    "model": preferred_model or "deepseek-v4-flash",
+                    "base_url": "fake://llm",
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "attempts": 1,
+                },
+            )
+
+        t._call_llm_json_batch = fake_call
+        out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
+
+        assert calls == [None, "deepseek-v4-pro"]
+        assert out[0].error is not None
+        assert out[0].retry_count == 2
+        assert t.stats.retry_budget_exhausted_chunks == 1
+    finally:
+        _restore_env(old_values)
+
+
+def test_translate_many_chunks_honors_per_chunk_retry_budget():
+    """各层补译共享同一预算，达到上限后不得继续进入文本节点补译。"""
+    old_values = {
+        "EPUB_TRANSLATION_CHUNK_RETRY_BUDGET": os.environ.get("EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"),
+        "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
+        "EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE": os.environ.get("EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE"),
+    }
+    os.environ["EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"] = "1"
+    os.environ["EPUB_TRANSLATION_QUALITY_RETRIES"] = "2"
+    os.environ["EPUB_TRANSLATION_TEXT_SEGMENT_RESCUE"] = "1"
+    try:
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+        calls = []
+
+        async def fake_call(payload, *, preferred_model=None):
+            calls.append(payload)
+            return (
+                {item["id"]: item["html"] for item in payload},
+                {
+                    "model": preferred_model or "fake-model",
+                    "base_url": "fake://llm",
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "attempts": 1,
+                },
+            )
+
+        t._call_llm_json_batch = fake_call
+        out = asyncio.run(t.translate_many_chunks_async([
+            "<p>This paragraph remains untranslated after every attempt.</p>"
+        ]))
+
+        assert len(calls) == 2
+        assert out[0].error is not None
+        assert t.stats.retry_budget_exhausted_chunks >= 1
+        assert t.stats.text_segment_rescue_attempts == 0
+    finally:
+        _restore_env(old_values)
 
 
 def test_extract_json_tolerates_preamble_and_trailing_commas():
@@ -432,14 +804,21 @@ def test_translate_many_chunks_isolates_complex_inline_chunks():
     async def fake_call(payload):
         calls.append(len(payload))
         return (
-            {item["id"]: f"译文:{item['html']}" for item in payload},
+            {
+                item["id"]: (
+                    '<sup><a id="fn1"></a><a href="n.xhtml#fn1a">1</a></sup>译文'
+                    if "<sup" in item["html"]
+                    else "译文"
+                )
+                for item in payload
+            },
             {"model": "fake-model", "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
         )
 
     t._call_llm_json_batch = fake_call
     out = asyncio.run(t.translate_many_chunks_async(chunks))
 
-    assert calls == [2, 1, 1]
+    assert sorted(calls) == [1, 1, 2], calls
     assert all(item.error is None for item in out)
     assert t.stats.complex_chunks == 1
     assert t.stats.complex_singleton_batches == 1
@@ -472,6 +851,22 @@ def test_inline_tag_markers_roundtrip_span_anchor_sup():
     assert t._preserves_inline_tags(source, restored) is True
 
 
+def test_inline_tag_marker_requirement_lists_all_markers():
+    """发送给模型的 marker 清单应覆盖所有 HTML 标签占位符。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    protected, replacements = t._protect_inline_tags(
+        '<i>naturalistic</i> science <a href="chapter5.xhtml#p1">section 6</a>'
+    )
+    hint = t._html_marker_requirement(replacements)
+
+    assert protected
+    assert "[[EPUB_TAG_0_OPEN]]" in hint
+    assert "[[EPUB_TAG_0_CLOSE]]" in hint
+    assert "[[EPUB_TAG_1_OPEN]]" in hint
+    assert "[[EPUB_TAG_1_CLOSE]]" in hint
+    assert "数量、拼写、先后顺序都不能改变" in hint
+
+
 def test_translate_many_chunks_honors_cancel_check_before_llm_call():
     """用户点停止后，翻译器应在下一次模型请求前退出。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -500,20 +895,29 @@ def _run():
         test_faithful_translation_prompt_constraints,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
+        test_candidate_routes_with_tokenhub_provider,
         test_translation_stability_caps_env_concurrency_and_batch_size,
         test_translate_many_chunks_uses_one_json_batch,
         test_translate_many_chunks_error_like_only_fails_that_chunk,
         test_translate_many_chunks_splits_failed_batch,
+        test_translate_many_chunks_rescues_singleton_call_failure,
         test_translate_many_chunks_retries_untranslated_response,
         test_translate_many_chunks_uses_multiple_quality_retries,
         test_translate_many_chunks_escalates_quality_retry_to_pro_model,
         test_translate_many_chunks_emits_final_failure_progress,
+        test_translate_many_chunks_adds_retry_hint_for_untranslated_math_chunk,
+        test_translate_many_chunks_rescues_formula_chunk_by_text_segments,
+        test_translate_many_chunks_routes_structured_note_through_text_nodes,
+        test_structured_note_upgrades_model_after_untranslated_response,
+        test_structured_note_reports_exact_retry_budget_exhaustion,
+        test_translate_many_chunks_honors_per_chunk_retry_budget,
         test_extract_json_tolerates_preamble_and_trailing_commas,
         test_translate_many_chunks_retries_html_tag_mismatch,
         test_translate_many_chunks_repairs_missing_footnote_tags_without_retry,
         test_translate_many_chunks_repairs_dropcap_span_without_retry,
         test_translate_many_chunks_isolates_complex_inline_chunks,
         test_inline_tag_markers_roundtrip_span_anchor_sup,
+        test_inline_tag_marker_requirement_lists_all_markers,
         test_translate_many_chunks_honors_cancel_check_before_llm_call,
     ]
     passed = 0

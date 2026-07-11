@@ -4,6 +4,7 @@ from threading import Lock
 from typing import Any, Dict, Optional
 
 from .models import Job, JobChapter, JobChunk, JobNotification, JobStage, JobStatus, QualityStats, StageStatus
+from .domain.translation_attempt import restarted_translation_stats
 
 
 class JobStore:
@@ -57,9 +58,14 @@ class JobStore:
             stages = self._stages.get(job_id, [])
             return sorted(stages, key=lambda s: s.started_at)
 
-    def upsert_chapter(self, chapter: JobChapter) -> JobChapter:
+    def upsert_chapter(self, chapter: JobChapter, expected_attempt_id: Optional[str] = None) -> JobChapter:
         """写入或更新章节级任务状态（内存：按 job_id:chapter_id 覆盖）。"""
         with self._lock:
+            job = self._jobs.get(chapter.job_id)
+            if expected_attempt_id and (
+                not job or str((job.translation_stats or {}).get("attempt_id") or "") != expected_attempt_id
+            ):
+                return chapter
             self._chapters[f"{chapter.job_id}:{chapter.chapter_id}"] = chapter
         return chapter
 
@@ -69,11 +75,70 @@ class JobStore:
             out = [c for c in self._chapters.values() if c.job_id == job_id]
             return sorted(out, key=lambda c: c.chapter_id)
 
-    def upsert_chunk(self, chunk: JobChunk) -> JobChunk:
+    def upsert_chunk(self, chunk: JobChunk, expected_attempt_id: Optional[str] = None) -> JobChunk:
         """写入或更新 chunk 结果（内存：按 job_id:chunk_id 覆盖）。"""
         with self._lock:
+            job = self._jobs.get(chunk.job_id)
+            if expected_attempt_id and (
+                not job or str((job.translation_stats or {}).get("attempt_id") or "") != expected_attempt_id
+            ):
+                return chunk
             self._chunks[f"{chunk.job_id}:{chunk.chunk_id}"] = chunk
         return chunk
+
+    def clear_translation_progress(self, job_id: str) -> None:
+        with self._lock:
+            self._chunks = {
+                k: c for k, c in self._chunks.items()
+                if c.job_id != job_id
+            }
+            prefix = f"{job_id}:"
+            self._chapters = {
+                k: c for k, c in self._chapters.items()
+                if not k.startswith(prefix)
+            }
+
+    def restart_translation_attempt(
+        self,
+        job_id: str,
+        *,
+        attempt_id: str,
+        action_label: str,
+        max_free_retries: int,
+        started_at: datetime,
+    ) -> tuple[Optional[Job], str]:
+        """Atomically validate, reset, and claim a new translation attempt."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None, "missing"
+            if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
+                return job, "active"
+            previous = dict(job.translation_stats or {})
+            free_retry_count = int(previous.get("free_retry_count") or 0)
+            if max_free_retries >= 0 and free_retry_count >= max_free_retries:
+                return job, "retry_limit"
+
+            stats = restarted_translation_stats(
+                previous,
+                attempt_id=attempt_id,
+                started_at=started_at,
+                model=getattr(job, "translation_model", "") or "",
+                max_free_retries=max_free_retries,
+                action_label=action_label,
+            )
+            self._chunks = {k: c for k, c in self._chunks.items() if c.job_id != job_id}
+            prefix = f"{job_id}:"
+            self._chapters = {k: c for k, c in self._chapters.items() if not k.startswith(prefix)}
+            job.status = JobStatus.pending
+            job.message = f"{action_label}已排队（第 {stats['translation_attempt']} 次尝试）"
+            job.error_code = None
+            job.output_path = None
+            job.quality_stats = QualityStats()
+            job.translation_stats = stats
+            job.metrics_summary = ""
+            job.updated_at = started_at
+            return job, "ok"
 
     def list_chunks(self, job_id: str, chapter_id: Optional[str] = None) -> list:
         """返回该任务（可选某章）的 chunk 列表，按 chapter_id、sequence 排序。"""
@@ -138,11 +203,16 @@ class JobStore:
         translation_stats: Optional[Dict[str, Any]] = None,
         metrics_summary: Optional[str] = None,
         allow_cancelled_transition: bool = False,
+        expected_attempt_id: Optional[str] = None,
     ) -> Optional[Job]:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return None
+            if expected_attempt_id:
+                current_attempt_id = str((job.translation_stats or {}).get("attempt_id") or "")
+                if current_attempt_id != expected_attempt_id:
+                    return job
             if job.status == JobStatus.cancelled and status != JobStatus.cancelled and not allow_cancelled_transition:
                 return job
             job.status = status
@@ -153,7 +223,12 @@ class JobStore:
             if quality_stats:
                 job.quality_stats = quality_stats
             if translation_stats is not None:
-                job.translation_stats = translation_stats
+                merged_stats = dict(getattr(job, "translation_stats", {}) or {})
+                if isinstance(translation_stats, dict):
+                    merged_stats.update(translation_stats)
+                else:
+                    merged_stats = translation_stats
+                job.translation_stats = merged_stats
             if metrics_summary is not None:
                 job.metrics_summary = metrics_summary
             job.updated_at = datetime.now(timezone.utc)

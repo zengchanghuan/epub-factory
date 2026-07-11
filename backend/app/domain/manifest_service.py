@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from app.models import ChapterKind
 from app.engine.unpacker import EpubUnpacker
-from app.engine.chunk_extractor import extract_chunks, ChunkItem
+from app.engine.chunk_extractor import extract_chunks_with_stats, ChunkItem
 
 
 # 文件名关键词 → 章节类型（与 compiler._should_skip_translation_for_file 对齐并扩展为 kind）
@@ -84,6 +84,12 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         return {"job_id": job_id, "chapters": [], "error": "Failed to load EPUB"}
 
     chapters: List[Dict[str, Any]] = []
+    manifest_stats = {
+        "image_note_chunks_skipped": 0,
+        "image_caption_chunks": 0,
+        "reference_note_chunks_skipped": 0,
+        "structured_note_chunks": 0,
+    }
     items = list(book.get_items())
     # 仅处理文档类型（9 = ITEM_DOCUMENT），不处理 CSS 等
     for item in items:
@@ -112,7 +118,11 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
 
         chapter_id = _chapter_id_from_path(file_name)
         # 仅正文提取 chunk，非正文保留空 chunks 便于 Reduce 按 file_path 回写
-        chunk_list = extract_chunks(content, chapter_id)
+        chunk_list, extraction_stats = extract_chunks_with_stats(content, chapter_id)
+        manifest_stats["image_note_chunks_skipped"] += int(extraction_stats.get("image_note_chunks_skipped") or 0)
+        manifest_stats["image_caption_chunks"] += int(extraction_stats.get("image_caption_chunks") or 0)
+        manifest_stats["reference_note_chunks_skipped"] += int(extraction_stats.get("reference_note_chunks_skipped") or 0)
+        manifest_stats["structured_note_chunks"] += int(extraction_stats.get("structured_note_chunks") or 0)
         kind = classify_chapter_kind_from_chunks(file_name, chunk_list)
         chunks_payload = [
             {
@@ -123,6 +133,7 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
                 "text": c.text,
                 "word_count": c.word_count,
                 "char_count": c.char_count,
+                "translation_strategy": c.translation_strategy,
             }
             for c in chunk_list
         ]
@@ -130,7 +141,8 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
             "chapter_id": chapter_id,
             "file_path": file_name,
             "chapter_kind": kind.value,
+            "skipped_chunks": extraction_stats,
             "chunks": chunks_payload,
         })
 
-    return {"job_id": job_id, "chapters": chapters}
+    return {"job_id": job_id, "chapters": chapters, "stats": manifest_stats}

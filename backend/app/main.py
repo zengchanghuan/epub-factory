@@ -4,9 +4,12 @@ import os
 import re
 import shutil
 import uuid
+import html as html_lib
+import zipfile
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 import os as _os
@@ -29,6 +32,7 @@ from .models import DeviceProfile, ErrorCode, Job, JobStage, JobStatus, OutputMo
 from .storage import job_store
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
+from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -78,9 +82,9 @@ TRANSLATION_MODEL_CHOICES = {
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
 }
-DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-pro").strip()
+DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-flash").strip()
 if DEFAULT_TRANSLATION_MODEL not in TRANSLATION_MODEL_CHOICES:
-    DEFAULT_TRANSLATION_MODEL = "deepseek-v4-pro"
+    DEFAULT_TRANSLATION_MODEL = "deepseek-v4-flash"
 
 
 def _normalize_translation_model(model: Optional[str], enable_translation: bool) -> str:
@@ -327,12 +331,31 @@ def _job_qa_report(job: Job) -> dict | None:
     stats = job.translation_stats or {}
     report = stats.get("qa_report")
     if isinstance(report, dict):
-        return report
-    return build_translation_qa_report(
-        translation_stats=stats,
-        output_path=job.output_path,
-        error_code=job.error_code,
-    )
+        report = dict(report)
+    else:
+        report = build_translation_qa_report(
+            translation_stats=stats,
+            output_path=job.output_path,
+            error_code=job.error_code,
+        )
+    report["free_retry_count"] = int(stats.get("free_retry_count") or report.get("free_retry_count") or 0)
+    report["translation_attempt"] = int(stats.get("translation_attempt") or report.get("translation_attempt") or 1)
+    report["max_free_retries"] = max_free_retries()
+    if report.get("status") == "failed":
+        report["retryable"] = (
+            report["max_free_retries"] < 0
+            or report["free_retry_count"] < report["max_free_retries"]
+        )
+    return report
+
+
+def _diagnostic_last_error(raw_error: str, error_categories: dict | None = None, audit_flags_count: dict | None = None) -> str:
+    raw = raw_error or ""
+    lower = raw.lower()
+    has_untranslated = bool((error_categories or {}).get("untranslated_response") or (audit_flags_count or {}).get("likely_untranslated"))
+    if has_untranslated and ("html tag mismatch" in lower or "html 内联标签不匹配" in raw):
+        return "模型返回原文或近似原文；补译仍未通过（初始触发：HTML 内联标签不匹配）"
+    return raw
 
 
 def _metric_number(value, default: float = 0.0) -> float:
@@ -382,8 +405,34 @@ def _coerce_utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return _coerce_utc(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+        return _coerce_utc(dt)
+    except Exception:
+        return None
+
+
 def _job_wall_elapsed_ms(job: Job) -> int:
     start = _coerce_utc(getattr(job, "created_at", None))
+    if not start:
+        return 0
+    if job.enable_translation:
+        stats = dict(getattr(job, "translation_stats", {}) or {})
+        attempt_started = _parse_iso_datetime(stats.get("attempt_started_at"))
+        if attempt_started:
+            start = max(start, attempt_started)
     if not start:
         return 0
     status = getattr(getattr(job, "status", None), "value", getattr(job, "status", ""))
@@ -397,10 +446,10 @@ def _job_wall_elapsed_ms(job: Job) -> int:
 def _classify_translation_error(message: str, flags: list | None = None) -> tuple[str, str]:
     text = (message or "").lower()
     flag_set = set(flags or [])
-    if "html_tag_mismatch" in flag_set or "html_mismatch" in flag_set or "html_tag_mismatch" in text or "html tag mismatch" in text or "html结构" in text or "tag mismatch" in text:
-        return "html_tag_mismatch", "HTML 标签不匹配"
     if "likely_untranslated" in flag_set or "untranslated" in text or "未翻译" in text or "原文" in text:
         return "untranslated_response", "模型返回未翻译内容"
+    if "html_tag_mismatch" in flag_set or "html_mismatch" in flag_set or "html_tag_mismatch" in text or "html tag mismatch" in text or "html结构" in text or "tag mismatch" in text:
+        return "html_tag_mismatch", "HTML 标签不匹配"
     if "empty_translation" in flag_set:
         return "empty_translation", "空译文"
     if "json" in text or "parse" in text:
@@ -422,7 +471,18 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
     stages, stage_total_ms = _parse_pipeline_timings(job.metrics_summary)
     stats_elapsed_ms = _metric_number(stats.get("elapsed_seconds"), 0.0) * 1000
     wall_elapsed_ms = _job_wall_elapsed_ms(job)
-    total_ms = stage_total_ms or (stats_elapsed_ms if stats_elapsed_ms > 0 else None) or (wall_elapsed_ms if wall_elapsed_ms > 0 else None)
+    if stage_total_ms:
+        total_ms = stage_total_ms
+        timing_total_source = "stage_timings"
+    elif stats_elapsed_ms > 0:
+        total_ms = stats_elapsed_ms
+        timing_total_source = "translation_stats_elapsed"
+    elif wall_elapsed_ms > 0:
+        total_ms = wall_elapsed_ms
+        timing_total_source = "wall_elapsed"
+    else:
+        total_ms = None
+        timing_total_source = "derived"
 
     chunks = []
     list_chunks = getattr(job_store, "list_chunks", None)
@@ -473,14 +533,22 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         model_stage_ms = round(stats_elapsed_ms)
     if total_ms is None:
         total_ms = model_stage_ms + server_stage_ms
+        timing_total_source = "derived"
 
     total_ms = int(round(total_ms or 0))
     if model_stage_ms > total_ms and total_ms > 0:
         model_stage_ms = total_ms
-    if not server_stage_ms and total_ms > 0:
+    if not server_stage_ms and total_ms > 0 and timing_total_source != "wall_elapsed":
         server_stage_ms = max(0, total_ms - model_stage_ms)
     model_share = (model_stage_ms / total_ms) if total_ms > 0 else 0.0
     server_share = (server_stage_ms / total_ms) if total_ms > 0 else 0.0
+    attributed_total_ms = total_ms if timing_total_source != "wall_elapsed" else int(round(model_stage_ms + server_stage_ms))
+    unattributed_elapsed_ms = max(0, int(wall_elapsed_ms) - int(attributed_total_ms)) if wall_elapsed_ms > 0 else 0
+    attribution_coverage = (
+        min(1.0, attributed_total_ms / wall_elapsed_ms)
+        if wall_elapsed_ms > 0 and attributed_total_ms > 0
+        else (1.0 if attributed_total_ms > 0 and not wall_elapsed_ms else 0.0)
+    )
 
     total_chunks_from_stats = int(stats.get("total_chunks") or stats.get("chunks_total") or 0)
     total_chunks = max(total_chunks_from_stats, len(chunks))
@@ -514,7 +582,22 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "complex_chunks": int(stats.get("complex_chunks") or 0),
         "complex_singleton_batches": int(stats.get("complex_singleton_batches") or 0),
         "inline_tag_repairs": int(stats.get("inline_tag_repairs") or 0),
+        "text_segment_rescue_attempts": int(stats.get("text_segment_rescue_attempts") or 0),
+        "text_segment_rescue_successes": int(stats.get("text_segment_rescue_successes") or 0),
+        "chunk_rescue_attempts": int(stats.get("chunk_rescue_attempts") or 0),
+        "chunk_rescue_successes": int(stats.get("chunk_rescue_successes") or 0),
+        "failed_chunk_rescue_candidates": int(stats.get("failed_chunk_rescue_candidates") or 0),
+        "failed_chunk_rescue_attempted": int(stats.get("failed_chunk_rescue_attempted") or 0),
+        "failed_chunk_rescue_succeeded": int(stats.get("failed_chunk_rescue_succeeded") or 0),
+        "failed_chunk_rescue_failed": int(stats.get("failed_chunk_rescue_failed") or 0),
+        "image_note_chunks_skipped": int(stats.get("image_note_chunks_skipped") or 0),
+        "image_caption_chunks": int(stats.get("image_caption_chunks") or 0),
+        "reference_note_chunks_skipped": int(stats.get("reference_note_chunks_skipped") or 0),
+        "structured_note_chunks": int(stats.get("structured_note_chunks") or 0),
+        "structured_note_successes": int(stats.get("structured_note_successes") or 0),
+        "retry_budget_exhausted_chunks": int(stats.get("retry_budget_exhausted_chunks") or 0),
     }
+    failed_chunk_locations = _chunk_location_samples(job, chunks, limit=8)
 
     bottleneck = {
         "primary": "unknown",
@@ -522,7 +605,27 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "reason": "当前任务缺少足够的阶段耗时或模型调用数据。",
         "recommendations": ["跑完一次翻译任务后查看该面板，优先看模型耗时占比、重试次数和失败类别。"],
     }
-    if retry_attempts > max(3, total_chunks * 0.1) or failed_chunks > 0 or failed_categories:
+    if (
+        timing_total_source != "wall_elapsed"
+        and wall_elapsed_ms > 0
+        and unattributed_elapsed_ms >= max(60_000, int(attributed_total_ms * 2))
+        and (unattributed_elapsed_ms / wall_elapsed_ms) >= 0.5
+    ):
+        bottleneck = {
+            "primary": "unattributed_wait",
+            "title": "主要瓶颈：任务等待 / 挂起未归因",
+            "reason": (
+                f"任务墙钟耗时约 {round(wall_elapsed_ms / 1000)} 秒，"
+                f"已归因处理约 {round(attributed_total_ms / 1000, 1)} 秒，"
+                f"仍有约 {round(unattributed_elapsed_ms / 1000)} 秒未被阶段统计覆盖。"
+            ),
+            "recommendations": [
+                "优先检查任务 created_at/updated_at/status，确认是否长时间排队、挂起或运行中未推进。",
+                "查看 worker 日志和重启记录，确认是否发生 worker 卡死、任务恢复或状态更新时间异常。",
+                "补齐队列等待、worker 执行、模型调用、打包阶段的独立耗时，避免把墙钟缺口误判成模型或服务器耗时。",
+            ],
+        }
+    elif retry_attempts > max(3, total_chunks * 0.1) or failed_chunks > 0 or failed_categories:
         bottleneck = {
             "primary": "model_stability",
             "title": "主要瓶颈：模型响应稳定性 / 重试放大",
@@ -568,6 +671,10 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
 
     return {
         "total_ms": total_ms,
+        "attributed_total_ms": int(round(attributed_total_ms)),
+        "unattributed_elapsed_ms": int(round(unattributed_elapsed_ms)),
+        "attribution_coverage": round(attribution_coverage, 4),
+        "timing_total_source": timing_total_source,
         "model_stage_ms": int(round(model_stage_ms)),
         "server_stage_ms": int(round(server_stage_ms)),
         "model_share": round(model_share, 4),
@@ -610,6 +717,7 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
             for s in stages
         ],
         "failure_categories": sorted(failed_categories.values(), key=lambda item: item["count"], reverse=True),
+        "failed_chunk_locations": failed_chunk_locations,
         "bottleneck": bottleneck,
     }
 
@@ -890,9 +998,9 @@ async def _block_sensitive_files(request: Request, call_next):
 
 import requests
 
-def process_job(job: Job) -> None:
+def process_job(job: Job, expected_attempt_id: str | None = None) -> None:
     """进程内执行转换（供 BackgroundTasks 使用）；实际逻辑在 job_runner.run_job。"""
-    run_job(job.id)
+    run_job(job.id, expected_attempt_id=expected_attempt_id)
 
 
 @app.get("/healthz")
@@ -965,13 +1073,14 @@ async def create_job(
         glossary=glossary,
         device=device,
         traditional_variant=traditional_variant.value,
+        translation_stats=initial_translation_stats() if enable_translation else {},
     )
     job_store.add(job)
     if _use_celery():
         from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job.id)
+        run_conversion.delay(job.id, attempt_id_from_stats(job.translation_stats))
     else:
-        background_tasks.add_task(process_job, job)
+        background_tasks.add_task(process_job, job, attempt_id_from_stats(job.translation_stats))
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -1242,15 +1351,16 @@ async def create_job_v2(
         precision_polish_order_no=polish_order_no or "",
         user_id=current_user.id if current_user else None,
         status=job_status,
+        translation_stats=initial_translation_stats() if enable_translation else {},
     )
     job_store.add(job)
 
     if job_status == JobStatus.pending:
         if _use_celery():
             from app.tasks.job_pipeline import run_conversion
-            run_conversion.delay(job.id)
+            run_conversion.delay(job.id, attempt_id_from_stats(job.translation_stats))
         else:
-            background_tasks.add_task(process_job, job)
+            background_tasks.add_task(process_job, job, attempt_id_from_stats(job.translation_stats))
 
     return {
         "job_id": job.id,
@@ -1474,10 +1584,310 @@ def _short_text(text: str | None, limit: int = 220) -> str:
     return text[:limit].rstrip() + "..."
 
 
+def _safe_archive_name(value: Any, fallback: str = "unknown") -> str:
+    text = str(value or "").strip() or fallback
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    return text[:120] or fallback
+
+
+def _strip_html_text(fragment: str | None) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
+
+
+def _chapter_file_map(job_id: str) -> dict[str, str]:
+    list_chapters = getattr(job_store, "list_chapters", None)
+    if not list_chapters:
+        return {}
+    try:
+        chapters = list_chapters(job_id)
+    except Exception:
+        return {}
+    return {
+        str(getattr(chapter, "chapter_id", "") or ""): str(getattr(chapter, "file_path", "") or "")
+        for chapter in chapters
+        if getattr(chapter, "chapter_id", None)
+    }
+
+
+def _archive_payload_index(job_id: str, attempt_id: str = "") -> dict[tuple[str, str], dict]:
+    try:
+        from .domain.failed_chunk_archive import archive_root
+        root = archive_root() / _safe_archive_name(job_id)
+    except Exception:
+        return {}
+    if not root.exists():
+        return {}
+
+    out: dict[tuple[str, str], dict] = {}
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        payload_attempt_id = str(payload.get("attempt_id") or "")
+        if attempt_id and payload_attempt_id != attempt_id:
+            continue
+        payload["archive_path"] = str(path)
+        chapter_id = str(payload.get("chapter_id") or "")
+        chunk_id = str(payload.get("chunk_id") or "")
+        if chapter_id and chunk_id:
+            out[(chapter_id, chunk_id)] = payload
+    return out
+
+
+def _extract_footnote_reference(original_html: str | None) -> dict:
+    """Extract a正文脚注回链 such as part0062.html#ch26fn1 from archived HTML."""
+    text = original_html or ""
+    match = re.search(
+        r"href=[\"'](?P<href>[^\"']+?\.x?html#(?P<anchor>ch(?P<chapter>\d+)fn(?P<note>\d+)))[\"']",
+        text,
+        re.I,
+    )
+    if not match:
+        return {}
+    return {
+        "reference_href": match.group("href"),
+        "reference_anchor": match.group("anchor"),
+        "reference_chapter_number": int(match.group("chapter")),
+        "footnote_number": int(match.group("note")),
+    }
+
+
+@lru_cache(maxsize=256)
+def _epub_html_member(input_path: str, target_file: str) -> tuple[str, str]:
+    if not input_path or not target_file or not Path(input_path).exists():
+        return "", ""
+
+    target = target_file.replace("\\", "/").split("#", 1)[0].lstrip("/")
+    basename = target.split("/")[-1]
+    if not basename:
+        return "", ""
+
+    try:
+        with zipfile.ZipFile(input_path) as zf:
+            names = zf.namelist()
+            matches = [
+                name for name in names
+                if name.replace("\\", "/") == target or name.replace("\\", "/").endswith("/" + target)
+            ]
+            if not matches:
+                matches = [
+                    name for name in names
+                    if name.replace("\\", "/").split("/")[-1] == basename
+                ]
+            if not matches:
+                return "", ""
+            member = matches[0]
+            return member, zf.read(member).decode("utf-8", errors="replace")
+    except Exception:
+        return "", ""
+
+
+def _first_heading_from_html(raw: str) -> str:
+    for match in re.finditer(r"<h[1-6][^>]*>(.*?)</h[1-6]>", raw or "", re.I | re.S):
+        heading = _strip_html_text(match.group(1))
+        if heading:
+            return heading
+    return ""
+
+
+def _tag_by_locator(raw: str, locator: str):
+    if not raw or not locator:
+        return None
+    try:
+        from bs4 import BeautifulSoup, Tag
+        soup = BeautifulSoup(raw, "html.parser")
+        current: Any = soup
+        for part in [item for item in locator.strip("/").split("/") if item]:
+            match = re.fullmatch(r"([A-Za-z0-9:_-]+)(?:\[(\d+)\])?", part)
+            if not match:
+                return None
+            name = match.group(1)
+            ordinal = max(1, int(match.group(2) or "1"))
+            children = [
+                child for child in getattr(current, "children", [])
+                if isinstance(child, Tag) and child.name == name
+            ]
+            if not children and current is soup:
+                found = soup.find(name)
+                if not found:
+                    return None
+                current = found
+                continue
+            if ordinal > len(children):
+                return None
+            current = children[ordinal - 1]
+        return current if isinstance(current, Tag) else None
+    except Exception:
+        return None
+
+
+def _nearest_heading_from_tag(tag: Any) -> str:
+    if not tag:
+        return ""
+    heading_names = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    for node in [tag, *tag.find_all_previous(True)]:
+        if getattr(node, "name", None) in heading_names:
+            text = re.sub(r"\s+", " ", node.get_text(" ", strip=True) or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _nearest_page_from_tag(tag: Any) -> str:
+    if not tag:
+        return ""
+    for node in [tag, *tag.find_all_previous(True)]:
+        for attr in ("id", "name"):
+            value = node.get(attr) if hasattr(node, "get") else None
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                match = re.fullmatch(r"page[_-]?(.+)", str(item or ""), re.I)
+                if match:
+                    return match.group(1)
+    return ""
+
+
+@lru_cache(maxsize=512)
+def _epub_source_chunk_context(input_path: str, source_file: str, locator: str) -> dict:
+    """Resolve the failed chunk's own source XHTML to chapter title and nearest page."""
+    member, raw = _epub_html_member(input_path, source_file)
+    if not raw:
+        return {}
+    tag = _tag_by_locator(raw, locator)
+    heading = _nearest_heading_from_tag(tag) or _first_heading_from_html(raw)
+    page = _nearest_page_from_tag(tag)
+    out = {"source_epub_file": member}
+    if heading:
+        out["source_chapter_title"] = heading
+    if page:
+        out["source_page"] = page
+    return out
+
+
+@lru_cache(maxsize=256)
+def _epub_reference_context(input_path: str, reference_href: str) -> dict:
+    """Resolve a referenced EPUB HTML file to chapter heading and nearest page anchor."""
+    if not input_path or not reference_href or not Path(input_path).exists():
+        return {}
+
+    target_file, _, anchor = reference_href.partition("#")
+    target_file = target_file.split("/")[-1]
+    if not target_file:
+        return {}
+
+    member, raw = _epub_html_member(input_path, target_file)
+    if not raw:
+        return {}
+
+    heading = _first_heading_from_html(raw)
+
+    anchor_idx = -1
+    if anchor:
+        anchor_match = re.search(
+            rf"(?:id|name)=[\"']{re.escape(anchor)}[\"']",
+            raw,
+            re.I,
+        )
+        if anchor_match:
+            anchor_idx = anchor_match.start()
+
+    before_anchor = raw[:anchor_idx] if anchor_idx >= 0 else raw
+    page_matches = re.findall(r"(?:id|name)=[\"']page_([^\"']+)[\"']", before_anchor, re.I)
+    page = page_matches[-1] if page_matches else ""
+    return {
+        "reference_file": member,
+        "reference_chapter_title": heading,
+        "reference_page": page,
+    }
+
+
+def _chunk_location_item(
+    job: Job,
+    chunk: Any,
+    *,
+    category: str | None = None,
+    chapter_files: dict[str, str] | None = None,
+    archive_payloads: dict[tuple[str, str], dict] | None = None,
+) -> dict:
+    chapter_id = str(getattr(chunk, "chapter_id", "") or "")
+    chunk_id = str(getattr(chunk, "chunk_id", "") or "")
+    payload = (archive_payloads or {}).get((chapter_id, chunk_id), {})
+    original_html = str(payload.get("original_html") or "")
+    reference = _extract_footnote_reference(original_html)
+    reference.update(_epub_reference_context(job.input_path or "", reference.get("reference_href", "")))
+
+    source_file = (chapter_files or {}).get(chapter_id, "")
+    if not source_file and chapter_id:
+        source_file = f"text/{chapter_id}.html"
+    source_context = _epub_source_chunk_context(
+        job.input_path or "",
+        source_file,
+        str(getattr(chunk, "locator", "") or ""),
+    )
+
+    return {
+        "chapter_id": chapter_id,
+        "chunk_id": chunk_id,
+        "sequence": int(getattr(chunk, "sequence", 0) or 0),
+        "locator": str(getattr(chunk, "locator", "") or ""),
+        "source_file": source_file,
+        "status": _enum_value(getattr(chunk, "status", "")),
+        "category": category or _diagnose_error_category(
+            getattr(chunk, "error_message", None),
+            (getattr(chunk, "audit_json", None) or {}).get("flags", []),
+        ),
+        "error_message": getattr(chunk, "error_message", None),
+        "retry_count": int(getattr(chunk, "retry_count", 0) or 0),
+        "latency_ms": int(getattr(chunk, "latency_ms", 0) or 0),
+        "model": getattr(chunk, "model", None),
+        "base_url": getattr(chunk, "base_url", None),
+        "source_text": _short_text(getattr(chunk, "source_text", "")),
+        "translated_text": _short_text(getattr(chunk, "translated_text", "")),
+        "archive_path": payload.get("archive_path", ""),
+        **source_context,
+        **reference,
+    }
+
+
+def _chunk_location_samples(job: Job, chunks: list, *, limit: int = 8) -> list[dict]:
+    if not chunks:
+        return []
+    chapter_files = _chapter_file_map(job.id)
+    archive_payloads = _archive_payload_index(job.id, attempt_id_from_stats(job.translation_stats))
+    candidates = []
+    for chunk in chunks:
+        status = _enum_value(getattr(chunk, "status", ""))
+        retry_count = int(getattr(chunk, "retry_count", 0) or 0)
+        audit = getattr(chunk, "audit_json", None) or {}
+        flags = audit.get("flags", []) if isinstance(audit, dict) else []
+        if status != "failed" and retry_count < 2 and not getattr(chunk, "error_message", None) and "likely_untranslated" not in flags:
+            continue
+        candidates.append(chunk)
+
+    candidates.sort(key=lambda chunk: (
+        0 if _enum_value(getattr(chunk, "status", "")) == "failed" else 1,
+        -int(getattr(chunk, "retry_count", 0) or 0),
+        int(getattr(chunk, "sequence", 0) or 0),
+    ))
+    return [
+        _chunk_location_item(
+            job,
+            chunk,
+            chapter_files=chapter_files,
+            archive_payloads=archive_payloads,
+        )
+        for chunk in candidates[:max(0, limit)]
+    ]
+
+
 def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
     stats = job.translation_stats or {}
     list_chunks = getattr(job_store, "list_chunks", None)
     chunks = list_chunks(job.id) if list_chunks else []
+    chapter_files = _chapter_file_map(job.id)
+    archive_payloads = _archive_payload_index(job.id, attempt_id_from_stats(job.translation_stats))
     status_counts: dict[str, int] = {}
     error_categories: dict[str, int] = {}
     audit_flags_count: dict[str, int] = {}
@@ -1503,23 +1913,16 @@ def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
             category = _diagnose_error_category(getattr(chunk, "error_message", None), flags)
             error_categories[category] = error_categories.get(category, 0) + 1
             if len(failed_items) < max(1, min(limit, 100)):
-                failed_items.append({
-                    "chapter_id": getattr(chunk, "chapter_id", ""),
-                    "chunk_id": getattr(chunk, "chunk_id", ""),
-                    "sequence": getattr(chunk, "sequence", 0),
-                    "locator": getattr(chunk, "locator", ""),
-                    "status": status,
-                    "category": category,
-                    "error_message": getattr(chunk, "error_message", None),
-                    "retry_count": int(getattr(chunk, "retry_count", 0) or 0),
-                    "latency_ms": int(getattr(chunk, "latency_ms", 0) or 0),
-                    "model": getattr(chunk, "model", None),
-                    "base_url": getattr(chunk, "base_url", None),
-                    "risk_level": risk_level,
-                    "flags": flags,
-                    "source_text": _short_text(getattr(chunk, "source_text", "")),
-                    "translated_text": _short_text(getattr(chunk, "translated_text", "")),
-                })
+                item = _chunk_location_item(
+                    job,
+                    chunk,
+                    category=category,
+                    chapter_files=chapter_files,
+                    archive_payloads=archive_payloads,
+                )
+                item["risk_level"] = risk_level
+                item["flags"] = flags
+                failed_items.append(item)
 
         latency = int(getattr(chunk, "latency_ms", 0) or 0)
         if latency > 0:
@@ -1565,7 +1968,11 @@ def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
             "timeout_errors": model_timeout_count,
             "connection_errors": connection_count,
             "retry_attempts": int(stats.get("retry_attempts") or 0),
-            "last_error": stats.get("last_error") or "",
+            "last_error": _diagnostic_last_error(
+                stats.get("last_error") or "",
+                error_categories,
+                stats.get("audit_flags_count") or audit_flags_count,
+            ),
             "model": stats.get("model") or "",
             "elapsed_seconds": stats.get("elapsed_seconds") or 0,
         },
@@ -1610,17 +2017,30 @@ def get_translation_diagnostics_v2(job_id: str, request: Request, limit: int = 2
     return _translation_diagnostics(job, limit=limit)
 
 
-def _v2_job_events(job_id: str) -> list:
+def _v2_job_events(job: Job | str, *, current_attempt_only: bool = False) -> list:
     """从 store 的 list_stages 转为 events 列表。"""
+    job_id = job.id if isinstance(job, Job) else job
+    attempt_started_at = None
+    current_attempt_id = ""
+    if current_attempt_only and isinstance(job, Job) and job.enable_translation:
+        stats = dict(job.translation_stats or {})
+        attempt_started_at = _parse_iso_datetime(stats.get("attempt_started_at"))
+        current_attempt_id = attempt_id_from_stats(stats)
     list_stages = getattr(job_store, "list_stages", None)
     if not list_stages:
         return []
     stages = list_stages(job_id)
     items = []
     for s in stages:
+        event_time = _coerce_utc(s.finished_at or s.started_at)
         metadata = s.metadata if getattr(s, "metadata", None) else {}
+        event_attempt_id = str(metadata.get("attempt_id") or "")
+        if current_attempt_id and event_attempt_id and event_attempt_id != current_attempt_id:
+            continue
+        if not event_attempt_id and attempt_started_at and event_time and event_time < attempt_started_at:
+            continue
         items.append({
-            "time": (s.finished_at or s.started_at).isoformat(),
+            "time": event_time.isoformat() if event_time else "",
             "level": metadata.get("level") or "info",
             "stage": s.stage_name,
             "message": metadata.get("message") or s.stage_name,
@@ -1630,26 +2050,27 @@ def _v2_job_events(job_id: str) -> list:
 
 
 @app.get("/api/v2/jobs/{job_id}/events")
-def get_job_events_v2(job_id: str, request: Request):
+def get_job_events_v2(job_id: str, request: Request, include_history: bool = False):
     """获取结构化阶段日志（v2）。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
-    return {"items": _v2_job_events(job_id)}
+    return {"items": _v2_job_events(job, current_attempt_only=not include_history)}
 
 
 def _enqueue_conversion(job: Job, background_tasks: BackgroundTasks | None = None) -> None:
+    expected_attempt_id = attempt_id_from_stats(job.translation_stats) if job.enable_translation else ""
     if _use_celery():
         from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job.id)
+        run_conversion.delay(job.id, expected_attempt_id)
         return
     if background_tasks is not None:
-        background_tasks.add_task(process_job, job)
+        background_tasks.add_task(process_job, job, expected_attempt_id)
         return
     import threading
-    threading.Thread(target=run_job, args=(job.id,), daemon=True).start()
+    threading.Thread(target=run_job, args=(job.id, expected_attempt_id), daemon=True).start()
 
 
 @app.post("/api/v2/jobs/{job_id}/retry-translation")
@@ -1682,41 +2103,29 @@ def restart_translation_v2(job_id: str, request: Request, background_tasks: Back
 
 def _restart_translation_job(job: Job, background_tasks: BackgroundTasks, action_label: str):
     if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
-        raise HTTPException(status_code=400, detail="任务正在处理中，不能重复重启")
+        raise HTTPException(status_code=400, detail="任务仍在处理中；如需重启，请先停止当前翻译。")
     if not Path(job.input_path).exists():
         raise HTTPException(status_code=410, detail="原始上传文件已过期，无法重启翻译")
 
-    stats = dict(job.translation_stats or {})
-    free_retry_count = int(stats.get("free_retry_count") or 0)
+    now_utc = datetime.now(timezone.utc)
     max_retries = max_free_retries()
-    if max_retries >= 0 and free_retry_count >= max_retries:
-        raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")
-
-    stats["free_retry_count"] = free_retry_count + 1
-    stats["translation_attempt"] = int(stats.get("translation_attempt") or 1) + 1
-    stats["restart_count"] = int(stats.get("restart_count") or 0) + 1
-    restart_summary = f"{action_label}已排队"
-    stats["qa_report"] = {
-        "status": "retrying",
-        "summary": restart_summary,
-        "retryable": False,
-        "free_retry_count": stats["free_retry_count"],
-        "max_free_retries": max_retries,
-        "translation_attempt": stats["translation_attempt"],
-        "flags": [],
-        "checks": [],
-        "score": 0,
-    }
-
-    updated = job_store.update_status(
+    restart_attempt = getattr(job_store, "restart_translation_attempt", None)
+    if not callable(restart_attempt):
+        raise HTTPException(status_code=500, detail="当前存储后端不支持安全重启")
+    refreshed, reason = restart_attempt(
         job.id,
-        JobStatus.pending,
-        f"{restart_summary}（第 {stats['translation_attempt']} 次尝试）",
-        error_code=None,
-        translation_stats=stats,
-        allow_cancelled_transition=True,
+        attempt_id=new_attempt_id(),
+        action_label=action_label,
+        max_free_retries=max_retries,
+        started_at=now_utc,
     )
-    refreshed = updated or job_store.get(job.id) or job
+    if reason == "retry_limit":
+        raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")
+    if reason == "active":
+        raise HTTPException(status_code=409, detail="任务已被其他请求重启，请勿重复提交")
+    if reason != "ok" or not refreshed:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    restart_summary = f"{action_label}已排队"
     add_stage = getattr(job_store, "add_stage", None)
     if add_stage:
         now = datetime.now(timezone.utc)
@@ -1726,7 +2135,11 @@ def _restart_translation_job(job: Job, background_tasks: BackgroundTasks, action
             status=StageStatus.completed,
             started_at=now,
             finished_at=now,
-            metadata={"message": restart_summary, "level": "info"},
+            metadata={
+                "message": restart_summary,
+                "level": "info",
+                "attempt_id": attempt_id_from_stats(refreshed.translation_stats),
+            },
         ))
     _enqueue_conversion(refreshed, background_tasks)
     return _job_to_v2_detail(refreshed, None)
@@ -1784,10 +2197,16 @@ def recover_job_payment(job_id: str, request: Request):
 
     if _use_celery():
         from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job.id)
+        refreshed = job_store.get(job.id) or job
+        run_conversion.delay(job.id, attempt_id_from_stats(refreshed.translation_stats))
     else:
         import threading
-        threading.Thread(target=run_job, args=(job.id,), daemon=True).start()
+        refreshed = job_store.get(job.id) or job
+        threading.Thread(
+            target=run_job,
+            args=(job.id, attempt_id_from_stats(refreshed.translation_stats)),
+            daemon=True,
+        ).start()
 
     refreshed = job_store.get(job_id)
     return {
@@ -1819,7 +2238,11 @@ def cancel_job_v2(job_id: str, request: Request):
             status=StageStatus.completed,
             started_at=now,
             finished_at=now,
-            metadata={"message": message, "level": "warning"},
+            metadata={
+                "message": message,
+                "level": "warning",
+                **({"attempt_id": attempt_id_from_stats(job.translation_stats)} if job.enable_translation else {}),
+            },
         ))
     updated = job_store.get(job_id)
     return {
@@ -2080,10 +2503,15 @@ async def alipay_webhook(request: Request):
             logger.info(f"Alipay payment verified, starting job {out_trade_no}")
             if _use_celery():
                 from app.tasks.job_pipeline import run_conversion
-                run_conversion.delay(job.id)
+                refreshed = job_store.get(job.id) or job
+                run_conversion.delay(job.id, attempt_id_from_stats(refreshed.translation_stats))
             else:
                 import threading
-                threading.Thread(target=process_job, args=(job,)).start()
+                refreshed = job_store.get(job.id) or job
+                threading.Thread(
+                    target=process_job,
+                    args=(refreshed, attempt_id_from_stats(refreshed.translation_stats)),
+                ).start()
 
         return Response("success")
         

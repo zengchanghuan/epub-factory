@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi.testclient import TestClient
 from app.main import app
-from app.models import Job, JobStage, OutputMode, StageStatus
+from app.models import Job, JobStage, JobStatus, OutputMode, StageStatus
 from app.storage import job_store
 from app.job_runner import run_job
 
@@ -100,12 +100,63 @@ def test_v2_events_exposes_metadata_level():
     assert "翻译交付质检未通过" in items[-1]["message"]
 
 
+def test_v2_events_filters_previous_translation_attempt_by_default():
+    """翻译重启后，默认 events 不应混入上一轮的取消日志。"""
+    job_id = uuid.uuid4().hex[:12]
+    attempt_started = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+    job = Job(
+        id=job_id,
+        trace_id=uuid.uuid4().hex,
+        source_filename="events_attempt.epub",
+        input_path="/tmp/events_attempt.epub",
+        output_mode=OutputMode.simplified,
+        status=JobStatus.running,
+        enable_translation=True,
+        access_token="events-attempt-token",
+        translation_stats={"attempt_started_at": attempt_started.isoformat()},
+    )
+    job_store.add(job)
+    old_time = datetime(2026, 7, 4, 11, 59, 0, tzinfo=timezone.utc)
+    new_time = datetime(2026, 7, 4, 12, 0, 5, tzinfo=timezone.utc)
+    job_store.add_stage(JobStage(
+        job_id=job_id,
+        stage_name="cancelled",
+        status=StageStatus.completed,
+        started_at=old_time,
+        finished_at=old_time,
+        metadata={"message": "用户已停止翻译", "level": "warning"},
+    ))
+    job_store.add_stage(JobStage(
+        job_id=job_id,
+        stage_name="translating",
+        status=StageStatus.completed,
+        started_at=new_time,
+        finished_at=new_time,
+        metadata={"message": "正在翻译第 1 章", "level": "info"},
+    ))
+
+    res = client.get(f"/api/v2/jobs/{job_id}/events", params={"token": "events-attempt-token"})
+    assert res.status_code == 200
+    messages = [item["message"] for item in res.json()["items"]]
+    assert "用户已停止翻译" not in messages
+    assert "正在翻译第 1 章" in messages
+
+    history_res = client.get(
+        f"/api/v2/jobs/{job_id}/events",
+        params={"token": "events-attempt-token", "include_history": "true"},
+    )
+    assert history_res.status_code == 200
+    history_messages = [item["message"] for item in history_res.json()["items"]]
+    assert "用户已停止翻译" in history_messages
+
+
 if __name__ == "__main__":
     passed = failed = 0
     for name, fn in [
         ("stage_events_recorded", test_stage_events_recorded_on_run),
         ("v2_events_api", test_v2_events_api_returns_stage_items),
         ("v2_events_metadata_level", test_v2_events_exposes_metadata_level),
+        ("v2_events_attempt_filter", test_v2_events_filters_previous_translation_attempt_by_default),
     ]:
         try:
             fn()

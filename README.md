@@ -29,6 +29,9 @@
 - SQLite 缓存去重（断点续传，零重复 Token 消耗）
 - **术语表注入（RAG）**：传入 `{"原文术语": "目标术语"}` 强制统一翻译
 - **双语对照模式**：原文 + 译文并排，含 `epub-original`/`epub-translated` class
+- **图片说明翻译**：翻译 XHTML 中的 `caption` / `figcaption` / `legend` 文本并纳入成品 QA；图片像素内部文字仍需 OCR（见 Roadmap）
+
+当前生产代码架构与翻译质量门禁见 [docs/ARCHITECTURE-DIAGRAM.md](docs/ARCHITECTURE-DIAGRAM.md)。
 
 ### 存储
 
@@ -202,7 +205,8 @@ node runner.js test_f6_history.js
 ### 核心功能 (P2)
 - [ ] 幽灵目录 AI 语义提取（LLM 推断无标签章节）
 - [ ] AI 生成图片 Alt 文本（ADA/A11y 合规）
-- [ ] Redis + Celery 任务队列（支持并发、重试）
+- [ ] 图片像素文字 OCR 翻译（可选 OCR、术语表复用、安全重绘/回退、独立 QA 与成本统计）
+- [x] Redis + Celery 整本任务队列代码路径（未配置时回退 BackgroundTasks/本地线程；章节并发在 Worker 内执行）
 - [ ] 用户鉴权（Supabase Auth）
 - [ ] 域名上线 + SEO 内容发布
 - [ ] ProductHunt 发布

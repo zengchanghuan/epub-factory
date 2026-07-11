@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from app.infra.alipay import query_alipay_trade
 from app.infra.celery_app import celery_app
 from app.storage import job_store
+from app.domain.translation_attempt import attempt_id_from_stats
 
 logger = logging.getLogger("epub_factory.reconcile")
 
@@ -84,7 +85,11 @@ def _handle_paid(job_id: str) -> None:
     logger.info("reconcile: mark paid, dispatching job", extra={"job_id": job_id})
     try:
         from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job_id)
+        job = job_store.get(job_id)
+        run_conversion.delay(
+            job_id,
+            attempt_id_from_stats(job.translation_stats) if job and job.enable_translation else "",
+        )
     except Exception as e:
         logger.error(f"reconcile: failed to dispatch job {job_id}: {e}", exc_info=True)
 
