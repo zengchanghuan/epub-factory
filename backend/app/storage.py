@@ -44,6 +44,11 @@ class JobStore:
             jobs.sort(key=lambda j: j.created_at, reverse=True)
             return jobs[:limit]
 
+    def list_jobs_by_batch_id(self, batch_id: str) -> list:
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if getattr(j, "batch_id", "") == batch_id]
+            return sorted(jobs, key=lambda j: (getattr(j, "batch_index", 0), j.created_at))
+
     def add_stage(self, stage: JobStage) -> JobStage:
         """记录阶段事件（内存：追加到列表；持久化：见 storage_db）。"""
         with self._lock:
@@ -173,6 +178,23 @@ class JobStore:
             job.updated_at = datetime.now(timezone.utc)
             return True
 
+    def try_mark_batch_paid(self, batch_id: str, message: str = "批次支付成功，排队中...") -> bool:
+        """原子解锁整批任务；仅首个调用方获得入队权。"""
+        with self._lock:
+            jobs = sorted(
+                [j for j in self._jobs.values() if getattr(j, "batch_id", "") == batch_id],
+                key=lambda j: getattr(j, "batch_index", 0),
+            )
+            if not jobs or jobs[0].status != JobStatus.pending_payment:
+                return False
+            now = datetime.now(timezone.utc)
+            for job in jobs:
+                if job.status == JobStatus.pending_payment:
+                    job.status = JobStatus.pending
+                    job.message = message
+                    job.updated_at = now
+            return True
+
     def list_stale_pending_payment(self, min_age_minutes: int = 30) -> list:
         from datetime import timedelta
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=min_age_minutes)
@@ -191,6 +213,18 @@ class JobStore:
             job.message = "支付超时，订单已关闭"
             job.updated_at = datetime.now(timezone.utc)
             return True
+
+    def mark_batch_payment_timeout(self, batch_id: str) -> int:
+        with self._lock:
+            now = datetime.now(timezone.utc)
+            changed = 0
+            for job in self._jobs.values():
+                if getattr(job, "batch_id", "") == batch_id and job.status == JobStatus.pending_payment:
+                    job.status = JobStatus.cancelled
+                    job.message = "支付超时，批次订单已关闭"
+                    job.updated_at = now
+                    changed += 1
+            return changed
 
     def update_status(
         self,

@@ -1378,10 +1378,12 @@
       <div id="dropzone" class="dropzone">
         <span class="icon">📁</span>
         <div class="main-text">拖拽文件到这里，或点击选择</div>
-        <div class="sub-text">支持 .epub / .pdf / .mobi / .azw3 / .docx / .md 格式</div>
+        <div class="sub-text">支持一次选择 1–10 个 .epub / .pdf / .mobi / .azw3 / .docx / .md 文件</div>
+        <button type="button" id="folderSelectBtn" style="margin-top:10px; padding:7px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); cursor:pointer; font-size:12px; font-family:inherit;">选择整个文件夹</button>
         <div class="file-name" id="fileName" style="display:none;"></div>
       </div>
-      <input id="fileInput" type="file" accept=".epub,.pdf,.mobi,.azw3,.docx,.md,.markdown" />
+      <input id="fileInput" type="file" multiple accept=".epub,.pdf,.mobi,.azw3,.docx,.md,.markdown" />
+      <input id="folderInput" type="file" multiple webkitdirectory directory accept=".epub,.pdf,.mobi,.azw3,.docx,.md,.markdown" />
 
       <div class="mode-grid" id="taskModeGrid">
         <label class="mode-card">
@@ -1756,6 +1758,8 @@
     }
     const dropzone = $("dropzone");
     const fileInput = $("fileInput");
+    const folderInput = $("folderInput");
+    const folderSelectBtn = $("folderSelectBtn");
     const fileNameEl = $("fileName");
     const submitBtn = $("submitBtn");
     const enablePrecisionPolish = $("enablePrecisionPolish");
@@ -1784,12 +1788,14 @@
     const progressLogEl = $("progressLog");
 
     let selectedFile = null;
+    let selectedFiles = [];
     let pollTimer = null;
     let elapsedTimer = null;
     let jobStartMs = null;
     let lastProgressMessage = "";
     let renderedEventKeys = new Set();
     let currentJobId = null;
+    let currentBatchId = null;
     let currentJobStatus = "";
     let currentJobIsTranslation = false;
     let currentTranslationAttemptStartedAt = "";
@@ -2181,6 +2187,7 @@
     }
 
     function isTranslationSupportedForSelectedFile() {
+      if (selectedFiles.length > 1) return false;
       const ext = getSelectedFileExt();
       return !ext || [".epub", ".pdf", ".docx", ".md", ".markdown"].includes(ext);
     }
@@ -2211,6 +2218,7 @@
       translationModeCard.classList.toggle("disabled", !supported);
       const translationRadio = translationModeCard.querySelector("input");
       translationRadio.disabled = !supported;
+      translationModeCard.title = selectedFiles.length > 1 ? "批量模式当前仅支持转换与排版处理" : "";
       if (!supported && getTaskMode() === "translate") setTaskMode("convert");
     }
 
@@ -2250,7 +2258,8 @@
             const safeFilename = escapeHtml(j.source_filename || "-");
             const safeMessage = escapeHtml(j.message || "");
             const taskKind = j.enable_translation ? "翻译" : "转换";
-            const metaParts = [taskKind, time, safeMessage].filter(Boolean).join(" · ");
+            const batchMeta = j.batch_id ? `批次 ${escapeHtml(j.batch_id)} · ${Number(j.batch_index || 0) + 1}/${j.batch_size || "?"}` : "";
+            const metaParts = [taskKind, batchMeta, time, safeMessage].filter(Boolean).join(" · ");
             const actionText = j.status === "completed" ? "下载" : "查看";
             return `<li class="tasks-item" data-job-id="${j.job_id}">
               <div class="tasks-info">
@@ -2294,6 +2303,7 @@
     }
 
     function openJobDetail(jobId) {
+      currentBatchId = null;
       currentJobId = jobId;
       currentJobStatus = "";
       currentTranslationAttemptStartedAt = "";
@@ -2314,6 +2324,61 @@
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(() => pollJobV2(jobId), 2000);
       pollJobV2(jobId);
+    }
+
+    function pollBatchV2(batchId) {
+      fetch(`${API}/api/v2/batches/${batchId}`, { headers: authHeaders(`batch:${batchId}`) })
+        .then(r => { if (!r.ok) throw new Error("批次查询失败"); return r.json(); })
+        .then(data => {
+          currentBatchId = batchId;
+          const counts = data.counts || {};
+          const status = data.status || "running";
+          const isDone = ["completed", "partial_completed", "failed"].includes(status);
+          const legacyStatus = status === "completed" ? "success" : (status === "failed" ? "failed" : (status === "pending_payment" ? "pending" : "running"));
+          const summary = `共 ${data.file_count || 0} 个文件：完成 ${counts.completed || 0}，处理中 ${(counts.running || 0) + (counts.queued || 0)}，失败 ${counts.failed || 0}`;
+          setTaskUiMode(false);
+          setStatus(legacyStatus, status === "pending_payment" ? "等待整批订单支付" : summary);
+          statusBadge.textContent = status === "completed" ? "全部完成" : status === "partial_completed" ? "部分完成" : status === "failed" ? "全部失败" : status === "pending_payment" ? "等待支付" : "批量处理中";
+          progressBar.style.width = `${Math.max(status === "pending_payment" ? 10 : 5, data.progress_percent || 0)}%`;
+          progressBar.style.animation = "none";
+          $("statusCardTitle").textContent = "批量转换进度";
+          downloadBtn.textContent = "↓ 下载批次 ZIP";
+          $("metaJobId").textContent = `批次 ${batchId}`;
+          $("metaFilename").textContent = `${data.file_count || 0} 个文件`;
+          $("metaMode").textContent = "批量转换 / 每本独立处理";
+          $("paymentWaitNotice").style.display = status === "pending_payment" ? "flex" : "none";
+          (data.jobs || []).forEach(job => {
+            appendProgressLog(`${job.source_filename}：${job.message || (typeof mapV2StatusText === "function" ? mapV2StatusText(job.status, false) : job.status)}`, `${job.job_id}|${job.status}|${job.message || ""}`);
+          });
+
+          if ((status === "completed" || status === "partial_completed") && data.download_url) {
+            const url = withJobToken(`${API}${data.download_url}`, `batch:${batchId}`);
+            showResultActions(batchId, url);
+            if (status === "partial_completed") {
+              errorMsg.textContent = `有 ${counts.failed || 0} 个文件处理失败，ZIP 中包含其余成功结果；失败项可在任务中心查看。`;
+              errorMsg.style.display = "block";
+            }
+          }
+          if (status === "failed") {
+            errorMsg.textContent = "整批文件均未成功，请在任务中心查看各文件失败原因。";
+            errorMsg.style.display = "block";
+          }
+          if (isDone) {
+            clearInterval(pollTimer);
+            stopJobTimer();
+            submitBtn.disabled = false;
+            $("queueNotice").classList.remove("visible");
+            loadTaskList();
+          }
+        })
+        .catch(err => {
+          setStatus("failed", err.message);
+          errorMsg.textContent = err.message;
+          errorMsg.style.display = "block";
+          clearInterval(pollTimer);
+          stopJobTimer();
+          submitBtn.disabled = false;
+        });
     }
 
     function pollJobV2(jobId) {
@@ -2478,6 +2543,20 @@
           ? `${location.pathname}?${params.toString()}`
           : location.pathname;
         history.replaceState(null, "", newUrl);
+      }
+      const batchId = params.get("batch_id");
+      if (batchId) {
+        currentBatchId = batchId;
+        setStatus("pending", "正在确认批次付款结果...");
+        startJobTimer();
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(() => pollBatchV2(batchId), 2000);
+        pollBatchV2(batchId);
+        fetch(`${API}/api/v2/batches/${batchId}/recover`, {
+          method: "POST",
+          headers: authHeaders(`batch:${batchId}`),
+        }).then(r => r.ok ? r.json() : null).catch(() => null);
+        return;
       }
       const jobId = params.get("job_id");
       if (jobId) {
@@ -2826,7 +2905,7 @@
     const DEV_MODE = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
     function updateSubmitButton() {
-      if (!selectedFile) {
+      if (!selectedFiles.length) {
         submitBtn.disabled = true;
         submitBtn.textContent = "选择文件后开始";
         return;
@@ -2837,24 +2916,47 @@
       const _isAdminTest = !!(localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key"));
       if (_isAdminTest) {
         submitBtn.textContent = "提交订单 (¥0.01 测试)";
+      } else if (selectedFiles.length > 1) {
+        submitBtn.textContent = `批量转换 ${selectedFiles.length} 个文件`;
       } else {
         submitBtn.textContent = `开始${verb}`;
       }
     }
 
-    function selectFile(file) {
-      if (!file) return;
-      const name = file.name.toLowerCase();
+    function selectFiles(files, fromFolder = false) {
+      const allFiles = Array.from(files || []);
       const _supported = [".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown"];
-      if (!_supported.some(ext => name.endsWith(ext))) {
+      const supportedFiles = allFiles.filter(file => _supported.some(ext => file.name.toLowerCase().endsWith(ext)));
+      const nextFiles = fromFolder ? supportedFiles : allFiles;
+      if (!nextFiles.length) {
+        if (fromFolder) alert("该文件夹内没有支持的电子书文件");
+        return;
+      }
+      if (nextFiles.length > 10) {
+        alert(`该文件夹内有 ${nextFiles.length} 个支持的文件，单个批次最多支持 10 个，请拆分文件夹后重试`);
+        return;
+      }
+      const invalid = nextFiles.find(file => !_supported.some(ext => file.name.toLowerCase().endsWith(ext)));
+      if (invalid) {
         alert("仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件");
         return;
       }
-      selectedFile = file;
-      fileNameEl.textContent = `✅ ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+      selectedFiles = nextFiles;
+      selectedFile = nextFiles[0];
+      const totalSize = nextFiles.reduce((sum, file) => sum + file.size, 0);
+      const folderName = fromFolder && selectedFile.webkitRelativePath
+        ? selectedFile.webkitRelativePath.split("/")[0]
+        : "";
+      fileNameEl.textContent = folderName
+        ? `✅ 文件夹“${folderName}”：已收集 ${nextFiles.length} 个文件（共 ${(totalSize / 1024 / 1024).toFixed(1)} MB）`
+        : nextFiles.length === 1
+        ? `✅ ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB)`
+        : `✅ 已选择 ${nextFiles.length} 个文件（共 ${(totalSize / 1024 / 1024).toFixed(1)} MB），将统一支付并分别转换`;
       fileNameEl.style.display = "block";
       refreshTaskModeAvailability();
       if (!isTranslationSupportedForSelectedFile()) setTaskMode("convert");
+      enablePrecisionPolish.disabled = nextFiles.length > 1;
+      if (nextFiles.length > 1) enablePrecisionPolish.checked = false;
       updateSubmitButton();
       _updatePriceHint();
       estimatePolishPrice();
@@ -2862,18 +2964,29 @@
 
     function _updatePriceHint() {
       const isTranslation = getTaskMode() === "translate";
-      $("conversionPriceHint").style.display = (selectedFile && !isTranslation) ? "block" : "none";
+      $("conversionPriceHint").style.display = (selectedFiles.length && !isTranslation) ? "block" : "none";
+      $("conversionPriceHint").innerHTML = selectedFiles.length > 1
+        ? `批量转换：<strong style="color:var(--text);">¥5.99 × ${selectedFiles.length}</strong>，一次支付，分别处理，完成后可打包下载。`
+        : `格式转换服务：<strong style="color:var(--text);">¥5.99 / 次</strong>，支持繁简转换、竖排改横排、设备排版优化。`;
       // 重置支付区（避免上次残留）
       $("conversionPayArea").style.display = "none";
       $("translationPayArea").style.display = "none";
     }
 
     dropzone.addEventListener("click", () => fileInput.click());
-    fileInput.addEventListener("change", () => { if (fileInput.files.length) selectFile(fileInput.files[0]); });
+    fileInput.addEventListener("change", () => { if (fileInput.files.length) selectFiles(fileInput.files); });
+    folderSelectBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      folderInput.click();
+    });
+    folderInput.addEventListener("change", () => {
+      if (folderInput.files.length) selectFiles(folderInput.files, true);
+    });
 
     ["dragenter", "dragover"].forEach(e => dropzone.addEventListener(e, (ev) => { ev.preventDefault(); dropzone.classList.add("active"); }));
     ["dragleave", "drop"].forEach(e => dropzone.addEventListener(e, (ev) => { ev.preventDefault(); dropzone.classList.remove("active"); }));
-    dropzone.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]); });
+    dropzone.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) selectFiles(e.dataTransfer.files); });
 
     taskModeRadios.forEach(radio => {
       radio.addEventListener("change", () => setTaskMode(radio.value));
@@ -2885,7 +2998,7 @@
     });
 
     async function estimatePolishPrice() {
-      if (!selectedFile || !enablePrecisionPolish.checked) {
+      if (!selectedFile || selectedFiles.length > 1 || !enablePrecisionPolish.checked) {
         $("precisionPolishPriceHint").style.display = "none";
         return;
       }
@@ -2926,6 +3039,8 @@
       statusBadge.textContent = { pending: "等待中", running: `${taskVerb()}中...`, success: "完成", failed: "失败" }[status] || status;
       statusBadge.className = "status-badge " + status;
       progressBar.className = "progress-bar " + status;
+      progressBar.style.width = "";
+      progressBar.style.animation = "";
       statusMessage.textContent = message || "";
       errorMsg.style.display = "none";
       $("errorCodeMsg").style.display = "none";
@@ -3079,7 +3194,8 @@
 
     // ─── 核心提交逻辑（被免费按钮和 PayPal 共同调用） ─────────────────────────
     async function submitJob() {
-      if (!selectedFile) return;
+      if (!selectedFiles.length) return;
+      const isBatchMode = selectedFiles.length > 1;
       const isTranslationMode = getTaskMode() === "translate";
 
       setTaskUiMode(isTranslationMode);
@@ -3088,7 +3204,11 @@
       resetProgressLog();
 
       const form = new FormData();
-      form.append("file", selectedFile);
+      if (isBatchMode) {
+        selectedFiles.forEach(file => form.append("files", file));
+      } else {
+        form.append("file", selectedFile);
+      }
       form.append("output_mode", $("outputMode").value);
       form.append("traditional_variant", $("traditionalVariant").value || "auto");
       form.append("device", $("device").value);
@@ -3123,17 +3243,27 @@
       // (后端会自己判断是否需要进行支付并返回链接)
       try {
         startJobTimer();
-        const res = await fetch(`${API}/api/v2/jobs`, { method: "POST", headers: clientHeaders(), body: form });
+        const endpoint = isBatchMode ? `${API}/api/v2/batches` : `${API}/api/v2/jobs`;
+        const res = await fetch(endpoint, { method: "POST", headers: clientHeaders(), body: form });
         if (!res.ok) {
           const detail = await res.json().catch(() => ({}));
           throw new Error(detail.detail || "创建任务失败");
         }
         const data = await res.json();
 
-        currentJobId = data.job_id;
-        if (data.access_token) saveJobToken(data.job_id, data.access_token);
-        $("metaJobId").textContent = data.job_id;
+        currentBatchId = isBatchMode ? data.batch_id : null;
+        currentJobId = isBatchMode ? ((data.jobs || [])[0] || {}).job_id : data.job_id;
+        if (data.access_token) {
+          if (isBatchMode) {
+            saveJobToken(`batch:${data.batch_id}`, data.access_token);
+            (data.jobs || []).forEach(job => saveJobToken(job.job_id, data.access_token));
+          } else {
+            saveJobToken(data.job_id, data.access_token);
+          }
+        }
+        $("metaJobId").textContent = isBatchMode ? `批次 ${data.batch_id}` : data.job_id;
         $("metaTraceId").textContent = data.trace_id || "-";
+        $("metaFilename").textContent = isBatchMode ? `${data.file_count} 个文件` : (data.source_filename || "-");
 
         if (data.status === "pending_payment") {
           setStatus("pending", "等待支付完成后自动开始...");
@@ -3166,6 +3296,7 @@
             }
             $("translationCharDisplay").innerHTML = charInfo;
             $("translationPayLink").href = data.pay_url;
+            $("translationPayLink").textContent = isBatchMode ? "前往支付宝支付整批订单" : "前往支付宝付款";
             $("translationPayArea").style.display = "block";
           }
         } else {
@@ -3174,8 +3305,13 @@
         }
 
         if (pollTimer) clearInterval(pollTimer);
-        pollTimer = setInterval(() => pollJobV2(data.job_id), 2000);
-        pollJobV2(data.job_id);
+        if (isBatchMode) {
+          pollTimer = setInterval(() => pollBatchV2(data.batch_id), 2000);
+          pollBatchV2(data.batch_id);
+        } else {
+          pollTimer = setInterval(() => pollJobV2(data.job_id), 2000);
+          pollJobV2(data.job_id);
+        }
       } catch (err) {
         setStatus("failed", err.message);
         errorMsg.textContent = err.message;

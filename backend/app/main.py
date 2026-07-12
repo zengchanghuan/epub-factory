@@ -64,6 +64,9 @@ def _use_celery() -> bool:
 
 # ── 格式转换定价（元/次）────────────────────────────────────────────────────
 CONVERSION_PRICE_CNY: str = _os.environ.get("CONVERSION_PRICE_CNY", "5.99").strip() or "5.99"
+BATCH_MAX_FILES: int = max(2, int(_os.environ.get("BATCH_MAX_FILES", "10")))
+BATCH_MAX_TOTAL_MB: int = max(MAX_FILE_SIZE_MB, int(_os.environ.get("BATCH_MAX_TOTAL_MB", "200")))
+BATCH_MAX_TOTAL_BYTES: int = BATCH_MAX_TOTAL_MB * 1024 * 1024
 
 # ── AI 翻译 Token 计费参数 ───────────────────────────────────────────────────
 # 每 1000 字符（约等于 1000 token）收取的费用（元）
@@ -731,6 +734,9 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "status": _job_to_v2_status(job),
         "message": job.message,
         "source_filename": job.source_filename,
+        "batch_id": getattr(job, "batch_id", "") or None,
+        "batch_index": getattr(job, "batch_index", 0),
+        "batch_size": getattr(job, "batch_size", 0),
         "output_mode": job.output_mode.value,
         "device": job.device.value,
         "enable_translation": job.enable_translation,
@@ -1384,6 +1390,282 @@ async def create_job_v2(
     }
 
 
+def _list_batch_jobs(batch_id: str) -> list[Job]:
+    list_fn = getattr(job_store, "list_jobs_by_batch_id", None)
+    if not callable(list_fn):
+        return []
+    return list_fn(batch_id)
+
+
+def _batch_status(jobs: list[Job]) -> str:
+    statuses = [job.status for job in jobs]
+    if not statuses:
+        return "missing"
+    if all(status == JobStatus.pending_payment for status in statuses):
+        return "pending_payment"
+    if any(status == JobStatus.running for status in statuses):
+        return "running"
+    if any(status == JobStatus.pending for status in statuses):
+        return "queued"
+    completed = sum(status == JobStatus.success for status in statuses)
+    failed = sum(status in (JobStatus.failed, JobStatus.cancelled) for status in statuses)
+    if completed == len(statuses):
+        return "completed"
+    if completed and failed:
+        return "partial_completed"
+    if failed == len(statuses):
+        return "failed"
+    return "running"
+
+
+def _batch_payload(batch_id: str, jobs: Optional[list[Job]] = None) -> dict:
+    jobs = jobs if jobs is not None else _list_batch_jobs(batch_id)
+    total = len(jobs)
+    completed = sum(job.status == JobStatus.success for job in jobs)
+    failed = sum(job.status in (JobStatus.failed, JobStatus.cancelled) for job in jobs)
+    running = sum(job.status == JobStatus.running for job in jobs)
+    queued = sum(job.status == JobStatus.pending for job in jobs)
+    pending_payment = sum(job.status == JobStatus.pending_payment for job in jobs)
+    progress = round(((completed + failed) / total) * 100) if total else 0
+    return {
+        "batch_id": batch_id,
+        "status": _batch_status(jobs),
+        "file_count": total,
+        "counts": {
+            "completed": completed,
+            "failed": failed,
+            "running": running,
+            "queued": queued,
+            "pending_payment": pending_payment,
+        },
+        "progress_percent": progress,
+        "download_url": f"/api/v2/batches/{batch_id}/download" if completed else None,
+        "jobs": [
+            {
+                "job_id": job.id,
+                "source_filename": job.source_filename,
+                "status": _job_to_v2_status(job),
+                "message": job.message,
+                "error_code": job.error_code,
+                "batch_index": getattr(job, "batch_index", 0),
+                "download_url": (
+                    _attach_download_sig(job.id, f"/api/v2/jobs/{job.id}/download")
+                    if _job_can_download(job) else None
+                ),
+            }
+            for job in jobs
+        ],
+    }
+
+
+def _authorize_batch_access(request: Request, jobs: list[Job]) -> bool:
+    return bool(jobs and _authorize_job_access(request, jobs[0]))
+
+
+def _enqueue_batch(batch_id: str, background_tasks: BackgroundTasks | None = None) -> None:
+    for job in _list_batch_jobs(batch_id):
+        refreshed = job_store.get(job.id) or job
+        if refreshed.status == JobStatus.pending:
+            _enqueue_conversion(refreshed, background_tasks)
+
+
+def _release_batch(batch_id: str, background_tasks: BackgroundTasks | None = None) -> bool:
+    try_mark = getattr(job_store, "try_mark_batch_paid", None)
+    if not callable(try_mark) or not try_mark(batch_id):
+        return False
+    _enqueue_batch(batch_id, background_tasks)
+    return True
+
+
+@app.post("/api/v2/batches")
+async def create_batch_v2(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    output_mode: OutputMode = Form(OutputMode.simplified),
+    traditional_variant: TraditionalVariant = Form(TraditionalVariant.auto),
+    device: DeviceProfile = Form(DeviceProfile.generic),
+    enable_precision_polish: bool = Form(False),
+    admin_key: Optional[str] = Form(None),
+):
+    """一次上传 2-N 本书，统一支付，分别转换，并提供批次进度与 ZIP 下载。"""
+    import hmac as _hmac
+    from decimal import Decimal
+
+    if len(files) < 2:
+        raise HTTPException(status_code=400, detail="批量模式至少需要选择 2 个文件")
+    if len(files) > BATCH_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"单个批次最多支持 {BATCH_MAX_FILES} 个文件")
+    if enable_precision_polish:
+        raise HTTPException(status_code=400, detail="批量模式暂不支持 AI 精校，请关闭精校后提交")
+
+    supported_exts = (".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown")
+    invalid = [file.filename or "未命名文件" for file in files if not (
+        file.filename and any(file.filename.lower().endswith(ext) for ext in supported_exts)
+    )]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"存在不支持的文件：{', '.join(invalid[:3])}")
+
+    batch_id = uuid.uuid4().hex[:12]
+    access_token = uuid.uuid4().hex
+    token_expires_at = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS)
+    client_session = _get_client_session(request) or uuid.uuid4().hex
+    client_ip = get_real_ip(request)
+    current_user = get_current_user_optional(request)
+    saved: list[tuple[str, str, Path]] = []
+    total_bytes = 0
+
+    try:
+        for upload in files:
+            job_id = uuid.uuid4().hex[:12]
+            safe_name = _safe_upload_name(upload.filename or "upload.bin")
+            input_path = UPLOAD_DIR / f"{job_id}-{safe_name}"
+            bytes_written = 0
+            with input_path.open("wb") as buffer:
+                while True:
+                    chunk = upload.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    bytes_written += len(chunk)
+                    total_bytes += len(chunk)
+                    if bytes_written > MAX_FILE_SIZE_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"{safe_name} 超过单文件 {MAX_FILE_SIZE_MB}MB 限制",
+                        )
+                    if total_bytes > BATCH_MAX_TOTAL_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"批次总大小超过 {BATCH_MAX_TOTAL_MB}MB 限制",
+                        )
+                    buffer.write(chunk)
+            saved.append((job_id, safe_name, input_path))
+    except Exception:
+        for _, _, path in saved:
+            path.unlink(missing_ok=True)
+        if 'input_path' in locals():
+            input_path.unlink(missing_ok=True)
+        raise
+
+    skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+    admin_secret = (_os.environ.get("ADMIN_SECRET") or "").strip()
+    is_admin_test = bool(admin_secret and admin_key and _hmac.compare_digest(admin_key.strip(), admin_secret))
+    expected_amount = ""
+    qr_code = None
+    pay_url = None
+    job_status = JobStatus.pending
+
+    if not skip_payment:
+        expected_amount = "0.01" if is_admin_test else f"{Decimal(CONVERSION_PRICE_CNY) * len(saved):.2f}"
+        order_no = f"batch_{batch_id}"
+        subject = f"EPUB 批量转换服务 - {len(saved)} 个文件"
+        try:
+            from .infra.alipay import create_alipay_precreate
+            if _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes"):
+                raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
+            qr_code = create_alipay_precreate(order_no, expected_amount, subject)
+        except Exception as precreate_exc:
+            logger.warning(
+                "Batch Alipay precreate unavailable, fallback to page pay",
+                extra={"job_id": order_no, "error": str(precreate_exc)},
+            )
+            try:
+                pay_url = create_alipay_page_pay(
+                    out_trade_no=order_no,
+                    total_amount=expected_amount,
+                    subject=subject,
+                    return_url=f"https://fixepub.com/?batch_id={batch_id}",
+                )
+            except Exception:
+                for _, _, path in saved:
+                    path.unlink(missing_ok=True)
+                raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
+        job_status = JobStatus.pending_payment
+
+    for index, (job_id, safe_name, input_path) in enumerate(saved):
+        job_store.add(Job(
+            id=job_id,
+            source_filename=safe_name,
+            output_mode=output_mode,
+            trace_id=uuid.uuid4().hex,
+            input_path=str(input_path),
+            access_token=access_token,
+            token_expires_at=token_expires_at,
+            creator_ip=client_ip,
+            creator_session=client_session,
+            user_id=current_user.id if current_user else None,
+            expected_amount=expected_amount if index == 0 else "",
+            batch_id=batch_id,
+            batch_index=index,
+            batch_size=len(saved),
+            device=device,
+            traditional_variant=traditional_variant.value,
+            status=job_status,
+            message="等待批次支付" if job_status == JobStatus.pending_payment else "批次任务已排队",
+        ))
+
+    if job_status == JobStatus.pending:
+        _enqueue_batch(batch_id, background_tasks)
+
+    payload = _batch_payload(batch_id)
+    payload.update({
+        "access_token": access_token,
+        "amount": expected_amount,
+        "qr_code": qr_code,
+        "pay_url": pay_url,
+        "message": "请完成一次支付以启动整批任务" if job_status == JobStatus.pending_payment else "批次已进入后台队列",
+    })
+    return payload
+
+
+@app.get("/api/v2/batches/{batch_id}")
+def get_batch_v2(batch_id: str, request: Request):
+    jobs = _list_batch_jobs(batch_id)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    if not _authorize_batch_access(request, jobs):
+        raise HTTPException(status_code=403, detail="无权访问该批次")
+    return _batch_payload(batch_id, jobs)
+
+
+@app.post("/api/v2/batches/{batch_id}/recover")
+def recover_batch_payment_v2(batch_id: str, request: Request, background_tasks: BackgroundTasks):
+    jobs = _list_batch_jobs(batch_id)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    if not _authorize_batch_access(request, jobs):
+        raise HTTPException(status_code=403, detail="无权访问该批次")
+    if _batch_status(jobs) != "pending_payment":
+        return {**_batch_payload(batch_id, jobs), "recovered": False}
+    from .infra.alipay import query_alipay_trade
+    trade_status = query_alipay_trade(f"batch_{batch_id}")
+    recovered = trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and _release_batch(batch_id, background_tasks)
+    return {**_batch_payload(batch_id), "recovered": recovered, "trade_status": trade_status}
+
+
+@app.get("/api/v2/batches/{batch_id}/download")
+def download_batch_v2(batch_id: str, request: Request):
+    jobs = _list_batch_jobs(batch_id)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    if not _authorize_batch_access(request, jobs):
+        raise HTTPException(status_code=403, detail="无权访问该批次")
+    downloadable = [job for job in jobs if _job_can_download(job) and Path(job.output_path or "").exists()]
+    if not downloadable:
+        raise HTTPException(status_code=400, detail="批次中尚无可下载的结果")
+    zip_path = OUTPUT_DIR / f"batch-{batch_id}.zip"
+    used_names: set[str] = set()
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, job in enumerate(downloadable, start=1):
+            output = Path(job.output_path or "")
+            name = output.name
+            if name in used_names:
+                name = f"{index:02d}-{name}"
+            used_names.add(name)
+            archive.write(output, arcname=name)
+    return FileResponse(zip_path, filename=f"fixepub-batch-{batch_id}.zip", media_type="application/zip")
+
+
 @app.post("/api/v2/estimate-polish")
 async def estimate_polish_price(
     request: Request,
@@ -1461,6 +1743,9 @@ def list_jobs_v2(request: Request, limit: int = 100):
             "status": _job_to_v2_status(j),
             "message": j.message,
             "source_filename": j.source_filename,
+            "batch_id": getattr(j, "batch_id", "") or None,
+            "batch_index": getattr(j, "batch_index", 0),
+            "batch_size": getattr(j, "batch_size", 0),
             "enable_translation": j.enable_translation,
             "error_code": j.error_code,
             "created_at": j.created_at.isoformat(),
@@ -2472,6 +2757,24 @@ async def alipay_webhook(request: Request):
                     _repair_jobs[repair_job_id]["status"] = "paid"
                 logger.info("repair payment confirmed, starting repair", extra={"job_id": repair_job_id})
                 _threading.Thread(target=_do_repair_async, args=(repair_job_id,), daemon=True).start()
+                return Response("success")
+
+            # ── 批量转换订单（batch_ 前缀）────────────────────────
+            if out_trade_no.startswith("batch_"):
+                batch_id = out_trade_no[len("batch_"):]
+                batch_jobs = _list_batch_jobs(batch_id)
+                if not batch_jobs:
+                    logger.warning("Alipay webhook for unknown batch", extra={"job_id": out_trade_no})
+                    return Response("success")
+                expected = (getattr(batch_jobs[0], "expected_amount", "") or "").strip()
+                actual = str(total_amount or "").strip()
+                if not expected or not _amount_equal(actual, expected):
+                    logger.warning("Alipay webhook batch amount mismatch", extra={"job_id": out_trade_no})
+                    return Response("fail")
+                if not _release_batch(batch_id):
+                    logger.info("Alipay batch webhook ignored (already processed)", extra={"job_id": out_trade_no})
+                else:
+                    logger.info("Alipay batch payment verified", extra={"job_id": out_trade_no})
                 return Response("success")
 
             # ── 翻译/转换订单（原有逻辑）─────────────────────────

@@ -1,6 +1,6 @@
 # EPUB Factory 当前架构
 
-> 更新时间：2026-07-11
+> 更新时间：2026-07-12
 >
 > 状态：`current`
 >
@@ -15,7 +15,7 @@ flowchart TB
 
   API --> Auth["认证<br/>SMS / Google / WeChat / JWT"]
   API --> Pay["支付<br/>Alipay 下单 / webhook / recover"]
-  API --> JobAPI["任务 API<br/>/api/v1/jobs /api/v2/jobs"]
+  API --> JobAPI["任务 API<br/>/api/v1/jobs /api/v2/jobs<br/>/api/v2/batches"]
   API --> Repair["EPUB 修复 API<br/>/api/v2/repair/*"]
   API --> Admin["统计与反馈 API"]
 
@@ -77,6 +77,16 @@ sequenceDiagram
     Runner->>Store: failed + PARTIAL_TRANSLATION
   end
 ```
+
+### 2.1 批量转换生命周期
+
+批量模式只编排标准转换，不复用 AI 翻译的动态计价与 attempt 机制：
+
+1. 前端支持多文件选择或通过 `webkitdirectory` 递归选择整个文件夹，过滤出支持的电子书格式后，`POST /api/v2/batches` 接收 2–10 个文件；后端为每个文件创建独立 `Job`，并写入共同的 `batch_id`、`batch_size` 和访问令牌。
+2. 支付宝订单号使用 `batch_{batch_id}`，金额为单本转换价乘文件数；管理员测试模式整批仍为 ¥0.01。
+3. 支付 webhook 或 `/api/v2/batches/{id}/recover` 通过 `try_mark_batch_paid` 在同一存储事务中解锁整批任务，只有首个调用方取得入队权，避免重复回调导致重复转换。
+4. 子任务仍以整本为调度单位，互不覆盖状态；`GET /api/v2/batches/{id}` 聚合完成、运行、排队、失败数量和总体进度。
+5. 全部完成或部分完成时，`GET /api/v2/batches/{id}/download` 将成功产物打包为 ZIP；失败项继续保留在任务中心供单本排查。
 
 关键约束：
 
@@ -165,7 +175,7 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 
 ## 6. 可观测性与数据
 
-- `jobs`：任务身份、输入输出、状态、错误、整体统计。
+- `jobs`：任务身份、输入输出、状态、错误、整体统计；批量转换额外使用 `batch_id / batch_index / batch_size` 关联子任务，不另建批次表。
 - `job_chapters`：章节类型与成功、失败、缓存数量。
 - `job_chunks`：定位器、模型、Token、延迟、重试、错误与审计结果。
 - `job_stages`：预处理、Manifest、术语表、翻译、Reduce、校验等事件。

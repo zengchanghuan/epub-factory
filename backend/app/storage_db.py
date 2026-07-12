@@ -70,6 +70,9 @@ class JobRecord(Base):
     creator_ip = Column(String(64), nullable=True)
     creator_session = Column(String(128), nullable=True)
     expected_amount = Column(String(16), nullable=True)
+    batch_id = Column(String(32), nullable=True, index=True)
+    batch_index = Column(String(16), nullable=True, default="0")
+    batch_size = Column(String(16), nullable=True, default="0")
     output_path = Column(Text, nullable=True)
     output_mode = Column(String(16), nullable=False, default="simplified")
     enable_translation = Column(Boolean, nullable=False, default=False)
@@ -211,6 +214,12 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN creator_session VARCHAR(128)")
     if "expected_amount" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN expected_amount VARCHAR(16)")
+    if "batch_id" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN batch_id VARCHAR(32)")
+    if "batch_index" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN batch_index VARCHAR(16) DEFAULT '0'")
+    if "batch_size" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN batch_size VARCHAR(16) DEFAULT '0'")
     if "token_expires_at" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN token_expires_at DATETIME")
     if "user_id" not in columns:
@@ -290,6 +299,9 @@ def _record_to_job(r: JobRecord) -> Job:
         creator_ip=getattr(r, "creator_ip", None) or "",
         creator_session=getattr(r, "creator_session", None) or "",
         expected_amount=getattr(r, "expected_amount", None) or "",
+        batch_id=getattr(r, "batch_id", None) or "",
+        batch_index=int(getattr(r, "batch_index", None) or 0),
+        batch_size=int(getattr(r, "batch_size", None) or 0),
         output_path=r.output_path,
         output_mode=OutputMode(r.output_mode),
         enable_translation=r.enable_translation,
@@ -435,7 +447,10 @@ def _record_to_stage(r: StageRecord) -> JobStage:
 
 def _stage_to_record(stage: JobStage) -> StageRecord:
     import json
-    key = f"{stage.job_id}:{stage.stage_name}:{int(stage.started_at.timestamp() * 1000)}"
+    import uuid
+    # 同一阶段可能在同一毫秒内连续记录“开始/完成”。时间戳不能作为唯一后缀，
+    # 否则会触发 job_stages 主键冲突并让正常转换误入 SafeMode。
+    key = f"{stage.job_id}:{stage.stage_name[:60]}:{uuid.uuid4().hex[:12]}"
     return StageRecord(
         id=key,
         job_id=stage.job_id,
@@ -525,6 +540,9 @@ def _job_to_record(job: Job) -> JobRecord:
         creator_ip=getattr(job, "creator_ip", "") or "",
         creator_session=getattr(job, "creator_session", "") or "",
         expected_amount=getattr(job, "expected_amount", "") or "",
+        batch_id=getattr(job, "batch_id", "") or None,
+        batch_index=str(getattr(job, "batch_index", 0) or 0),
+        batch_size=str(getattr(job, "batch_size", 0) or 0),
         output_path=job.output_path,
         output_mode=job.output_mode.value,
         enable_translation=job.enable_translation,
@@ -607,6 +625,16 @@ class PersistentJobStore:
             )
             return [_record_to_job(r) for r in rows]
 
+    def list_jobs_by_batch_id(self, batch_id: str) -> list:
+        with self._Session() as session:
+            rows = (
+                session.query(JobRecord)
+                .filter_by(batch_id=batch_id)
+                .order_by(JobRecord.batch_index, JobRecord.created_at)
+                .all()
+            )
+            return [_record_to_job(r) for r in rows]
+
     def try_mark_paid(self, job_id: str, message: str = "支付成功，排队中...") -> bool:
         """
         条件原子更新：只有当 status='pending_payment' 时，才切到 'pending'。
@@ -627,6 +655,38 @@ class PersistentJobStore:
             )
             session.commit()
             return (result.rowcount or 0) == 1
+
+    def try_mark_batch_paid(self, batch_id: str, message: str = "批次支付成功，排队中...") -> bool:
+        """在一个数据库事务内抢占批次主任务并解锁全部子任务。"""
+        from sqlalchemy import update
+        with self._Session() as session:
+            now = datetime.now(timezone.utc)
+            leader = session.execute(
+                update(JobRecord)
+                .where(JobRecord.batch_id == batch_id)
+                .where(JobRecord.batch_index == "0")
+                .where(JobRecord.status == JobStatus.pending_payment.value)
+                .values(
+                    status=JobStatus.pending.value,
+                    message=message,
+                    updated_at=now,
+                )
+            )
+            if (leader.rowcount or 0) != 1:
+                session.rollback()
+                return False
+            session.execute(
+                update(JobRecord)
+                .where(JobRecord.batch_id == batch_id)
+                .where(JobRecord.status == JobStatus.pending_payment.value)
+                .values(
+                    status=JobStatus.pending.value,
+                    message=message,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            return True
 
     def list_stale_pending_payment(self, min_age_minutes: int = 30) -> list:
         """
@@ -665,6 +725,22 @@ class PersistentJobStore:
             )
             session.commit()
             return (result.rowcount or 0) == 1
+
+    def mark_batch_payment_timeout(self, batch_id: str) -> int:
+        from sqlalchemy import update
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(JobRecord.batch_id == batch_id)
+                .where(JobRecord.status == JobStatus.pending_payment.value)
+                .values(
+                    status=JobStatus.cancelled.value,
+                    message="支付超时，批次订单已关闭",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0)
 
     def update_status(
         self,

@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from app.infra.alipay import query_alipay_trade
 from app.infra.celery_app import celery_app
 from app.storage import job_store
+from app.models import JobStatus
 from app.domain.translation_attempt import attempt_id_from_stats
 
 logger = logging.getLogger("epub_factory.reconcile")
@@ -41,24 +42,37 @@ def reconcile_payments(self) -> dict:
         logger.info("reconcile_payments: no stale jobs", extra={"count": 0})
         return {"checked": 0, "paid": 0, "closed": 0, "skipped": 0}
 
+    # 一个批次会有多个 pending_payment 子任务；对账只处理 batch_index=0 的主任务。
+    stale = [job for job in stale if not getattr(job, "batch_id", "") or getattr(job, "batch_index", 0) == 0]
     logger.info("reconcile_payments: start", extra={"count": len(stale)})
     paid = closed = skipped = 0
     timeout_cutoff = datetime.now(timezone.utc) - timedelta(hours=_TIMEOUT_HOURS)
 
     for job in stale:
-        trade_status = query_alipay_trade(job.id)
+        batch_id = getattr(job, "batch_id", "") or ""
+        order_no = f"batch_{batch_id}" if batch_id else job.id
+        trade_status = query_alipay_trade(order_no)
 
         if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
-            _handle_paid(job.id)
+            if batch_id:
+                _handle_batch_paid(batch_id)
+            else:
+                _handle_paid(job.id)
             paid += 1
 
         elif trade_status == "TRADE_CLOSED":
-            _handle_closed(job.id, reason="支付宝已关单")
+            if batch_id:
+                _handle_batch_closed(batch_id, reason="支付宝已关单")
+            else:
+                _handle_closed(job.id, reason="支付宝已关单")
             closed += 1
 
         elif trade_status == "WAIT_BUYER_PAY" and job.created_at < timeout_cutoff:
             # 等待超过 TIMEOUT_HOURS 小时仍未付款，主动关单
-            _handle_closed(job.id, reason=f"等待支付超过 {_TIMEOUT_HOURS} 小时，自动关单")
+            if batch_id:
+                _handle_batch_closed(batch_id, reason=f"等待支付超过 {_TIMEOUT_HOURS} 小时，自动关单")
+            else:
+                _handle_closed(job.id, reason=f"等待支付超过 {_TIMEOUT_HOURS} 小时，自动关单")
             closed += 1
 
         else:
@@ -94,9 +108,32 @@ def _handle_paid(job_id: str) -> None:
         logger.error(f"reconcile: failed to dispatch job {job_id}: {e}", exc_info=True)
 
 
+def _handle_batch_paid(batch_id: str) -> None:
+    try_mark = getattr(job_store, "try_mark_batch_paid", None)
+    if not callable(try_mark) or not try_mark(batch_id):
+        logger.info("reconcile: batch already paid/processed", extra={"job_id": f"batch_{batch_id}"})
+        return
+    list_batch = getattr(job_store, "list_jobs_by_batch_id", None)
+    jobs = list_batch(batch_id) if callable(list_batch) else []
+    try:
+        from app.tasks.job_pipeline import run_conversion
+        for job in jobs:
+            if job.status == JobStatus.pending:
+                run_conversion.delay(job.id, "")
+    except Exception as e:
+        logger.error(f"reconcile: failed to dispatch batch {batch_id}: {e}", exc_info=True)
+
+
 def _handle_closed(job_id: str, reason: str) -> None:
     """将订单标记为 cancelled。"""
     mark_timeout = getattr(job_store, "mark_payment_timeout", None)
     if callable(mark_timeout):
         mark_timeout(job_id)
     logger.info("reconcile: closed job", extra={"job_id": job_id, "reason": reason})
+
+
+def _handle_batch_closed(batch_id: str, reason: str) -> None:
+    mark_timeout = getattr(job_store, "mark_batch_payment_timeout", None)
+    if callable(mark_timeout):
+        mark_timeout(batch_id)
+    logger.info("reconcile: closed batch", extra={"job_id": f"batch_{batch_id}", "reason": reason})

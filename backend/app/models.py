@@ -150,6 +150,9 @@ class Job:
     creator_session: str = ""
     user_id: Optional[str] = None  # 登录用户 ID，匿名任务为 None
     expected_amount: str = ""  # 下单时的应付金额（元），webhook 校验依据
+    batch_id: str = ""  # 批量转换批次；空字符串表示普通单文件任务
+    batch_index: int = 0
+    batch_size: int = 0
     enable_translation: bool = False
     target_lang: str = "zh-CN"
     bilingual: bool = False
