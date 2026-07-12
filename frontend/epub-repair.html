@@ -617,10 +617,10 @@
           <h3>请完成支付宝付款</h3>
           <div class="pay-price">${escHtml(payPrice.textContent || '¥5.99')}</div>
           <div style="text-align:center; margin-top: 12px;">
-            <a href="${escHtml(data.pay_url)}" target="_blank" rel="noopener"
+            <a href="${escHtml(data.pay_url)}" target="_self"
                class="btn btn-primary" style="text-decoration:none;">前往支付宝付款</a>
           </div>
-          <div class="qr-hint" style="margin-top:12px;">支付完成后本页会自动检测并开始修复，请不要关闭页面。</div>
+          <div class="qr-hint" style="margin-top:12px;">支付完成后将返回本页面，并自动检测和开始修复。</div>
         `;
         startPolling(currentJobId);
       }

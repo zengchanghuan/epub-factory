@@ -9,6 +9,10 @@ const html = fs.readFileSync(
   path.resolve(__dirname, "../index.html"),
   "utf-8"
 );
+const repairHtml = fs.readFileSync(
+  path.resolve(__dirname, "../epub-repair.html"),
+  "utf-8"
+);
 
 test("F10-1 使用任务模式二选一入口", () => {
   assert.ok(html.includes('name="taskMode" value="convert"'), "应有转换模式");
@@ -47,4 +51,23 @@ test("F10-5 MOBI/AZW3 禁用翻译模式", () => {
   assert.ok(html.includes('isTranslationSupportedForSelectedFile'), "应有文件类型判断");
   assert.ok(html.includes('[".epub", ".pdf", ".docx", ".md", ".markdown"].includes(ext)'), "仅可翻译合适文件类型");
   assert.ok(html.includes('translationRadio.disabled = !supported'), "不支持时应禁用翻译模式");
+});
+
+test("F10-6 支付宝付款在当前页面打开", () => {
+  assert.ok(
+    html.includes('id="translationPayLink" href="#" target="_self"'),
+    "AI 翻译支付链接应复用当前页面"
+  );
+  assert.ok(
+    html.includes("支付完成后将返回本页面，并自动开始任务"),
+    "主页面应说明支付完成后会返回"
+  );
+  assert.ok(
+    repairHtml.includes('href="${escHtml(data.pay_url)}" target="_self"'),
+    "修复页降级支付链接应复用当前页面"
+  );
+  assert.ok(
+    repairHtml.includes("支付完成后将返回本页面，并自动检测和开始修复"),
+    "修复页应说明支付完成后会返回"
+  );
 });
