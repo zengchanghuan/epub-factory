@@ -30,6 +30,22 @@ class TranslationCache:
                 return row[0]
         return None
 
+    def get_latest_compatible(self, source_html: str, target_lang: str) -> str | None:
+        """免费重译时复用同语言的最近缓存，随后仍由当前术语表校正。"""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT translated_html
+                FROM translations
+                WHERE source_html = ?
+                  AND (target_lang = ? OR target_lang LIKE ?)
+                ORDER BY rowid DESC
+                LIMIT 1
+                """,
+                (source_html, target_lang, f"{target_lang}@%"),
+            ).fetchone()
+            return row[0] if row else None
+
     def set(self, source_html: str, translated_html: str, target_lang: str):
         key = self._get_hash(source_html, target_lang)
         with sqlite3.connect(self.db_path) as conn:

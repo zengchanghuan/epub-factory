@@ -146,10 +146,12 @@ class SingleChunkResult:
 class SemanticsTranslator:
     def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
                  glossary: dict | None = None, temperature: float | None = None,
-                 model: str | None = None, quality_fallback_model: str | None = None):
+                 model: str | None = None, quality_fallback_model: str | None = None,
+                 allow_cross_glossary_cache: bool = False):
         self.target_lang = target_lang
         self.bilingual = bilingual
         self.glossary: dict[str, str] = glossary or {}
+        self.allow_cross_glossary_cache = allow_cross_glossary_cache
         self.cache = TranslationCache()
         self.progress_callback = None
         self.cancel_check = None
@@ -810,7 +812,14 @@ class SemanticsTranslator:
                 raise ValueError("text segment rescue returned empty translation")
             if self._looks_like_error_response(translated_text):
                 raise ValueError("text segment rescue returned error-like response")
-            if self._text_segment_still_untranslated(source_text, translated_text):
+            source_words = self._latin_words(source_text)
+            parent_name = getattr(getattr(node, "parent", None), "name", "")
+            preservable_title = (
+                parent_name in {"em", "cite"}
+                and 1 <= len(source_words) <= 8
+                and len(source_text.strip()) <= 100
+            )
+            if self._text_segment_still_untranslated(source_text, translated_text) and not preservable_title:
                 raise ValueError("text segment rescue returned untranslated text")
             node.replace_with(NavigableString(
                 self._preserve_text_node_whitespace(source_text, translated_text)
@@ -1129,6 +1138,8 @@ class SemanticsTranslator:
             inner_html_by_index[i] = inner_html
             self.stats.total_chunks += 1
             cached = self.cache.get(inner_html, self._cache_lang_key)
+            if not cached and self.allow_cross_glossary_cache:
+                cached = self.cache.get_latest_compatible(inner_html, self.target_lang)
             strategy = strategies[i] or "html"
             if cached:
                 if (

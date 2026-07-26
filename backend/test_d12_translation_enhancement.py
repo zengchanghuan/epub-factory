@@ -8,6 +8,7 @@ D12 测试：翻译链路增强
 import os
 import sys
 import asyncio
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from app.cancellation import JobCancelled
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
+from app.engine.translation_cache import TranslationCache
 
 
 def _restore_env(old_values: dict[str, str | None]) -> None:
@@ -44,6 +46,16 @@ def test_faithful_translation_prompt_constraints():
     assert "不追求“信达雅”式改写" in prompt
     assert "禁止译名漂移" in prompt
     assert "Smith → 史密斯" in prompt
+
+
+def test_translation_cache_can_reuse_latest_same_language_namespace():
+    """免费重译可跨自动术语表哈希复用同语言缓存。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = TranslationCache(str(Path(tmp) / "cache.db"))
+        cache.set("<p>Hello</p>", "<p>你好</p>", "zh-CN@old-glossary")
+
+        assert cache.get("<p>Hello</p>", "zh-CN@new-glossary") is None
+        assert cache.get_latest_compatible("<p>Hello</p>", "zh-CN") == "<p>你好</p>"
 
 
 def test_candidate_routes_default():
@@ -598,6 +610,38 @@ def test_structured_note_without_natural_language_is_preserved_without_retry():
     assert t.stats.retry_budget_exhausted_chunks == 0
 
 
+def test_structured_note_allows_short_italic_title_to_remain_english():
+    """斜体短书名可保留英文，不能因此丢弃同一脚注中已完成的正文译文。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    html = '<p class="footnote">See <em>Political Tracts</em> for the complete argument.</p>'
+
+    async def fake_call(payload, *, preferred_model=None):
+        return (
+            {
+                item["id"]: (
+                    item["html"]
+                    if "Political Tracts" in item["html"]
+                    else "完整论述见"
+                )
+                for item in payload
+            },
+            {
+                "model": preferred_model or "fake-model",
+                "base_url": "fake://llm",
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "attempts": 1,
+            },
+        )
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
+
+    assert out[0].error is None
+    assert "完整论述见" in out[0].translated_html
+    assert "<em>Political Tracts</em>" in out[0].translated_html
+
+
 def test_structured_note_upgrades_model_after_untranslated_response():
     """Flash 对长脚注返回原文时，应在同一预算内升级质量模型。"""
     old_values = {
@@ -917,6 +961,7 @@ def _run():
     cases = [
         test_looks_like_error_response,
         test_faithful_translation_prompt_constraints,
+        test_translation_cache_can_reuse_latest_same_language_namespace,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
         test_candidate_routes_with_tokenhub_provider,
@@ -933,6 +978,7 @@ def _run():
         test_translate_many_chunks_rescues_formula_chunk_by_text_segments,
         test_translate_many_chunks_routes_structured_note_through_text_nodes,
         test_structured_note_without_natural_language_is_preserved_without_retry,
+        test_structured_note_allows_short_italic_title_to_remain_english,
         test_structured_note_upgrades_model_after_untranslated_response,
         test_structured_note_reports_exact_retry_budget_exhaustion,
         test_translate_many_chunks_honors_per_chunk_retry_budget,

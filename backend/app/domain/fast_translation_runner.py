@@ -357,6 +357,7 @@ async def _translate_manifest_async(
         glossary=glossary,
         temperature=getattr(job, "temperature", None),
         model=getattr(job, "translation_model", None) or None,
+        allow_cross_glossary_cache=int((job.translation_stats or {}).get("translation_attempt") or 1) > 1,
     )
     translator.cancel_check = cancel_check
     expected_attempt_id = attempt_id_from_stats(job.translation_stats)
