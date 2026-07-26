@@ -1,6 +1,6 @@
 # EPUB Factory 当前架构
 
-> 更新时间：2026-07-12
+> 更新时间：2026-07-26
 >
 > 状态：`current`
 >
@@ -113,17 +113,26 @@ flowchart TD
   ExplainNote --> G
   Body --> G
   G --> Title["书名元数据翻译"]
-  Title --> Chapters["正文章节 asyncio 并发<br/>并发上限受配置与 cap 双重限制"]
+  Title --> Chapters["正文章节 asyncio 并发<br/>请求并发按成功/失败动态调节"]
   Chapters --> Mode{"translation_quality"}
-  Mode -->|"standard"| Translator["Flash / 0.3<br/>JSON batch + 兼容缓存"]
-  Mode -->|"high"| Context["Pro / 0.2 / fresh<br/>书名 + 前后段上下文"]
+  Mode -->|"standard"| Translator["Flash / 0.3 / reuse<br/>自适应 JSON batch"]
+  Mode -->|"high"| Context["Pro / 0.2 / verified<br/>书名 + 前后段上下文"]
+  Mode -->|"literary"| StyleSample["抽取全书代表段落<br/>生成一次书级风格档案"]
+  StyleSample --> LiteraryDraft["Pro / 0.2 / verified<br/>上下文 + 风格档案"]
   Context --> Translator
+  LiteraryDraft --> Translator
   Translator --> Validate["返回值、HTML 结构、漏译与术语质检"]
-  Validate --> Retry["质量重试 / 模型升级<br/>文本节点救援 / chunk 重试预算"]
-  Retry --> Review{"high 模式?"}
-  Review -->|"是"| Semantic["Pro 二次语义校对<br/>坏结构结果自动拒绝"]
-  Review -->|"否"| Persist["持久化 chapter/chunk/stage/stat"]
+  Validate --> Retry["质量重试 / 健康路由与模型升级<br/>批次拆分 / 文本节点救援"]
+  Retry --> Review{"质量模式"}
+  Review -->|"standard"| Persist["持久化 chapter/chunk/stage/stat"]
+  Review -->|"high"| Semantic["风险规则 + 稳定抽样<br/>只审校高风险段落"]
+  Review -->|"literary"| Polish["连续章节润色<br/>保持作者声音与术语"]
   Semantic --> Persist
+  Polish --> Verify["对照原文语义回查<br/>修复增译、漏译、逻辑偏差"]
+  Verify --> Safe{"HTML/数字/术语/长度安全?"}
+  Safe -->|"通过"| Persist
+  Safe -->|"不通过"| Keep["拒绝润色结果<br/>保留上一安全译文"]
+  Keep --> Persist
   Persist --> Rescue["章节结束后的失败 chunk 补译队列"]
   Rescue --> Gate1{"失败 chunk 交付门禁"}
   Gate1 -->|"超阈值"| Stop["停止打包<br/>PARTIAL_TRANSLATION"]
@@ -151,11 +160,13 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 
 ### 3.2 翻译执行与救援
 
-- `standard` 默认使用 Flash、温度 `0.3` 和 `reuse`；`high` 默认使用 Pro、温度 `0.2` 和 `fresh`。
-- 高质量模式为每段提供书名、章节文件和前后段上下文，并在首译后执行一次 Pro 语义校对；校对结果若破坏 HTML、疑似未翻译或返回错误说明，自动拒绝并保留首译。
+- `standard` 默认使用 Flash、温度 `0.3` 和 `reuse`；`high` 与 `literary` 默认使用 Pro、温度 `0.2` 和 `verified`。`verified` 只读取目标语言、提示词、质量档位、模型、温度、术语表、上下文和风格档案完全一致的精确缓存，不跨配置借用旧译文。
+- 高质量模式为每段提供书名、章节文件和前后段上下文；风险规则覆盖长段、标题、复杂 HTML、数字/逻辑词/术语异常和疑似原文，并对其余段落做稳定抽样，只对命中的段落执行 Pro 语义校对。
+- 文学模式先从全书代表段落生成一次书级风格档案，再按连续章节进行润色，并对照原文执行语义回查；任何破坏 HTML、数字、强制术语或出现危险长度变化的候选结果都会被拒绝，回退到上一版安全译文。
 - `SemanticsTranslator` 使用 SQLite `translation_cache.db`。精确缓存命名空间包含目标语言、提示词版本、质量档位、模型、温度、术语表哈希和上下文哈希，避免旧提示词、低质量模型或不同上下文互相污染。
 - 术语表先清理通用词和低置信度候选，再按当前段落最长匹配，只注入实际出现的术语；不再把全书全部术语塞入每个请求。
-- 普通 chunk 走 JSON batch；解释型脚注走结构化文本节点策略。
+- 普通 chunk 走自适应 JSON batch：稳定时在上限内扩大批次，批量失败时递归拆分；解释型脚注走结构化文本节点策略。
+- 单本书的模型请求由自适应并发限制器控制：失败时逐级降并发，连续成功后逐步恢复；复杂单段可主动路由到质量模型，路由排序综合近期失败、冷却和延迟。
 - 模型返回需通过空结果、错误样式、疑似未翻译、HTML 结构等检查。
 - 质量失败会按预算重试，并可升级到质量模型；整段仍失败时可降级为文本节点救援。
 - 初轮章节翻译结束后，`failed_chunk_rescue` 对未耗尽预算的失败段落再排队补译。

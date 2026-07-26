@@ -161,8 +161,8 @@ class Job:
     output_path: Optional[str] = None
     temperature: Optional[float] = None
     translation_model: str = "deepseek-v4-flash"
-    translation_quality: str = "standard"  # standard | high
-    cache_policy: str = "reuse"            # reuse | fresh
+    translation_quality: str = "standard"  # standard | high | literary
+    cache_policy: str = "reuse"            # reuse | verified | fresh
     traditional_variant: str = "auto"  # auto | tw | hk，仅简体输出时生效
     lexicon_domains: list = field(default_factory=lambda: ["general", "tech", "movie"])
     enable_proper_noun: bool = True

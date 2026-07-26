@@ -126,8 +126,8 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(data.get("cache_policy"), "reuse")
         self.assertEqual(data.get("temperature"), 0.3)
 
-    def test_v2_create_high_quality_defaults_to_pro_fresh_and_low_temperature(self):
-        """高质量模式默认 Pro、全新翻译和低温度。"""
+    def test_v2_create_high_quality_defaults_to_pro_verified_cache_and_low_temperature(self):
+        """高质量模式默认 Pro、验证缓存和低温度。"""
         old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
         os.environ["SKIP_PAYMENT_CHECK"] = "1"
         try:
@@ -149,12 +149,41 @@ class TestApiV2Skeleton(unittest.TestCase):
         data = res.json()
         self.assertEqual(data["translation_model"], "deepseek-v4-pro")
         self.assertEqual(data["translation_quality"], "high")
-        self.assertEqual(data["cache_policy"], "fresh")
+        self.assertEqual(data["cache_policy"], "verified")
         self.assertEqual(data["temperature"], 0.2)
         persisted = job_store.get(data["job_id"])
         self.assertEqual(persisted.translation_quality, "high")
-        self.assertEqual(persisted.cache_policy, "fresh")
+        self.assertEqual(persisted.cache_policy, "verified")
         self.assertEqual(persisted.temperature, 0.2)
+
+    def test_v2_create_literary_defaults_to_pro_verified_cache_and_low_temperature(self):
+        """文学模式使用 Pro、验证缓存和低温度，并持久化质量档位。"""
+        old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
+        os.environ["SKIP_PAYMENT_CHECK"] = "1"
+        try:
+            res = self.client.post(
+                "/api/v2/jobs",
+                files={"file": ("literary.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+                data={
+                    "output_mode": "simplified",
+                    "enable_translation": "true",
+                    "translation_quality": "literary",
+                },
+            )
+        finally:
+            if old_skip is None:
+                os.environ.pop("SKIP_PAYMENT_CHECK", None)
+            else:
+                os.environ["SKIP_PAYMENT_CHECK"] = old_skip
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["translation_model"], "deepseek-v4-pro")
+        self.assertEqual(data["translation_quality"], "literary")
+        self.assertEqual(data["cache_policy"], "verified")
+        self.assertEqual(data["temperature"], 0.2)
+        persisted = job_store.get(data["job_id"])
+        self.assertEqual(persisted.translation_quality, "literary")
+        self.assertEqual(persisted.cache_policy, "verified")
 
     def test_v2_create_translation_rejects_unknown_model(self):
         """后端拒绝 UI 外的模型名，避免客户端绕过模型护栏。"""

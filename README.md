@@ -25,9 +25,10 @@
 
 ### AI 翻译
 
-- 异步并发（`asyncio` + `Semaphore`），`tenacity` 指数退避重试
-- SQLite 缓存去重（断点续传，零重复 Token 消耗）
+- 自适应异步并发与动态 JSON 批量：稳定时提高吞吐，错误升高时自动降并发、拆小批次
+- SQLite 版本化缓存去重：标准模式兼容复用，高质量/文学模式仅使用同配置已验证缓存
 - **术语表注入（RAG）**：传入 `{"原文术语": "目标术语"}` 强制统一翻译
+- **三档质量模式**：标准、高质量选择性语义审校，以及带全书风格档案、章节润色和原文语义回查的文学模式
 - **双语对照模式**：原文 + 译文并排，含 `epub-original`/`epub-translated` class
 - **图片说明翻译**：翻译 XHTML 中的 `caption` / `figcaption` / `legend` 文本并纳入成品 QA；图片像素内部文字仍需 OCR（见 Roadmap）
 
@@ -145,10 +146,10 @@ python3 -m http.server 5173
 | `enable_translation` | bool | `false` | 是否开启 AI 翻译 |
 | `target_lang` | string | `zh-CN` | 翻译目标语言 |
 | `bilingual` | bool | `false` | 双语对照模式 |
-| `translation_quality` | string | `standard` | `standard`（Flash/0.3/缓存复用）或 `high`（Pro/0.2/章节上下文+语义校对） |
-| `cache_policy` | string | 按档位 | `reuse` 或 `fresh`；高质量模式默认 `fresh` |
+| `translation_quality` | string | `standard` | `standard`（Flash/0.3）、`high`（Pro/0.2/选择性语义审校）或 `literary`（Pro/0.2/风格档案+章节润色+语义回查） |
+| `cache_policy` | string | 按档位 | `reuse`、`verified` 或 `fresh`；高质量和文学模式默认 `verified` |
 | `translation_model` | string | 按档位 | `deepseek-v4-flash` 或 `deepseek-v4-pro` |
-| `temperature` | float | 按档位 | 标准模式 `0.3`，高质量模式 `0.2` |
+| `temperature` | float | 按档位 | 标准模式 `0.3`，高质量和文学模式 `0.2` |
 | `glossary_json` | string | `null` | 术语表 JSON，如 `{"Harry": "哈利"}` |
 
 ## 运行测试

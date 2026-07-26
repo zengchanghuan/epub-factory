@@ -376,6 +376,24 @@ async def _translate_manifest_async(
         ch for ch in manifest.get("chapters", [])
         if ch.get("chapter_kind") == ChapterKind.body.value and (ch.get("chunks") or [])
     ]
+    if quality_mode == "literary":
+        all_texts = _extract_texts_from_manifest(manifest)
+        sample_texts: list[str] = []
+        if all_texts:
+            sample_indexes = sorted({
+                0,
+                len(all_texts) // 4,
+                len(all_texts) // 2,
+                (len(all_texts) * 3) // 4,
+                len(all_texts) - 1,
+            })
+            sample_texts = [all_texts[index][:2400] for index in sample_indexes]
+        _emit_progress(progress_callback, "正在生成全书文学翻译风格档案")
+        translator.style_guide = await translator.build_style_guide_async(
+            book_title=original_book_title,
+            sample_texts=sample_texts,
+        )
+        _emit_progress(progress_callback, "文学翻译风格档案已锁定，全书将统一执行")
     manifest_body_chunk_total = sum(len(ch.get("chunks") or []) for ch in body_chapters)
     manifest_stats = manifest.get("stats") if isinstance(manifest.get("stats"), dict) else {}
     image_note_chunks_skipped = int(manifest_stats.get("image_note_chunks_skipped") or 0)
@@ -550,6 +568,7 @@ async def _translate_manifest_async(
         )
 
     def _build_translation_stats(*, live: bool, flat_results: list[ChunkResult] | None = None) -> dict[str, Any]:
+        translator._sync_adaptive_concurrency_stats()
         stats = translator.stats.to_dict(translator.model)
         audit_summary = dict(audit)
         if flat_results is not None:
@@ -569,6 +588,7 @@ async def _translate_manifest_async(
             "live": live,
             "artifact_audit": {},
             "delivery_gate_failed": False,
+            "literary_style_guide": translator.style_guide if quality_mode == "literary" else "",
             **audit_summary,
             **rescue_stats,
         })
@@ -652,7 +672,7 @@ async def _translate_manifest_async(
     chapter_contexts_by_id: dict[str, list[str]] = {}
 
     def _build_chapter_contexts(chapter: dict, specs: list[dict]) -> list[str]:
-        if quality_mode != "high":
+        if quality_mode not in {"high", "literary"}:
             return [""] * len(specs)
         visible = [
             re.sub(
@@ -708,6 +728,21 @@ async def _translate_manifest_async(
                     translated,
                     contexts=chapter_contexts,
                     progress_label=f"语义校对 {chapter['file_path']}",
+                )
+            elif quality_mode == "literary":
+                emit_progress(f"文学模式章节编辑 {chapter['file_path']}（{len(specs)} 段）")
+                translated = await translator.polish_literary_chapter_async(
+                    [c["html"] for c in specs],
+                    translated,
+                    contexts=chapter_contexts,
+                    progress_label=f"章节文学编辑 {chapter['file_path']}",
+                )
+                emit_progress(f"文学译文语义回查 {chapter['file_path']}（{len(specs)} 段）")
+                translated = await translator.verify_literary_chapter_async(
+                    [c["html"] for c in specs],
+                    translated,
+                    contexts=chapter_contexts,
+                    progress_label=f"文学语义回查 {chapter['file_path']}",
                 )
             raise_if_cancelled(cancel_check)
             chunk_results: list[ChunkResult] = []

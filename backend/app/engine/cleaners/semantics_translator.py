@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import html as html_lib
+import inspect
 import json
 import random
 import re
@@ -62,6 +64,24 @@ class TranslationStats:
     semantic_review_attempts: int = 0
     semantic_review_changed: int = 0
     semantic_review_rejected: int = 0
+    semantic_review_skipped: int = 0
+    semantic_review_risk_reasons: dict[str, int] = field(default_factory=dict)
+    proactive_quality_routes: int = 0
+    route_failovers: int = 0
+    provider_route_counts: dict[str, int] = field(default_factory=dict)
+    batch_requests: int = 0
+    batch_splits: int = 0
+    adaptive_batch_max_chars: int = 0
+    adaptive_concurrency_limit: int = 0
+    adaptive_concurrency_min: int = 0
+    adaptive_concurrency_reductions: int = 0
+    adaptive_concurrency_increases: int = 0
+    literary_polish_attempts: int = 0
+    literary_polish_changed: int = 0
+    literary_polish_rejected: int = 0
+    literary_verification_attempts: int = 0
+    literary_verification_changed: int = 0
+    literary_verification_rejected: int = 0
 
     @property
     def elapsed_seconds(self) -> float:
@@ -128,6 +148,24 @@ class TranslationStats:
             "semantic_review_attempts": self.semantic_review_attempts,
             "semantic_review_changed": self.semantic_review_changed,
             "semantic_review_rejected": self.semantic_review_rejected,
+            "semantic_review_skipped": self.semantic_review_skipped,
+            "semantic_review_risk_reasons": dict(self.semantic_review_risk_reasons),
+            "proactive_quality_routes": self.proactive_quality_routes,
+            "route_failovers": self.route_failovers,
+            "provider_route_counts": dict(self.provider_route_counts),
+            "batch_requests": self.batch_requests,
+            "batch_splits": self.batch_splits,
+            "adaptive_batch_max_chars": self.adaptive_batch_max_chars,
+            "adaptive_concurrency_limit": self.adaptive_concurrency_limit,
+            "adaptive_concurrency_min": self.adaptive_concurrency_min,
+            "adaptive_concurrency_reductions": self.adaptive_concurrency_reductions,
+            "adaptive_concurrency_increases": self.adaptive_concurrency_increases,
+            "literary_polish_attempts": self.literary_polish_attempts,
+            "literary_polish_changed": self.literary_polish_changed,
+            "literary_polish_rejected": self.literary_polish_rejected,
+            "literary_verification_attempts": self.literary_verification_attempts,
+            "literary_verification_changed": self.literary_verification_changed,
+            "literary_verification_rejected": self.literary_verification_rejected,
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "last_error": self.last_error,
@@ -150,20 +188,89 @@ class SingleChunkResult:
     error_type: str | None = None
 
 
-class SemanticsTranslator:
-    _CACHE_PROMPT_VERSION = "quality-v2"
+class AdaptiveConcurrencyLimiter:
+    """Small feedback controller for in-book model concurrency.
 
-    def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
+    Network/JSON failures reduce the active limit immediately. A sustained run
+    of low-latency successes raises it one step at a time, never beyond the
+    configured cap. This keeps the existing ``async with semaphore`` call sites
+    while avoiding a permanently aggressive setting during provider wobble.
+    """
+
+    def __init__(
+        self,
+        limit: int,
+        *,
+        minimum: int = 1,
+        success_window: int = 6,
+        fast_latency_ms: int = 20_000,
+    ):
+        self.max_limit = max(1, int(limit))
+        self.min_limit = max(1, min(int(minimum), self.max_limit))
+        self.current_limit = self.max_limit
+        self.minimum_observed = self.current_limit
+        self.success_window = max(2, int(success_window))
+        self.fast_latency_ms = max(1000, int(fast_latency_ms))
+        self.active = 0
+        self.success_streak = 0
+        self.reductions = 0
+        self.increases = 0
+        self._condition = asyncio.Condition()
+
+    @property
+    def _value(self) -> int:
+        """Compatibility with tests that inspect ``asyncio.Semaphore._value``."""
+        return self.current_limit
+
+    async def __aenter__(self):
+        async with self._condition:
+            await self._condition.wait_for(lambda: self.active < self.current_limit)
+            self.active += 1
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        async with self._condition:
+            self.active = max(0, self.active - 1)
+            self._condition.notify_all()
+
+    def record_failure(self) -> None:
+        self.success_streak = 0
+        next_limit = max(self.min_limit, self.current_limit - 1)
+        if next_limit < self.current_limit:
+            self.current_limit = next_limit
+            self.minimum_observed = min(self.minimum_observed, next_limit)
+            self.reductions += 1
+
+    def record_success(self, latency_ms: int) -> None:
+        if latency_ms > self.fast_latency_ms:
+            self.success_streak = 0
+            return
+        self.success_streak += 1
+        if self.success_streak < self.success_window:
+            return
+        self.success_streak = 0
+        if self.current_limit < self.max_limit:
+            self.current_limit += 1
+            self.increases += 1
+
+
+class SemanticsTranslator:
+    _CACHE_PROMPT_VERSION = "quality-v3"
+    _ROUTE_HEALTH: dict[tuple[str, str], dict[str, float]] = {}
+
+    def __init__(self, target_lang="zh-CN", concurrency=6, bilingual=False,
                  glossary: dict | None = None, temperature: float | None = None,
                  model: str | None = None, quality_fallback_model: str | None = None,
                  allow_cross_glossary_cache: bool = False,
                  quality_mode: str = "standard",
-                 cache_policy: str = "reuse"):
+                 cache_policy: str = "reuse",
+                 style_guide: str = ""):
         self.target_lang = target_lang
         self.bilingual = bilingual
         self.glossary: dict[str, str] = glossary or {}
-        self.quality_mode = quality_mode if quality_mode in {"standard", "high"} else "standard"
-        self.cache_policy = cache_policy if cache_policy in {"reuse", "fresh"} else "reuse"
+        self.quality_mode = quality_mode if quality_mode in {"standard", "high", "literary"} else "standard"
+        self.cache_policy = cache_policy if cache_policy in {"reuse", "verified", "fresh"} else "reuse"
+        self.style_guide = (style_guide or "").strip()
         self.allow_cross_glossary_cache = (
             allow_cross_glossary_cache and self.cache_policy == "reuse"
         )
@@ -171,8 +278,25 @@ class SemanticsTranslator:
         self.progress_callback = None
         self.cancel_check = None
         configured_batch_max = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS", self._BATCH_MAX_CHARS))
-        batch_cap = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "6000"))
+        batch_cap = int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "10000"))
         self.batch_max_chars = max(1000, min(configured_batch_max, batch_cap))
+        growth_default = {
+            "standard": "1.5",
+            "high": "1.15",
+            "literary": "1.0",
+        }[self.quality_mode]
+        growth = max(
+            1.0,
+            float(os.environ.get("EPUB_TRANSLATION_ADAPTIVE_BATCH_GROWTH", growth_default)),
+        )
+        adaptive_enabled = os.environ.get(
+            "EPUB_TRANSLATION_ADAPTIVE_BATCH", "1"
+        ).lower() not in {"0", "false", "no", "off"}
+        self.adaptive_batch_max_chars = (
+            max(self.batch_max_chars, min(batch_cap, int(self.batch_max_chars * growth)))
+            if adaptive_enabled
+            else self.batch_max_chars
+        )
 
         self.api_key = os.environ.get("OPENAI_API_KEY", "dummy")
         self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -200,9 +324,21 @@ class SemanticsTranslator:
                 os.environ.get("TOKENHUB_API_KEY", "").strip() or self.api_key,
             )
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
-        concurrency_cap = int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP", "4"))
+        concurrency_cap = int(os.environ.get(
+            "EPUB_TRANSLATION_CONCURRENCY_CAP",
+            "6" if self.quality_mode == "standard" else "4",
+        ))
         env_concurrency = min(env_concurrency, max(1, concurrency_cap))
-        self.semaphore = asyncio.Semaphore(max(1, env_concurrency))
+        minimum_concurrency = int(os.environ.get(
+            "EPUB_TRANSLATION_CONCURRENCY_MIN",
+            "2" if env_concurrency >= 2 else "1",
+        ))
+        self.semaphore = AdaptiveConcurrencyLimiter(
+            max(1, env_concurrency),
+            minimum=minimum_concurrency,
+            success_window=int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_RECOVERY_WINDOW", "6")),
+            fast_latency_ms=int(os.environ.get("EPUB_TRANSLATION_FAST_LATENCY_MS", "20000")),
+        )
         self.max_retries = max(1, int(os.environ.get("OPENAI_MAX_RETRIES", "4")))
         self.quality_retries = max(1, int(os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES", "2")))
         self.chunk_retry_budget = max(1, int(os.environ.get("EPUB_TRANSLATION_CHUNK_RETRY_BUDGET", "6")))
@@ -211,11 +347,19 @@ class SemanticsTranslator:
         if temperature is not None:
             self.temperature = float(temperature)
         else:
-            default_temperature = "0.2" if self.quality_mode == "high" else "0.3"
+            default_temperature = "0.2" if self.quality_mode in {"high", "literary"} else "0.3"
             self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", default_temperature))
         self._clients: dict[tuple[str, str], AsyncOpenAI] = {}
         self.stats = TranslationStats()
         self.stats.quality_fallback_model = self.quality_fallback_model
+        self.stats.adaptive_batch_max_chars = self.adaptive_batch_max_chars
+        self._sync_adaptive_concurrency_stats()
+
+    def _sync_adaptive_concurrency_stats(self) -> None:
+        self.stats.adaptive_concurrency_limit = self.semaphore.current_limit
+        self.stats.adaptive_concurrency_min = self.semaphore.minimum_observed
+        self.stats.adaptive_concurrency_reductions = self.semaphore.reductions
+        self.stats.adaptive_concurrency_increases = self.semaphore.increases
 
     def _register_llm_provider(self, provider: str, base_url: str, api_key: str) -> None:
         base = (base_url or "").strip().rstrip("/")
@@ -336,7 +480,37 @@ class SemanticsTranslator:
                 continue
             seen.add(route)
             deduped.append(route)
-        return deduped or [(self.base_url, primary_model)]
+        if not deduped:
+            return [(self.base_url, primary_model)]
+        indexed = list(enumerate(deduped))
+
+        def health_score(item: tuple[int, tuple[str, str]]) -> tuple[float, int]:
+            index, route = item
+            health = self._ROUTE_HEALTH.get(route) or {}
+            failures = float(health.get("failures") or 0)
+            cooldown_until = float(health.get("cooldown_until") or 0)
+            cooldown_penalty = 1_000_000 if cooldown_until > time.monotonic() else 0
+            latency = float(health.get("latency_ms") or 0)
+            return cooldown_penalty + failures * 100_000 + latency, index
+
+        return [route for _index, route in sorted(indexed, key=health_score)]
+
+    @classmethod
+    def _record_route_failure(cls, route: tuple[str, str]) -> None:
+        health = dict(cls._ROUTE_HEALTH.get(route) or {})
+        failures = min(10.0, float(health.get("failures") or 0) + 1)
+        health["failures"] = failures
+        health["cooldown_until"] = time.monotonic() + min(60.0, failures * 5.0)
+        cls._ROUTE_HEALTH[route] = health
+
+    @classmethod
+    def _record_route_success(cls, route: tuple[str, str], latency_ms: int) -> None:
+        health = dict(cls._ROUTE_HEALTH.get(route) or {})
+        previous = float(health.get("latency_ms") or latency_ms)
+        health["latency_ms"] = previous * 0.7 + max(0, latency_ms) * 0.3
+        health["failures"] = max(0.0, float(health.get("failures") or 0) - 1)
+        health["cooldown_until"] = 0.0
+        cls._ROUTE_HEALTH[route] = health
 
     def _quality_retry_preferred_model(self, failed_quality_retries: int) -> str | None:
         if self.pro_fallback_after_retries <= 0:
@@ -393,6 +567,12 @@ class SemanticsTranslator:
                 "高置信度术语。遇到其中原文时必须严格使用对应译名，禁止译名漂移；不要把 glossary "
                 "字段本身写入 translation，也不要强行套用未列出的全书术语。"
             )
+        if self.quality_mode == "literary" and self.style_guide:
+            prompt += (
+                "\n\n以下是本书统一风格档案。初译只能用它统一语域、称谓和叙述口吻，"
+                "不得借此增删事实或进行脱离原文的文学改写：\n"
+                f"{self.style_guide[:4000]}"
+            )
 
         return prompt
 
@@ -425,9 +605,14 @@ class SemanticsTranslator:
     @property
     def _cache_family_key(self) -> str:
         temperature = f"{self.temperature:.2f}"
+        style_hash = (
+            hashlib.sha1(self.style_guide.encode("utf-8")).hexdigest()[:12]
+            if self.style_guide
+            else "none"
+        )
         return (
             f"{self.target_lang}@{self._CACHE_PROMPT_VERSION}@{self.quality_mode}"
-            f"@{self.model}@t{temperature}"
+            f"@{self.model}@t{temperature}@s{style_hash}"
         )
 
     def _cache_key_for_context(self, context: str | None = None) -> str:
@@ -456,6 +641,100 @@ class SemanticsTranslator:
             translated_html,
             self._cache_key_for_context(context),
         )
+
+    @staticmethod
+    def _visible_text(html: str) -> str:
+        return re.sub(
+            r"\s+",
+            " ",
+            BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True),
+        ).strip()
+
+    @staticmethod
+    def _number_tokens(text: str) -> list[str]:
+        return re.findall(
+            r"(?<![A-Za-z0-9_])[+-]?\d+(?:[.,:/-]\d+)*(?![A-Za-z0-9_])",
+            text or "",
+        )
+
+    def _semantic_review_risk_reasons(
+        self,
+        source_html: str,
+        draft_html: str,
+    ) -> list[str]:
+        """Return deterministic reasons for source-aware second review."""
+        source_text = self._visible_text(source_html)
+        draft_text = self._visible_text(draft_html)
+        reasons: list[str] = []
+        source_soup = BeautifulSoup(source_html or "", "html.parser")
+        if source_soup.find(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            reasons.append("heading")
+        if self._should_singleton_batch(source_html):
+            reasons.append("complex_html")
+        if len(source_text) >= int(os.environ.get("EPUB_SEMANTIC_REVIEW_LONG_TEXT_CHARS", "420")):
+            reasons.append("long_text")
+        if self._number_tokens(source_text) != self._number_tokens(draft_text):
+            reasons.append("number_mismatch")
+        source_lower = source_text.lower()
+        logic_markers = (
+            " not ", " never ", " unless ", " although ", " though ", " however ",
+            " but ", " because ", " therefore ", " despite ", " rather than ",
+        )
+        padded_source = f" {source_lower} "
+        if any(marker in padded_source for marker in logic_markers):
+            reasons.append("logic_relation")
+        source_len = max(1, len(source_text))
+        length_ratio = len(draft_text) / source_len
+        if length_ratio < 0.32 or length_ratio > 2.4:
+            reasons.append("length_ratio")
+        relevant_glossary = self._relevant_glossary_for_html(source_html)
+        if any(target and target not in draft_text for target in relevant_glossary.values()):
+            reasons.append("glossary_missing")
+        if self._looks_like_error_response(draft_html) or self._looks_untranslated(source_html, draft_html):
+            reasons.append("translation_suspect")
+        return list(dict.fromkeys(reasons))
+
+    def _should_sample_semantic_review(self, source_html: str) -> bool:
+        rate = min(
+            1.0,
+            max(0.0, float(os.environ.get("EPUB_SEMANTIC_REVIEW_SAMPLE_RATE", "0.15"))),
+        )
+        if rate <= 0:
+            return False
+        digest = hashlib.sha1(source_html.encode("utf-8", errors="replace")).digest()
+        bucket = int.from_bytes(digest[:4], "big") / 0xFFFFFFFF
+        return bucket < rate
+
+    def _literary_safety_reasons(
+        self,
+        source_html: str,
+        previous_html: str,
+        candidate_html: str,
+    ) -> list[str]:
+        """Hard guardrails for chapter editing and source-aware verification."""
+        reasons: list[str] = []
+        invalid = self._invalid_translation_reason(source_html, candidate_html)
+        if invalid:
+            reasons.append(invalid)
+        source_text = self._visible_text(source_html)
+        previous_text = self._visible_text(previous_html)
+        candidate_text = self._visible_text(candidate_html)
+        if self._number_tokens(source_text) != self._number_tokens(candidate_text):
+            reasons.append("number_mismatch")
+        previous_len = max(1, len(previous_text))
+        ratio = len(candidate_text) / previous_len
+        if ratio < 0.55 or ratio > 1.8:
+            reasons.append("unsafe_length_change")
+        relevant_glossary = self._relevant_glossary_for_html(source_html)
+        for target in relevant_glossary.values():
+            if target and target in previous_text and target not in candidate_text:
+                reasons.append("glossary_term_removed")
+                break
+        return list(dict.fromkeys(reasons))
+
+    def _payload_char_cost(self, html: str, context: str = "") -> int:
+        # Context is read-only but still consumes provider input capacity.
+        return len(html or "") + min(len(context or ""), 1200)
 
     def _extract_json_from_response(self, text: str) -> dict:
         text = text.strip()
@@ -903,6 +1182,7 @@ class SemanticsTranslator:
     ) -> tuple[dict[int, str], dict]:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         self._raise_if_cancelled()
+        self.stats.batch_requests += 1
         system_prompt = system_prompt or self._build_system_prompt()
         protected_payload: list[dict] = []
         protected_replacements: dict[int, dict[str, str]] = {}
@@ -945,6 +1225,8 @@ class SemanticsTranslator:
             self._raise_if_cancelled()
             base_url, model = routes[(attempt - 1) % len(routes)]
             provider = self._provider_for_base_url(base_url)
+            route = (base_url, model)
+            route_started = time.monotonic()
             try:
                 kwargs = {
                     "model": model,
@@ -991,10 +1273,19 @@ class SemanticsTranslator:
                     
                     if model != self.model or base_url != self.base_url:
                         print(f"⚠️ LLM fallback route succeeded: provider={provider}, model={model}, base_url={base_url}")
+                        self.stats.route_failovers += 1
+                    route_latency_ms = int((time.monotonic() - route_started) * 1000)
+                    self._record_route_success(route, route_latency_ms)
+                    self.stats.provider_route_counts[provider] = (
+                        self.stats.provider_route_counts.get(provider, 0) + 1
+                    )
                     break
                 except (json.JSONDecodeError, ValueError) as json_err:
                     last_error = ValueError(f"Failed to parse LLM JSON: {json_err}")
                     self.stats.last_error = str(last_error)
+                    self._record_route_failure(route)
+                    self.semaphore.record_failure()
+                    self._sync_adaptive_concurrency_stats()
                     if attempt >= max_attempts:
                         raise last_error
                     self.stats.retry_attempts += 1
@@ -1007,6 +1298,9 @@ class SemanticsTranslator:
             except Exception as exc:
                 last_error = exc
                 self.stats.last_error = str(exc)
+                self._record_route_failure(route)
+                self.semaphore.record_failure()
+                self._sync_adaptive_concurrency_stats()
                 # 鉴权/权限类错误重试也不会恢复，立即失败，避免无意义重试空耗时间与配额
                 if self._is_auth_error(exc):
                     has_distinct_provider_left = any(
@@ -1056,6 +1350,8 @@ class SemanticsTranslator:
         self.stats.api_latency_ms_total += latency_ms
         self.stats.api_latency_ms_max = max(self.stats.api_latency_ms_max, latency_ms)
         self.stats.api_latency_samples += 1
+        self.semaphore.record_success(latency_ms)
+        self._sync_adaptive_concurrency_stats()
 
         meta = {
             "model": model,
@@ -1243,12 +1539,13 @@ class SemanticsTranslator:
                 self.stats.complex_chunks += 1
                 self.stats.complex_singleton_batches += 1
                 continue
-            if cur_chars + len(html) > self.batch_max_chars and cur_batch:
+            item_cost = self._payload_char_cost(html, chunk_contexts[idx])
+            if cur_chars + item_cost > self.adaptive_batch_max_chars and cur_batch:
                 batches.append(cur_batch)
                 cur_batch = []
                 cur_chars = 0
             cur_batch.append((idx, html))
-            cur_chars += len(html)
+            cur_chars += item_cost
         if cur_batch:
             batches.append(cur_batch)
 
@@ -1555,15 +1852,39 @@ class SemanticsTranslator:
                     item["context"] = chunk_contexts[idx]
                 payload.append(item)
             t0 = time.monotonic()
+            preferred_model = None
+            if (
+                len(batch) == 1
+                and self._should_singleton_batch(batch[0][1])
+                and self.quality_fallback_model
+                and self.quality_fallback_model != self.model
+            ):
+                preferred_model = self.quality_fallback_model
+                self.stats.proactive_quality_routes += 1
             try:
                 async with self.semaphore:
                     self._raise_if_cancelled()
-                    translations_map, meta = await self._call_llm_json_batch(payload)
+                    call_params = inspect.signature(self._call_llm_json_batch).parameters
+                    accepts_preferred = (
+                        "preferred_model" in call_params
+                        or any(
+                            param.kind == inspect.Parameter.VAR_KEYWORD
+                            for param in call_params.values()
+                        )
+                    )
+                    if preferred_model and accepts_preferred:
+                        translations_map, meta = await self._call_llm_json_batch(
+                            payload,
+                            preferred_model=preferred_model,
+                        )
+                    else:
+                        translations_map, meta = await self._call_llm_json_batch(payload)
             except Exception as exc:
                 # 整批 API/网络/JSON 失败时，先拆小重试，避免一个坏 chunk 连累整批。
                 self.stats.last_error = str(exc)
                 if len(batch) > 1:
                     mid = max(1, len(batch) // 2)
+                    self.stats.batch_splits += 1
                     self._emit_progress(
                         f"批量翻译失败，拆分重试：{len(batch)} 段 -> {mid}+{len(batch) - mid}，原因：{self._short_error(exc)}"
                     )
@@ -1669,7 +1990,7 @@ class SemanticsTranslator:
         contexts: list[str] | None = None,
         progress_label: str | None = None,
     ) -> list["SingleChunkResult"]:
-        """高质量模式二次语义校对；结构不安全的校对结果会被拒绝并保留首译。"""
+        """高质量模式选择性语义校对；低风险段落保留首译以减少调用。"""
         if self.quality_mode != "high":
             return draft_results
         if len(source_html_chunks) != len(draft_results):
@@ -1683,6 +2004,15 @@ class SemanticsTranslator:
             source_text = BeautifulSoup(source_html or "", "html.parser").get_text()
             if draft.error or not self._should_translate(source_text):
                 continue
+            reasons = self._semantic_review_risk_reasons(source_html, draft.translated_html)
+            sampled = self._should_sample_semantic_review(source_html)
+            if not reasons and not sampled:
+                self.stats.semantic_review_skipped += 1
+                continue
+            for reason in reasons or ["sampled"]:
+                self.stats.semantic_review_risk_reasons[reason] = (
+                    self.stats.semantic_review_risk_reasons.get(reason, 0) + 1
+                )
             candidates.append((idx, self._extract_inner_html(source_html), draft))
         if not candidates:
             return draft_results
@@ -1701,8 +2031,12 @@ class SemanticsTranslator:
         current: list[tuple[int, str, SingleChunkResult]] = []
         current_chars = 0
         for candidate in candidates:
-            candidate_chars = len(candidate[1]) + len(candidate[2].translated_html)
-            if current and current_chars + candidate_chars > self.batch_max_chars:
+            candidate_chars = (
+                len(candidate[1])
+                + len(candidate[2].translated_html)
+                + min(len(chunk_contexts[candidate[0]]), 1200)
+            )
+            if current and current_chars + candidate_chars > self.adaptive_batch_max_chars:
                 batches.append(current)
                 current = []
                 current_chars = 0
@@ -1778,6 +2112,256 @@ class SemanticsTranslator:
         await asyncio.gather(*(run_review_batch(batch) for batch in batches))
         return reviewed
 
+    async def build_style_guide_async(
+        self,
+        *,
+        book_title: str,
+        sample_texts: list[str],
+    ) -> str:
+        """Create one compact, book-level style contract for literary mode."""
+        if self.quality_mode != "literary":
+            return ""
+        cleaned_samples = [
+            re.sub(r"\s+", " ", str(text or "")).strip()
+            for text in sample_texts
+            if str(text or "").strip()
+        ]
+        source = (
+            f"书名：{book_title or '未知'}\n"
+            "代表性原文节选：\n"
+            + "\n\n".join(cleaned_samples[:12])
+        )[:12_000]
+        prompt = f"""你是原版书籍翻译项目的中文主编。目标语言是：{self.target_lang}。
+阅读书名和代表性原文，只制定一份全书统一的翻译风格档案，不翻译正文。
+档案必须简洁、可执行，并覆盖：作品类型与时代感、叙述声音、语域、句式节奏、
+人名与称谓、引语与标点、修辞与文化负载词、禁止出现的现代网络腔或过度文言化。
+不能臆测具体事实；信息不足时写“保持中性并以原文为准”。
+严格返回 {{"results":[{{"id":0,"translation":"风格档案正文"}}]}}。"""
+        payload = [{"id": 0, "html": source, "text_node_rescue": True}]
+        try:
+            async with self.semaphore:
+                translations, _meta = await self._call_llm_json_batch(
+                    payload,
+                    preferred_model=self.quality_fallback_model or self.model,
+                    system_prompt=prompt,
+                )
+        except Exception as exc:
+            self._emit_progress(f"文学风格档案生成失败，使用保守默认档案：{self._short_error(exc)}")
+            return (
+                "保持原作事实、逻辑、语气和时代感；中文表达自然克制，避免机器翻译腔、"
+                "现代网络腔和无依据的文言化；专名、称谓、引语与术语全书一致。"
+            )
+        guide = re.sub(r"\s+", " ", str(translations.get(0, "") or "")).strip()
+        return guide[:6000] or (
+            "忠实原意，保持作者语气与时代感；中文自然克制；专名、称谓和术语全书一致。"
+        )
+
+    def _literary_batches(
+        self,
+        source_html_chunks: list[str],
+        draft_results: list["SingleChunkResult"],
+        contexts: list[str],
+    ) -> list[list[tuple[int, str, SingleChunkResult]]]:
+        batches: list[list[tuple[int, str, SingleChunkResult]]] = []
+        current: list[tuple[int, str, SingleChunkResult]] = []
+        current_chars = 0
+        for idx, (source_html, draft) in enumerate(zip(source_html_chunks, draft_results)):
+            source_text = BeautifulSoup(source_html or "", "html.parser").get_text()
+            if draft.error or not self._should_translate(source_text):
+                continue
+            source_inner = self._extract_inner_html(source_html)
+            cost = (
+                len(source_inner)
+                + len(draft.translated_html)
+                + min(len(contexts[idx]), 1200)
+            )
+            if current and current_chars + cost > self.adaptive_batch_max_chars:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append((idx, source_inner, draft))
+            current_chars += cost
+        if current:
+            batches.append(current)
+        return batches
+
+    async def polish_literary_chapter_async(
+        self,
+        source_html_chunks: list[str],
+        draft_results: list["SingleChunkResult"],
+        *,
+        contexts: list[str] | None = None,
+        progress_label: str | None = None,
+    ) -> list["SingleChunkResult"]:
+        """Edit contiguous chapter passages for natural, style-consistent Chinese."""
+        if self.quality_mode != "literary":
+            return draft_results
+        if len(source_html_chunks) != len(draft_results):
+            raise ValueError("literary polish source/result length mismatch")
+        chunk_contexts = contexts or [""] * len(source_html_chunks)
+        if len(chunk_contexts) != len(source_html_chunks):
+            raise ValueError("literary polish context length mismatch")
+
+        batches = self._literary_batches(source_html_chunks, draft_results, chunk_contexts)
+        if not batches:
+            return draft_results
+        polished = list(draft_results)
+        total = sum(len(batch) for batch in batches)
+        self.stats.literary_polish_attempts += total
+        completed = 0
+        style = self.style_guide or "忠实原意；中文自然克制；全书称谓、术语和叙述口吻一致。"
+        prompt = f"""你是中文图书的章节责任编辑。目标语言是：{self.target_lang}。
+输入按章节原顺序排列，每项含 html（原文）、draft_translation（忠实初译）和可选 context。
+在不改变任何事实和逻辑的前提下，把初译编辑成自然、连贯、有节奏的中文：
+1. 可以调整中文语序、拆合句和消除欧化表达，但不得漏译、增译、解释或美化作者立场。
+2. 严格保留否定、因果、程度、时间、数字、引文、脚注、人物关系和术语。
+3. 相邻项目属于同一章节，应统一指代、称谓、语域和节奏；不得把相邻正文串入当前项目。
+4. HTML 标签占位符必须逐字保留，数量、顺序和包裹关系不得变化。
+5. 风格档案：{style[:4000]}
+严格返回 {{"results":[{{"id":0,"translation":"..."}}]}}，包含全部输入 id。"""
+
+        async def run_batch(batch: list[tuple[int, str, SingleChunkResult]]) -> None:
+            nonlocal completed
+            payload = []
+            for idx, source_inner, draft in batch:
+                item = {
+                    "id": idx,
+                    "html": source_inner,
+                    "draft_translation": draft.translated_html,
+                }
+                if chunk_contexts[idx]:
+                    item["context"] = chunk_contexts[idx]
+                payload.append(item)
+            try:
+                async with self.semaphore:
+                    translations, meta = await self._call_llm_json_batch(
+                        payload,
+                        preferred_model=self.quality_fallback_model or self.model,
+                        system_prompt=prompt,
+                    )
+            except Exception as exc:
+                self.stats.literary_polish_rejected += len(batch)
+                self._emit_progress(f"章节文学编辑失败，已保留忠实初译：{self._short_error(exc)}")
+                completed += len(batch)
+                return
+
+            count = max(1, len(batch))
+            prompt_each = int((meta.get("prompt_tokens", 0) or 0) / count)
+            completion_each = int((meta.get("completion_tokens", 0) or 0) / count)
+            for idx, source_inner, draft in batch:
+                candidate = translations.get(idx, "")
+                candidate, _repaired = self._repair_inline_tags_if_safe(source_inner, candidate)
+                if self._literary_safety_reasons(source_inner, draft.translated_html, candidate):
+                    self.stats.literary_polish_rejected += 1
+                    continue
+                if candidate != draft.translated_html:
+                    self.stats.literary_polish_changed += 1
+                polished[idx] = SingleChunkResult(
+                    translated_html=candidate,
+                    cached=False,
+                    model=meta.get("model") or draft.model,
+                    base_url=meta.get("base_url") or draft.base_url,
+                    prompt_tokens=draft.prompt_tokens + prompt_each,
+                    completion_tokens=draft.completion_tokens + completion_each,
+                    latency_ms=draft.latency_ms,
+                    error=None,
+                    retry_count=draft.retry_count,
+                    error_type=None,
+                )
+            completed += len(batch)
+            if progress_label:
+                self._emit_progress(f"{progress_label}：{completed}/{total} 段")
+
+        await asyncio.gather(*(run_batch(batch) for batch in batches))
+        return polished
+
+    async def verify_literary_chapter_async(
+        self,
+        source_html_chunks: list[str],
+        polished_results: list["SingleChunkResult"],
+        *,
+        contexts: list[str] | None = None,
+        progress_label: str | None = None,
+    ) -> list["SingleChunkResult"]:
+        """Source-aware final pass: correct only semantic drift introduced by editing."""
+        if self.quality_mode != "literary":
+            return polished_results
+        if len(source_html_chunks) != len(polished_results):
+            raise ValueError("literary verification source/result length mismatch")
+        chunk_contexts = contexts or [""] * len(source_html_chunks)
+        if len(chunk_contexts) != len(source_html_chunks):
+            raise ValueError("literary verification context length mismatch")
+        batches = self._literary_batches(source_html_chunks, polished_results, chunk_contexts)
+        if not batches:
+            return polished_results
+        verified = list(polished_results)
+        total = sum(len(batch) for batch in batches)
+        self.stats.literary_verification_attempts += total
+        completed = 0
+        prompt = f"""你是原版书籍译文的语义总校。目标语言是：{self.target_lang}。
+逐项比较 html 原文和 draft_translation 文学编辑稿：
+1. 只修复漏译、增译、错译、否定/因果/程度变化、数字遗漏、人物关系错误和术语漂移。
+2. 没有实质语义错误时必须原样返回，不能为了显示修改而改写文风。
+3. 不得总结、解释、弱化、扩写或补入 context 内容。
+4. HTML 标签占位符、数字、引文和脚注必须完整保留。
+严格返回 {{"results":[{{"id":0,"translation":"..."}}]}}，包含全部输入 id。"""
+
+        async def run_batch(batch: list[tuple[int, str, SingleChunkResult]]) -> None:
+            nonlocal completed
+            payload = []
+            for idx, source_inner, draft in batch:
+                item = {
+                    "id": idx,
+                    "html": source_inner,
+                    "draft_translation": draft.translated_html,
+                }
+                if chunk_contexts[idx]:
+                    item["context"] = chunk_contexts[idx]
+                payload.append(item)
+            try:
+                async with self.semaphore:
+                    translations, meta = await self._call_llm_json_batch(
+                        payload,
+                        preferred_model=self.quality_fallback_model or self.model,
+                        system_prompt=prompt,
+                    )
+            except Exception as exc:
+                self.stats.literary_verification_rejected += len(batch)
+                self._emit_progress(f"文学译文语义回查失败，已保留安全编辑稿：{self._short_error(exc)}")
+                completed += len(batch)
+                return
+
+            count = max(1, len(batch))
+            prompt_each = int((meta.get("prompt_tokens", 0) or 0) / count)
+            completion_each = int((meta.get("completion_tokens", 0) or 0) / count)
+            for idx, source_inner, draft in batch:
+                candidate = translations.get(idx, "")
+                candidate, _repaired = self._repair_inline_tags_if_safe(source_inner, candidate)
+                if self._literary_safety_reasons(source_inner, draft.translated_html, candidate):
+                    self.stats.literary_verification_rejected += 1
+                    continue
+                if candidate != draft.translated_html:
+                    self.stats.literary_verification_changed += 1
+                self._cache_set(source_inner, candidate, chunk_contexts[idx])
+                verified[idx] = SingleChunkResult(
+                    translated_html=candidate,
+                    cached=False,
+                    model=meta.get("model") or draft.model,
+                    base_url=meta.get("base_url") or draft.base_url,
+                    prompt_tokens=draft.prompt_tokens + prompt_each,
+                    completion_tokens=draft.completion_tokens + completion_each,
+                    latency_ms=draft.latency_ms,
+                    error=None,
+                    retry_count=draft.retry_count,
+                    error_type=None,
+                )
+            completed += len(batch)
+            if progress_label:
+                self._emit_progress(f"{progress_label}：{completed}/{total} 段")
+
+        await asyncio.gather(*(run_batch(batch) for batch in batches))
+        return verified
+
     def _should_translate(self, text: str) -> bool:
         if not text.strip():
             return False
@@ -1831,7 +2415,8 @@ class SemanticsTranslator:
                 uncached_results: dict[int, str] = {}
 
                 # 先把未缓存段落切成多个批次（按字符上限），再并发提交。
-                # 并发度由 self.semaphore(OPENAI_CONCURRENCY，默认 5) 在 _translate_batch
+                # 并发度由 self.semaphore（标准模式默认 6，高质量/文学模式 cap 为 4）
+                # 在 _translate_batch
                 # 内部约束，既能把吞吐拉满，又不会击穿内存/速率限制。
                 batches: list[list[tuple[int, str]]] = []
                 cur_batch: list[tuple[int, str]] = []

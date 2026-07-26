@@ -85,8 +85,8 @@ TRANSLATION_MODEL_CHOICES = {
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
 }
-TRANSLATION_QUALITY_CHOICES = {"standard", "high"}
-CACHE_POLICY_CHOICES = {"reuse", "fresh"}
+TRANSLATION_QUALITY_CHOICES = {"standard", "high", "literary"}
+CACHE_POLICY_CHOICES = {"reuse", "verified", "fresh"}
 DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-flash").strip()
 if DEFAULT_TRANSLATION_MODEL not in TRANSLATION_MODEL_CHOICES:
     DEFAULT_TRANSLATION_MODEL = "deepseek-v4-flash"
@@ -109,7 +109,8 @@ def _normalize_cache_policy(
 ) -> str:
     if not enable_translation:
         return "reuse"
-    normalized = (value or ("fresh" if translation_quality == "high" else "reuse")).strip().lower()
+    default_policy = "verified" if translation_quality in {"high", "literary"} else "reuse"
+    normalized = (value or default_policy).strip().lower()
     if normalized not in CACHE_POLICY_CHOICES:
         allowed = ", ".join(sorted(CACHE_POLICY_CHOICES))
         raise HTTPException(status_code=400, detail=f"cache_policy 仅支持：{allowed}")
@@ -124,7 +125,11 @@ def _normalize_translation_model(
 ) -> str:
     if not enable_translation:
         return ""
-    default_model = "deepseek-v4-pro" if translation_quality == "high" else DEFAULT_TRANSLATION_MODEL
+    default_model = (
+        "deepseek-v4-pro"
+        if translation_quality in {"high", "literary"}
+        else DEFAULT_TRANSLATION_MODEL
+    )
     value = (model or default_model).strip()
     if value not in TRANSLATION_MODEL_CHOICES:
         allowed = ", ".join(TRANSLATION_MODEL_CHOICES)
@@ -638,6 +643,27 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "structured_note_chunks": int(stats.get("structured_note_chunks") or 0),
         "structured_note_successes": int(stats.get("structured_note_successes") or 0),
         "retry_budget_exhausted_chunks": int(stats.get("retry_budget_exhausted_chunks") or 0),
+        "batch_requests": int(stats.get("batch_requests") or 0),
+        "batch_splits": int(stats.get("batch_splits") or 0),
+        "proactive_quality_routes": int(stats.get("proactive_quality_routes") or 0),
+        "route_failovers": int(stats.get("route_failovers") or 0),
+        "provider_route_counts": dict(stats.get("provider_route_counts") or {}),
+        "adaptive_batch_max_chars": int(stats.get("adaptive_batch_max_chars") or 0),
+        "adaptive_concurrency_limit": int(stats.get("adaptive_concurrency_limit") or 0),
+        "adaptive_concurrency_min": int(stats.get("adaptive_concurrency_min") or 0),
+        "adaptive_concurrency_reductions": int(stats.get("adaptive_concurrency_reductions") or 0),
+        "adaptive_concurrency_increases": int(stats.get("adaptive_concurrency_increases") or 0),
+        "semantic_review_attempts": int(stats.get("semantic_review_attempts") or 0),
+        "semantic_review_changed": int(stats.get("semantic_review_changed") or 0),
+        "semantic_review_rejected": int(stats.get("semantic_review_rejected") or 0),
+        "semantic_review_skipped": int(stats.get("semantic_review_skipped") or 0),
+        "semantic_review_risk_reasons": dict(stats.get("semantic_review_risk_reasons") or {}),
+        "literary_polish_attempts": int(stats.get("literary_polish_attempts") or 0),
+        "literary_polish_changed": int(stats.get("literary_polish_changed") or 0),
+        "literary_polish_rejected": int(stats.get("literary_polish_rejected") or 0),
+        "literary_verification_attempts": int(stats.get("literary_verification_attempts") or 0),
+        "literary_verification_changed": int(stats.get("literary_verification_changed") or 0),
+        "literary_verification_rejected": int(stats.get("literary_verification_rejected") or 0),
     }
     failed_chunk_locations = _chunk_location_samples(job, chunks, limit=8)
 
@@ -1221,7 +1247,11 @@ async def create_job_v2(
     enable_precision_polish: bool = Form(False),         # L4 精校开关
     polish_order_no: Optional[str] = Form(None),         # AI 精校支付宝订单号（开启 L4 时必填）
 ):
-    """上传文件并创建后台任务。标准模式默认 Flash/0.3/复用缓存，高质量模式默认 Pro/0.2/全新翻译。"""
+    """上传文件并创建后台任务。
+
+    标准模式默认 Flash/0.3/复用缓存；高质量模式默认 Pro/0.2/验证缓存；
+    文学模式增加全书风格档案、章节编辑和原文语义回查。
+    """
     import os as _os
     import hmac as _hmac
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
@@ -1252,7 +1282,7 @@ async def create_job_v2(
     translation_quality = _normalize_translation_quality(translation_quality, enable_translation)
     cache_policy = _normalize_cache_policy(cache_policy, enable_translation, translation_quality)
     if temperature is None and enable_translation:
-        temperature = 0.2 if translation_quality == "high" else 0.3
+        temperature = 0.2 if translation_quality in {"high", "literary"} else 0.3
     elif not enable_translation:
         temperature = None
     translation_model = _normalize_translation_model(
@@ -2327,9 +2357,15 @@ def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
         "failed_chunks": failed_items,
         "slow_chunks": slow_chunks,
         "effective_limits": {
-            "openai_concurrency_cap": int(os.environ.get("EPUB_TRANSLATION_CONCURRENCY_CAP", "4")),
+            "openai_concurrency_cap": int(os.environ.get(
+                "EPUB_TRANSLATION_CONCURRENCY_CAP",
+                "6" if getattr(job, "translation_quality", "standard") == "standard" else "4",
+            )),
+            "adaptive_concurrency_limit": int(stats.get("adaptive_concurrency_limit") or 0),
+            "adaptive_concurrency_min": int(stats.get("adaptive_concurrency_min") or 0),
             "chapter_concurrency_cap": int(os.environ.get("EPUB_CHAPTER_CONCURRENCY_CAP", "2")),
-            "batch_max_chars_cap": int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "6000")),
+            "batch_max_chars_cap": int(os.environ.get("EPUB_TRANSLATION_BATCH_MAX_CHARS_CAP", "10000")),
+            "adaptive_batch_max_chars": int(stats.get("adaptive_batch_max_chars") or 0),
             "request_timeout_seconds": float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "90")),
             "max_retries": int(os.environ.get("OPENAI_MAX_RETRIES", "4")),
             "timeout_extra_retries": int(os.environ.get("OPENAI_TIMEOUT_EXTRA_RETRIES", "2")),
@@ -2480,7 +2516,7 @@ def restart_translation_v2(
         else getattr(job, "temperature", None)
     )
     if resolved_temperature is None:
-        resolved_temperature = 0.2 if quality == "high" else 0.3
+        resolved_temperature = 0.2 if quality in {"high", "literary"} else 0.3
     if not 0 <= resolved_temperature <= 2:
         raise HTTPException(status_code=400, detail="temperature 必须在 0 到 2 之间")
     return _restart_translation_job(

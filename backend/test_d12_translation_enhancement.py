@@ -1031,6 +1031,146 @@ def test_inline_tag_marker_requirement_lists_all_markers():
     assert "数量、拼写、先后顺序都不能改变" in hint
 
 
+def test_verified_cache_reuses_only_matching_high_quality_namespace():
+    """验证缓存可复用同配置终审结果，但不能跨质量档位读取。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = TranslationCache(str(Path(tmp) / "verified-cache.db"))
+        writer = SemanticsTranslator(
+            target_lang="zh-CN",
+            model="deepseek-v4-pro",
+            temperature=0.2,
+            quality_mode="high",
+            cache_policy="fresh",
+        )
+        writer.cache = cache
+        writer._cache_set("Faithful source.", "忠实译文。", "同一上下文")
+
+        verified = SemanticsTranslator(
+            target_lang="zh-CN",
+            model="deepseek-v4-pro",
+            temperature=0.2,
+            quality_mode="high",
+            cache_policy="verified",
+        )
+        verified.cache = cache
+        assert verified._cache_get("Faithful source.", "同一上下文") == "忠实译文。"
+        assert verified._cache_get("Faithful source.", "不同上下文") is None
+
+        standard = SemanticsTranslator(
+            target_lang="zh-CN",
+            model="deepseek-v4-flash",
+            temperature=0.3,
+            quality_mode="standard",
+            cache_policy="reuse",
+        )
+        standard.cache = cache
+        assert standard._cache_get("Faithful source.", "同一上下文") is None
+
+
+def test_high_quality_semantic_review_selects_risk_and_skips_low_risk():
+    """高质量二审只调用逻辑高风险段落，普通段落留在首译。"""
+    old_rate = os.environ.get("EPUB_SEMANTIC_REVIEW_SAMPLE_RATE")
+    os.environ["EPUB_SEMANTIC_REVIEW_SAMPLE_RATE"] = "0"
+    try:
+        t = SemanticsTranslator(
+            target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}",
+            model="deepseek-v4-pro",
+            quality_mode="high",
+            cache_policy="fresh",
+        )
+        from app.engine.cleaners.semantics_translator import SingleChunkResult
+        drafts = [
+            SingleChunkResult("这是普通译文。", False, "pro", "fake", 1, 1, 1, None),
+            SingleChunkResult("虽然下雨，但是他没有离开。", False, "pro", "fake", 1, 1, 1, None),
+        ]
+        seen_ids = []
+
+        async def fake_review(payload, **_kwargs):
+            seen_ids.extend(item["id"] for item in payload)
+            return (
+                {item["id"]: drafts[item["id"]].translated_html for item in payload},
+                {"model": "pro", "base_url": "fake://review"},
+            )
+
+        t._call_llm_json_batch = fake_review
+        reviewed = asyncio.run(t.review_many_chunks_async(
+            [
+                "<p>He opened the door.</p>",
+                "<p>Although it rained, he did not leave.</p>",
+            ],
+            drafts,
+        ))
+        assert seen_ids == [1]
+        assert reviewed[0].translated_html == "这是普通译文。"
+        assert t.stats.semantic_review_attempts == 1
+        assert t.stats.semantic_review_skipped == 1
+        assert t.stats.semantic_review_risk_reasons["logic_relation"] == 1
+    finally:
+        if old_rate is None:
+            os.environ.pop("EPUB_SEMANTIC_REVIEW_SAMPLE_RATE", None)
+        else:
+            os.environ["EPUB_SEMANTIC_REVIEW_SAMPLE_RATE"] = old_rate
+
+
+def test_adaptive_concurrency_reduces_then_recovers():
+    """失败反馈应降并发，连续快速成功后逐步恢复。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}", concurrency=4)
+    limiter = t.semaphore
+    start = limiter.current_limit
+    limiter.record_failure()
+    assert limiter.current_limit == max(limiter.min_limit, start - 1)
+    limiter.success_window = 2
+    limiter.record_success(100)
+    limiter.record_success(100)
+    assert limiter.current_limit == min(start, max(limiter.min_limit, start - 1) + 1)
+
+
+def test_literary_style_polish_and_semantic_verification():
+    """文学模式先建风格档案、再章节编辑，最后进行原文语义回查。"""
+    t = SemanticsTranslator(
+        target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}",
+        model="deepseek-v4-pro",
+        quality_mode="literary",
+        cache_policy="fresh",
+    )
+    from app.engine.cleaners.semantics_translator import SingleChunkResult
+    calls = {"style": 0, "polish": 0, "verify": 0}
+
+    async def fake_call(payload, **kwargs):
+        prompt = str(kwargs.get("system_prompt") or "")
+        if "翻译风格档案" in prompt:
+            calls["style"] += 1
+            return ({0: "冷静克制；保留十八世纪论辩语气；称谓与术语全书一致。"}, {"model": "pro"})
+        if "章节责任编辑" in prompt:
+            calls["polish"] += 1
+            return ({0: "1945年，他并没有离开。"}, {"model": "pro"})
+        if "语义总校" in prompt:
+            calls["verify"] += 1
+            return ({0: "1945年，他并未离开。"}, {"model": "pro"})
+        raise AssertionError(prompt)
+
+    t._call_llm_json_batch = fake_call
+    guide = asyncio.run(t.build_style_guide_async(
+        book_title="A Serious Book",
+        sample_texts=["He did not leave in 1945."],
+    ))
+    t.style_guide = guide
+    draft = [SingleChunkResult("他在1945年没有离开。", False, "pro", "fake", 1, 1, 1, None)]
+    polished = asyncio.run(t.polish_literary_chapter_async(
+        ["<p>He did not leave in 1945.</p>"],
+        draft,
+    ))
+    verified = asyncio.run(t.verify_literary_chapter_async(
+        ["<p>He did not leave in 1945.</p>"],
+        polished,
+    ))
+    assert "冷静克制" in guide
+    assert verified[0].translated_html == "1945年，他并未离开。"
+    assert calls == {"style": 1, "polish": 1, "verify": 1}
+    assert t.stats.literary_polish_changed == 1
+    assert t.stats.literary_verification_changed == 1
+
+
 def test_translate_many_chunks_honors_cancel_check_before_llm_call():
     """用户点停止后，翻译器应在下一次模型请求前退出。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
@@ -1088,6 +1228,10 @@ def _run():
         test_translate_many_chunks_isolates_complex_inline_chunks,
         test_inline_tag_markers_roundtrip_span_anchor_sup,
         test_inline_tag_marker_requirement_lists_all_markers,
+        test_verified_cache_reuses_only_matching_high_quality_namespace,
+        test_high_quality_semantic_review_selects_risk_and_skips_low_risk,
+        test_adaptive_concurrency_reduces_then_recovers,
+        test_literary_style_polish_and_semantic_verification,
         test_translate_many_chunks_honors_cancel_check_before_llm_call,
     ]
     passed = 0

@@ -1495,7 +1495,16 @@
                     <strong>高质量模式</strong>
                     <span class="model-current">当前使用</span>
                   </span>
-                  <span class="model-option-desc">Pro 首译、章节上下文与二次语义校对，默认不复用旧译文。</span>
+                  <span class="model-option-desc">Pro 首译、章节上下文与风险段落语义校对，复用已验证的同配置译文。</span>
+                </label>
+                <label class="model-option">
+                  <input type="radio" name="translationQualityChoice" value="literary">
+                  <span class="model-option-title">
+                    <span class="model-radio-dot"></span>
+                    <strong>文学模式（信达雅）</strong>
+                    <span class="model-current">当前使用</span>
+                  </span>
+                  <span class="model-option-desc">忠实初译后按章节润色，并回查原文语义；速度较慢，适合文学与人文书稿。</span>
                 </label>
               </div>
             </div>
@@ -1529,7 +1538,7 @@
             </div>
 
             <div class="form-group" style="margin-top: 12px;">
-              <label>Temperature <span class="hint">（标准 0.3，高质量 0.2；越低越稳定）</span></label>
+              <label>Temperature <span class="hint">（标准 0.3，高质量/文学 0.2；越低越稳定）</span></label>
               <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
             </div>
 
@@ -2797,7 +2806,7 @@
         `chunk_latency_avg=${formatLogDuration(report.chunk_latency_avg_ms)}, p95=${formatLogDuration(report.chunk_latency_p95_ms)}, p99=${formatLogDuration(report.chunk_latency_p99_ms)}`,
         `retry_attempts=${Number(report.retry_attempts || 0)}, chunk_retry_total=${Number(report.chunk_retry_total || 0)}, chunk_retry_max=${Number(report.chunk_retry_max || 0)}`,
         `chunks=total:${Number(report.total_chunks || 0)}, translated:${Number(report.translated_chunks || 0)}, cached:${Number(report.cached_chunks || 0)}, failed:${Number(report.failed_chunks || 0)}, failure_ratio=${formatPercent(report.failure_ratio)}`,
-        `optimizations=complex_chunks:${Number(optimization.complex_chunks || 0)}, singleton_batches:${Number(optimization.complex_singleton_batches || 0)}, inline_tag_repairs:${Number(optimization.inline_tag_repairs || 0)}, image_note_skipped:${Number(optimization.image_note_chunks_skipped || 0)}, image_captions:${Number(optimization.image_caption_chunks || 0)}, reference_note_skipped:${Number(optimization.reference_note_chunks_skipped || 0)}, structured_notes:${Number(optimization.structured_note_successes || 0)}/${Number(optimization.structured_note_chunks || 0)}, retry_budget_exhausted:${Number(optimization.retry_budget_exhausted_chunks || 0)}`,
+        `optimizations=complex_chunks:${Number(optimization.complex_chunks || 0)}, singleton_batches:${Number(optimization.complex_singleton_batches || 0)}, batch_requests:${Number(optimization.batch_requests || 0)}, batch_splits:${Number(optimization.batch_splits || 0)}, adaptive_batch:${Number(optimization.adaptive_batch_max_chars || 0)}, adaptive_concurrency:${Number(optimization.adaptive_concurrency_limit || 0)}/${Number(optimization.adaptive_concurrency_min || 0)}, route_failovers:${Number(optimization.route_failovers || 0)}, provider_routes:${JSON.stringify(optimization.provider_route_counts || {})}, selective_review:${Number(optimization.semantic_review_attempts || 0)} reviewed/${Number(optimization.semantic_review_skipped || 0)} skipped/${Number(optimization.semantic_review_rejected || 0)} rejected, literary_polish:${Number(optimization.literary_polish_attempts || 0)} attempted/${Number(optimization.literary_polish_changed || 0)} changed/${Number(optimization.literary_polish_rejected || 0)} rejected, literary_verify:${Number(optimization.literary_verification_attempts || 0)} attempted/${Number(optimization.literary_verification_changed || 0)} changed/${Number(optimization.literary_verification_rejected || 0)} rejected, inline_tag_repairs:${Number(optimization.inline_tag_repairs || 0)}, image_note_skipped:${Number(optimization.image_note_chunks_skipped || 0)}, image_captions:${Number(optimization.image_caption_chunks || 0)}, reference_note_skipped:${Number(optimization.reference_note_chunks_skipped || 0)}, structured_notes:${Number(optimization.structured_note_successes || 0)}/${Number(optimization.structured_note_chunks || 0)}, retry_budget_exhausted:${Number(optimization.retry_budget_exhausted_chunks || 0)}`,
         `tokens=prompt:${Number(tokens.prompt || 0)}, completion:${Number(tokens.completion || 0)}, total:${Number(tokens.total || 0)}`,
         "[stage_timings]",
         ...(stageLines.length ? stageLines : ["- 暂无阶段耗时"]),
@@ -3088,11 +3097,14 @@
     translationQualityChoices.forEach(radio => {
       radio.addEventListener("change", () => {
         if (!radio.checked) return;
-        const isHigh = radio.value === "high";
-        $("translationQuality").value = isHigh ? "high" : "standard";
-        $("cachePolicy").value = isHigh ? "fresh" : "reuse";
-        $("translationModel").value = isHigh ? "deepseek-v4-pro" : "deepseek-v4-flash";
-        $("temperature").value = isHigh ? "0.2" : "0.3";
+        const quality = ["standard", "high", "literary"].includes(radio.value)
+          ? radio.value
+          : "standard";
+        const isPremium = quality !== "standard";
+        $("translationQuality").value = quality;
+        $("cachePolicy").value = isPremium ? "verified" : "reuse";
+        $("translationModel").value = isPremium ? "deepseek-v4-pro" : "deepseek-v4-flash";
+        $("temperature").value = isPremium ? "0.2" : "0.3";
         translationModelChoices.forEach(choice => {
           choice.checked = choice.value === $("translationModel").value;
         });

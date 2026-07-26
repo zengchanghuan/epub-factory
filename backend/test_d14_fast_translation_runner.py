@@ -503,6 +503,112 @@ def test_fast_translation_runner_honors_cancel_check_before_work():
         assert not out.exists()
 
 
+def test_fast_translation_runner_literary_style_polish_and_verify():
+    """文学模式应生成全书风格档案、执行章节编辑并回查原文语义。"""
+    marker = uuid.uuid4().hex[:10]
+    old_translate_glossary = glossary_service.translate_glossary
+    old_call = SemanticsTranslator._call_llm_json_batch
+    observed = {"style": 0, "polish": 0, "verify": 0}
+
+    async def fake_translate_glossary(*_args, **_kwargs):
+        return {}
+
+    async def fake_call(self, payload, **kwargs):
+        prompt = str(kwargs.get("system_prompt") or "")
+        if "翻译风格档案" in prompt:
+            observed["style"] += 1
+            return (
+                {0: "保持十八世纪政治论辩的冷静、克制和锋芒；称谓与术语全书一致。"},
+                {"model": "deepseek-v4-pro", "base_url": "fake://style"},
+            )
+
+        output = {}
+        if "章节责任编辑" in prompt:
+            observed["polish"] += len(payload)
+            for item in payload:
+                draft = str(item.get("draft_translation") or "")
+                output[item["id"]] = "史密斯与沃森、富兰克林一同前往伦敦。" if marker in str(item["html"]) else draft
+        elif "语义总校" in prompt:
+            observed["verify"] += len(payload)
+            for item in payload:
+                draft = str(item.get("draft_translation") or "")
+                output[item["id"]] = draft
+        else:
+            for item in payload:
+                source = str(item["html"])
+                if "Annotated and Illustrated Double Helix" in source:
+                    output[item["id"]] = "注释图解版《双螺旋》"
+                elif marker in source:
+                    output[item["id"]] = "史密斯前往伦敦，与沃森和富兰克林同行。"
+                elif "Chapter 1" in source:
+                    output[item["id"]] = "第一章"
+                else:
+                    output[item["id"]] = "已翻译"
+        return (
+            output,
+            {
+                "model": "deepseek-v4-pro",
+                "base_url": "fake://llm",
+                "prompt_tokens": 20,
+                "completion_tokens": 30,
+            },
+        )
+
+    glossary_service.translate_glossary = fake_translate_glossary
+    SemanticsTranslator._call_llm_json_batch = fake_call
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            inp = Path(tmp) / "input.epub"
+            out = Path(tmp) / "output.epub"
+            _make_epub(inp, marker)
+            job = Job(
+                id=f"d14_literary_{marker}",
+                source_filename="input.epub",
+                output_mode=OutputMode.simplified,
+                trace_id=uuid.uuid4().hex,
+                input_path=str(inp),
+                enable_translation=True,
+                target_lang="zh-CN",
+                translation_model="deepseek-v4-pro",
+                translation_quality="literary",
+                cache_policy="fresh",
+                temperature=0.2,
+                glossary={
+                    "Smith": "史密斯",
+                    "London": "伦敦",
+                    "Watson": "沃森",
+                    "Franklin": "富兰克林",
+                },
+                device=DeviceProfile.generic,
+            )
+            result = run_fast_translation_job(
+                job=job,
+                input_path=inp,
+                output_path=out,
+                progress_callback=lambda _msg: None,
+                stage_callback=lambda _stage, _msg, _elapsed=None: None,
+            )
+
+            assert out.is_file()
+            assert observed["style"] == 1
+            assert observed["polish"] > 0
+            assert observed["verify"] > 0
+            assert "十八世纪" in result.translation_stats["literary_style_guide"]
+            assert result.translation_stats["literary_polish_attempts"] > 0
+            assert result.translation_stats["literary_polish_changed"] > 0
+            assert result.translation_stats["literary_verification_attempts"] > 0
+            out_book = epub.read_epub(str(out))
+            combined = "\n".join(
+                item.get_content().decode("utf-8", errors="ignore")
+                for item in out_book.get_items()
+                if item.get_type() == 9
+            )
+            assert "史密斯与沃森、富兰克林一同前往伦敦" in combined
+    finally:
+        glossary_service.translate_glossary = old_translate_glossary
+        SemanticsTranslator._call_llm_json_batch = old_call
+
+
 if __name__ == "__main__":
     tests = [
         test_fast_translation_runner_glossary_audit,
@@ -512,6 +618,7 @@ if __name__ == "__main__":
         test_fast_translation_runner_rescues_failed_chunk_queue,
         test_fast_translation_runner_keeps_failed_chunk_after_rescue_queue_exhausted,
         test_fast_translation_runner_honors_cancel_check_before_work,
+        test_fast_translation_runner_literary_style_polish_and_verify,
     ]
     passed = 0
     for fn in tests:
