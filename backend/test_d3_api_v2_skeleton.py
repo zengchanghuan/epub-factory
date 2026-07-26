@@ -221,6 +221,30 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(detail["qa_report"]["status"], "failed")
         self.assertTrue(detail["qa_report"]["retryable"])
 
+    def test_v2_running_translation_does_not_publish_final_qa_failure(self):
+        """运行中的失败块仍会自动补译，不应提前发布最终质检失败。"""
+        job = Job(
+            id=f"d3_running_qa_{uuid.uuid4().hex[:8]}",
+            trace_id="trace_running_qa",
+            source_filename="running.epub",
+            input_path="/tmp/running.epub",
+            output_mode=OutputMode.simplified,
+            status=JobStatus.running,
+            enable_translation=True,
+            translation_stats={
+                "total_chunks": 100,
+                "translated_chunks": 80,
+                "failed_chunks": 2,
+                "audit_failed_chunks": 2,
+                "audit_flags_count": {"likely_untranslated": 1},
+            },
+        )
+
+        detail = _job_to_v2_detail(job, f"/api/v2/jobs/{job.id}/download")
+
+        self.assertEqual(detail["status"], "running")
+        self.assertIsNone(detail["qa_report"])
+
     def test_v2_qa_report_uses_current_translation_attempt(self):
         """旧 qa_report 里的尝试次数不能覆盖顶层 translation_stats 的当前尝试。"""
         job = Job(

@@ -462,6 +462,35 @@
 
   let currentJobId = null;
   let pollTimer = null;
+  let alipayPopup = null;
+
+  function openAlipayPopup(event) {
+    const link = event.target.closest('.alipay-popup-link');
+    if (!link) return;
+    event.preventDefault();
+    const width = 520;
+    const height = 720;
+    const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
+    const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
+    const popup = window.open(
+      link.href,
+      'fixepub-alipay',
+      `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    );
+    if (popup) {
+      alipayPopup = popup;
+      popup.focus();
+      return;
+    }
+    window.open(link.href, '_blank', 'noopener');
+  }
+
+  function closeAlipayPopup() {
+    if (alipayPopup && !alipayPopup.closed) alipayPopup.close();
+    alipayPopup = null;
+  }
+
+  payBox.addEventListener('click', openAlipayPopup);
 
   // ── Drag & drop ──────────────────────────────────────────────
   dropzone.addEventListener('click', () => fileInput.click());
@@ -617,10 +646,10 @@
           <h3>请完成支付宝付款</h3>
           <div class="pay-price">${escHtml(payPrice.textContent || '¥5.99')}</div>
           <div style="text-align:center; margin-top: 12px;">
-            <a href="${escHtml(data.pay_url)}" target="_self"
-               class="btn btn-primary" style="text-decoration:none;">前往支付宝付款</a>
+            <a href="${escHtml(data.pay_url)}" target="fixepub-alipay" rel="noopener"
+               class="btn btn-primary alipay-popup-link" style="text-decoration:none;">前往支付宝付款</a>
           </div>
-          <div class="qr-hint" style="margin-top:12px;">支付完成后将返回本页面，并自动检测和开始修复。</div>
+          <div class="qr-hint" style="margin-top:12px;">支付宝将在小窗口中打开；本页面会自动确认付款并开始修复。</div>
         `;
         startPolling(currentJobId);
       }
@@ -641,13 +670,16 @@
         const data = await res.json();
 
         if (data.status === 'paid') {
+          closeAlipayPopup();
           fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>支付成功，正在修复文件…</span></div>';
         } else if (data.status === 'repaired') {
           clearInterval(pollTimer);
+          closeAlipayPopup();
           payBox.classList.remove('visible');
           showDownloadReady(jobId);
         } else if (data.status === 'failed') {
           clearInterval(pollTimer);
+          closeAlipayPopup();
           fixStatus.innerHTML = `<div class="status-msg error">❌ 修复失败：${escHtml(data.error || '未知错误')}</div>`;
         }
       } catch (e) { /* 网络抖动忽略 */ }

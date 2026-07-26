@@ -8,6 +8,7 @@ Worker 使用时需配置持久化 store（DATABASE_URL），否则无法加载 
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -227,6 +228,7 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
             output_path = default_output_path
 
         last_progress_event: str | None = None
+        last_progress_recorded_at = 0.0
 
         def record_stage(
             stage_name: str,
@@ -267,11 +269,15 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
             raise_if_cancelled(is_cancelled)
 
         def on_progress(msg: str) -> None:
-            nonlocal last_progress_event
+            nonlocal last_progress_event, last_progress_recorded_at
             check_cancelled()
             update_job_status(JobStatus.running, msg)
             if msg and msg != last_progress_event:
                 last_progress_event = msg
+                now = time.monotonic()
+                if msg.startswith("快速翻译 ") and now - last_progress_recorded_at < 5.0:
+                    return
+                last_progress_recorded_at = now
                 record_stage("progress", msg)
 
         def on_stage(stage_name: str, message: str, elapsed_ms: Optional[int] = None) -> None:

@@ -1349,6 +1349,32 @@ class SemanticsTranslator:
         async def run_structured_note(idx: int, original_inner: str) -> None:
             self._raise_if_cancelled()
             prior_retry_count = max(0, int(prior_retries[idx] or 0))
+            note_soup = BeautifulSoup(original_inner or "", "html.parser")
+            has_translatable_text_node = any(
+                isinstance(node, NavigableString)
+                and getattr(getattr(node, "parent", None), "name", "") not in {"script", "style"}
+                and self._should_translate_text_node(str(node))
+                for node in note_soup.find_all(string=True)
+            )
+            if not has_translatable_text_node:
+                # 纯回跳链接、页码、短缩写或 URL 等脚注结构没有自然语言文本节点。
+                # 保持原样即是正确结果，不应消耗重试预算或被计为翻译失败。
+                self.stats.structured_note_attempts += 1
+                self.stats.structured_note_successes += 1
+                self.stats.cached_chunks += 1
+                results[idx] = SingleChunkResult(
+                    translated_html=original_inner,
+                    cached=True,
+                    model=None,
+                    base_url=None,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    latency_ms=0,
+                    error=None,
+                    retry_count=prior_retry_count,
+                )
+                report_batch_progress(1)
+                return
             if prior_retry_count >= self.chunk_retry_budget:
                 self.stats.retry_budget_exhausted_chunks += 1
                 mark_failed(

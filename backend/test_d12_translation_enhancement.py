@@ -574,6 +574,30 @@ def test_translate_many_chunks_routes_structured_note_through_text_nodes():
     assert t.stats.structured_note_successes == 1
 
 
+def test_structured_note_without_natural_language_is_preserved_without_retry():
+    """纯回跳标记和短缩写没有可翻译文本节点时，应原样保留而非耗尽重试预算。"""
+    t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+    calls = []
+    html = '<p class="footnote"><a href="chapter.xhtml#ref">cf.</a><sup>IV</sup></p>'
+
+    async def fake_call(payload, *, preferred_model=None):
+        calls.append(payload)
+        raise AssertionError("不应为无自然语言文本的脚注调用模型")
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
+
+    assert calls == []
+    assert out[0].error is None
+    assert out[0].cached is True
+    assert out[0].translated_html == '<a href="chapter.xhtml#ref">cf.</a><sup>IV</sup>'
+    assert out[0].retry_count == 0
+    assert t.stats.structured_note_attempts == 1
+    assert t.stats.structured_note_successes == 1
+    assert t.stats.retry_attempts == 0
+    assert t.stats.retry_budget_exhausted_chunks == 0
+
+
 def test_structured_note_upgrades_model_after_untranslated_response():
     """Flash 对长脚注返回原文时，应在同一预算内升级质量模型。"""
     old_values = {
@@ -908,6 +932,7 @@ def _run():
         test_translate_many_chunks_adds_retry_hint_for_untranslated_math_chunk,
         test_translate_many_chunks_rescues_formula_chunk_by_text_segments,
         test_translate_many_chunks_routes_structured_note_through_text_nodes,
+        test_structured_note_without_natural_language_is_preserved_without_retry,
         test_structured_note_upgrades_model_after_untranslated_response,
         test_structured_note_reports_exact_retry_budget_exhaustion,
         test_translate_many_chunks_honors_per_chunk_retry_budget,

@@ -53,21 +53,44 @@ test("F10-5 MOBI/AZW3 禁用翻译模式", () => {
   assert.ok(html.includes('translationRadio.disabled = !supported'), "不支持时应禁用翻译模式");
 });
 
-test("F10-6 支付宝付款在当前页面打开", () => {
+test("F10-6 支付宝付款在独立小窗口打开", () => {
   assert.ok(
-    html.includes('id="translationPayLink" href="#" target="_self"'),
-    "AI 翻译支付链接应复用当前页面"
+    html.includes('id="translationPayLink" href="#" target="fixepub-alipay"'),
+    "AI 翻译支付链接应使用命名支付窗口"
   );
   assert.ok(
-    html.includes("支付完成后将返回本页面，并自动开始任务"),
-    "主页面应说明支付完成后会返回"
+    html.includes('window.open(') && html.includes('"fixepub-alipay"'),
+    "主页面应以受控尺寸打开支付宝小窗口"
   );
   assert.ok(
-    repairHtml.includes('href="${escHtml(data.pay_url)}" target="_self"'),
-    "修复页降级支付链接应复用当前页面"
+    html.includes("closeAlipayPopup()"),
+    "主页面确认付款后应关闭支付小窗口"
   );
   assert.ok(
-    repairHtml.includes("支付完成后将返回本页面，并自动检测和开始修复"),
-    "修复页应说明支付完成后会返回"
+    repairHtml.includes('target="fixepub-alipay"') && repairHtml.includes("alipay-popup-link"),
+    "修复页支付链接也应使用命名支付小窗口"
+  );
+  assert.ok(
+    repairHtml.includes("closeAlipayPopup()"),
+    "修复页确认付款后应关闭支付小窗口"
+  );
+});
+
+test("F10-7 任务状态变化时刷新列表且仅在任务结束后显示最终质检", () => {
+  assert.ok(
+    html.includes("if (s && s !== previousJobStatus)") && html.includes("loadTaskList();"),
+    "详情状态变化后应刷新任务中心列表"
+  );
+  assert.ok(
+    html.includes('const terminalStatuses = new Set(["completed", "partial_completed", "qa_failed", "failed", "cancelled"])'),
+    "最终质检面板应限定为终态任务"
+  );
+  assert.ok(
+    html.includes("!terminalStatuses.has(data.status)"),
+    "运行中的实时失败计数不应显示为最终质检失败"
+  );
+  assert.ok(
+    html.includes("翻译结果未达到交付标准，请查看下列问题。"),
+    "最终质检摘要不应重复逐条问题明细"
   );
 });

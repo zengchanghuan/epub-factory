@@ -341,6 +341,13 @@ def _job_qa_report(job: Job) -> dict | None:
             output_path=job.output_path,
             error_code=job.error_code,
         )
+    # 运行中的失败计数仍可能被后续自动重试或最终补译消除，不能提前作为
+    # 最终质检结论返回。重译刚排队时保留 retrying 状态用于接口反馈。
+    if (
+        job.status in (JobStatus.pending_payment, JobStatus.pending, JobStatus.running)
+        and report.get("status") != "retrying"
+    ):
+        return None
     report["free_retry_count"] = int(stats.get("free_retry_count") or report.get("free_retry_count") or 0)
     report["translation_attempt"] = int(stats.get("translation_attempt") or report.get("translation_attempt") or 1)
     report["max_free_retries"] = max_free_retries()
@@ -931,6 +938,10 @@ class JsonFormatter(logging.Formatter):
         for field in ("trace_id", "job_id", "error_code", "error_message"):
             if hasattr(record, field):
                 payload[field] = getattr(record, field)
+        extra_fields = getattr(record, "_extra_fields", None)
+        if isinstance(extra_fields, dict):
+            reserved = {"ts", "level", "message", "logger"}
+            payload.update({k: v for k, v in extra_fields.items() if k not in reserved})
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
@@ -2315,6 +2326,8 @@ def _v2_job_events(job: Job | str, *, current_attempt_only: bool = False) -> lis
     if not list_stages:
         return []
     stages = list_stages(job_id)
+    if len(stages) > 300:
+        stages = stages[-300:]
     items = []
     for s in stages:
         event_time = _coerce_utc(s.finished_at or s.started_at)

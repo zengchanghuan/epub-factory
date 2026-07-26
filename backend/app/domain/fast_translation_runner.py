@@ -18,6 +18,7 @@ import os
 import subprocess
 import tempfile
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -55,7 +56,9 @@ from app.storage import job_store
 ProgressCallback = Callable[[str], None]
 StageCallback = Callable[[str, str, int | None], None]
 
-logger = logging.getLogger("epub.fast_translation")
+logger = logging.getLogger("epub_factory.fast_translation")
+_log_job_id: ContextVar[str] = ContextVar("fast_translation_job_id", default="")
+_log_trace_id: ContextVar[str] = ContextVar("fast_translation_trace_id", default="")
 
 
 def _log_stage(stage: str, latency_ms: float | None = None, **fields: Any) -> None:
@@ -68,7 +71,14 @@ def _log_stage(stage: str, latency_ms: float | None = None, **fields: Any) -> No
     if latency_ms is not None:
         extra_fields["latency_ms"] = round(latency_ms)
     extra_fields.update(fields)
-    logger.info(f"fast-translation {stage}", extra={"_extra_fields": extra_fields})
+    log_extra: dict[str, Any] = {"_extra_fields": extra_fields}
+    job_id = _log_job_id.get()
+    trace_id = _log_trace_id.get()
+    if job_id:
+        log_extra["job_id"] = job_id
+    if trace_id:
+        log_extra["trace_id"] = trace_id
+    logger.info(f"fast-translation {stage}", extra=log_extra)
 
 
 def _short_log(value: Any, limit: int = 180) -> str:
@@ -860,6 +870,8 @@ def run_fast_translation_job(
     """
     timings: list[tuple[str, float]] = []
     started_all = time.monotonic()
+    _log_job_id.set(str(getattr(job, "id", "") or ""))
+    _log_trace_id.set(str(getattr(job, "trace_id", "") or ""))
     _log_stage("start", input=str(input_path))
     raise_if_cancelled(cancel_check)
 
