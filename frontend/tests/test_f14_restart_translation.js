@@ -33,7 +33,9 @@ test("F14-2 仅取消或失败的翻译任务显示重启按钮", () => {
 
 test("F14-3 点击重启会调用 restart 接口并写入 UI 日志", () => {
   assert.ok(html.includes("function restartTranslation(jobId)"), "应有 restartTranslation 处理点击");
-  assert.ok(html.includes("/restart-translation`"), "应请求 /api/v2/jobs/{job_id}/restart-translation");
+  assert.ok(html.includes("/restart-translation?${restartParams.toString()}`"), "应请求 /api/v2/jobs/{job_id}/restart-translation");
+  assert.ok(html.includes("translation_quality:"), "重启时应传质量档位");
+  assert.ok(html.includes("cache_policy:"), "重启时应传缓存策略");
   assert.ok(html.includes("restartRequestedJobId"), "重启请求中不应被轮询重新启用按钮");
   assert.ok(html.includes("已请求重启翻译，正在重新加入队列"), "UI 日志应提示重启请求");
 });

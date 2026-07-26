@@ -51,6 +51,39 @@ def test_audit_numbers_missing():
     assert "2024" in audit.numbers_missing
 
 
+def test_audit_numbers_normalizes_fullwidth_and_dash_variants():
+    audit = audit_translation_chunk(
+        original_html="<p>The period was 1790–1797 and involved ２４ cases.</p>",
+        translated_html="<p>这一时期是1790-1797年，涉及24个案例。</p>",
+        glossary={},
+    )
+    assert "numbers_missing" not in audit.flags
+
+
+def test_audit_reconstructs_split_small_caps_for_untranslated_detection():
+    audit = audit_translation_chunk(
+        original_html="<p>C<small>URRICULUM</small> V<small>ITAE OF</small> E<small>DMUND</small> B<small>URKE</small></p>",
+        translated_html="<p>C<small>URRICULUM</small> V<small>ITAE OF</small> E<small>DMUND</small> B<small>URKE</small></p>",
+        glossary={},
+    )
+    assert audit.source_text == "CURRICULUM VITAE OF EDMUND BURKE"
+    assert audit.likely_untranslated is True
+    assert audit.risk_level == "fail"
+
+
+def test_audit_prefers_longest_glossary_phrase():
+    audit = audit_translation_chunk(
+        original_html="<p>The French Revolution changed Europe.</p>",
+        translated_html="<p>法国大革命改变了欧洲。</p>",
+        glossary={
+            "French": "弗伦奇",
+            "French Revolution": "法国大革命",
+            "Europe": "欧洲",
+        },
+    )
+    assert "glossary_terms_missing" not in audit.flags
+
+
 def test_audit_html_tag_mismatch_is_fail():
     audit = audit_translation_chunk(
         original_html="<p>This is <em>important</em>.</p>",
@@ -101,6 +134,9 @@ def _run():
         test_audit_ok_translation,
         test_audit_suspiciously_short_translation,
         test_audit_numbers_missing,
+        test_audit_numbers_normalizes_fullwidth_and_dash_variants,
+        test_audit_reconstructs_split_small_caps_for_untranslated_detection,
+        test_audit_prefers_longest_glossary_phrase,
         test_audit_html_tag_mismatch_is_fail,
         test_audit_error_like_response_is_fail,
         test_audit_glossary_terms_missing,

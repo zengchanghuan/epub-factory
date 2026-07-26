@@ -45,7 +45,8 @@ def test_faithful_translation_prompt_constraints():
     assert "政治性、宗教性、争议性内容" in prompt
     assert "不追求“信达雅”式改写" in prompt
     assert "禁止译名漂移" in prompt
-    assert "Smith → 史密斯" in prompt
+    assert "glossary 字段" in prompt
+    assert "Smith → 史密斯" not in prompt
 
 
 def test_translation_cache_can_reuse_latest_same_language_namespace():
@@ -56,6 +57,101 @@ def test_translation_cache_can_reuse_latest_same_language_namespace():
 
         assert cache.get("<p>Hello</p>", "zh-CN@new-glossary") is None
         assert cache.get_latest_compatible("<p>Hello</p>", "zh-CN") == "<p>你好</p>"
+
+
+def test_quality_cache_namespace_and_fresh_policy():
+    """缓存必须隔离质量/模型/温度，高质量 fresh 模式不得读取旧译文。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = TranslationCache(str(Path(tmp) / "cache.db"))
+        standard = SemanticsTranslator(
+            target_lang="zh-CN",
+            model="deepseek-v4-flash",
+            temperature=0.3,
+            quality_mode="standard",
+            cache_policy="reuse",
+        )
+        standard.cache = cache
+        standard._cache_set("<p>Hello</p>", "<p>你好</p>", "上一段")
+        assert standard._cache_get("<p>Hello</p>", "上一段") == "<p>你好</p>"
+
+        high = SemanticsTranslator(
+            target_lang="zh-CN",
+            model="deepseek-v4-pro",
+            temperature=0.2,
+            quality_mode="high",
+            cache_policy="fresh",
+        )
+        high.cache = cache
+        assert high._cache_lang_key != standard._cache_lang_key
+        assert high._cache_get("<p>Hello</p>", "上一段") is None
+
+
+def test_translate_many_chunks_sends_read_only_context():
+    """高质量首译应把相邻段落作为 context 发送，但不能混入待译 html。"""
+    t = SemanticsTranslator(
+        target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}",
+        quality_mode="high",
+        cache_policy="fresh",
+    )
+    seen = []
+
+    async def fake_call(payload, **_kwargs):
+        seen.extend(payload)
+        return ({0: "这是当前段落。"}, {"model": "fake", "base_url": "fake://llm"})
+
+    t._call_llm_json_batch = fake_call
+    out = asyncio.run(t.translate_many_chunks_async(
+        ["<p>This is the current paragraph.</p>"],
+        contexts=["上一段：Earlier paragraph.\n下一段：Later paragraph."],
+    ))
+    assert out[0].translated_html == "这是当前段落。"
+    assert seen[0]["context"].startswith("上一段：")
+    assert "Earlier paragraph" not in seen[0]["html"]
+
+
+def test_high_quality_semantic_review_accepts_safe_fix_and_rejects_bad_html():
+    """二次语义校对只接纳结构安全的修正。"""
+    t = SemanticsTranslator(
+        target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}",
+        model="deepseek-v4-pro",
+        quality_mode="high",
+        cache_policy="fresh",
+    )
+    from app.engine.cleaners.semantics_translator import SingleChunkResult
+    draft_results = [
+        SingleChunkResult("这是一段错误的首译。", False, "flash", "fake", 1, 1, 1, None),
+        SingleChunkResult("第二段首译。", False, "flash", "fake", 1, 1, 1, None),
+    ]
+
+    async def fake_review(payload, **kwargs):
+        assert "终审编辑" in kwargs["system_prompt"]
+        return (
+            {
+                0: "这是修正后的忠实译文。",
+                1: "<strong>破坏结构的译文</strong>",
+            },
+            {
+                "model": "deepseek-v4-pro",
+                "base_url": "fake://review",
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+            },
+        )
+
+    t._call_llm_json_batch = fake_review
+    reviewed = asyncio.run(t.review_many_chunks_async(
+        [
+            "<p>This is the corrected faithful meaning.</p>",
+            "<p>This is the second paragraph.</p>",
+        ],
+        draft_results,
+        contexts=["上一段：序言", "下一段：结语"],
+    ))
+    assert reviewed[0].translated_html == "这是修正后的忠实译文。"
+    assert reviewed[1].translated_html == "第二段首译。"
+    assert t.stats.semantic_review_attempts == 2
+    assert t.stats.semantic_review_changed == 1
+    assert t.stats.semantic_review_rejected == 1
 
 
 def test_candidate_routes_default():
@@ -962,6 +1058,9 @@ def _run():
         test_looks_like_error_response,
         test_faithful_translation_prompt_constraints,
         test_translation_cache_can_reuse_latest_same_language_namespace,
+        test_quality_cache_namespace_and_fresh_policy,
+        test_translate_many_chunks_sends_read_only_context,
+        test_high_quality_semantic_review_accepts_safe_fix_and_rejects_bad_html,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
         test_candidate_routes_with_tokenhub_provider,

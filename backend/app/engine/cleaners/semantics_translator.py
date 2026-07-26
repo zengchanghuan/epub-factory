@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 import httpx
 from app.cancellation import raise_if_cancelled
 from app.engine.chunk_extractor import should_skip_image_note_block
+from app.engine.glossary_extractor import select_relevant_glossary
 from ..translation_cache import TranslationCache
 
 
@@ -58,6 +59,9 @@ class TranslationStats:
     structured_note_attempts: int = 0
     structured_note_successes: int = 0
     retry_budget_exhausted_chunks: int = 0
+    semantic_review_attempts: int = 0
+    semantic_review_changed: int = 0
+    semantic_review_rejected: int = 0
 
     @property
     def elapsed_seconds(self) -> float:
@@ -121,6 +125,9 @@ class TranslationStats:
             "structured_note_attempts": self.structured_note_attempts,
             "structured_note_successes": self.structured_note_successes,
             "retry_budget_exhausted_chunks": self.retry_budget_exhausted_chunks,
+            "semantic_review_attempts": self.semantic_review_attempts,
+            "semantic_review_changed": self.semantic_review_changed,
+            "semantic_review_rejected": self.semantic_review_rejected,
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "last_error": self.last_error,
@@ -144,14 +151,22 @@ class SingleChunkResult:
 
 
 class SemanticsTranslator:
+    _CACHE_PROMPT_VERSION = "quality-v2"
+
     def __init__(self, target_lang="zh-CN", concurrency=5, bilingual=False,
                  glossary: dict | None = None, temperature: float | None = None,
                  model: str | None = None, quality_fallback_model: str | None = None,
-                 allow_cross_glossary_cache: bool = False):
+                 allow_cross_glossary_cache: bool = False,
+                 quality_mode: str = "standard",
+                 cache_policy: str = "reuse"):
         self.target_lang = target_lang
         self.bilingual = bilingual
         self.glossary: dict[str, str] = glossary or {}
-        self.allow_cross_glossary_cache = allow_cross_glossary_cache
+        self.quality_mode = quality_mode if quality_mode in {"standard", "high"} else "standard"
+        self.cache_policy = cache_policy if cache_policy in {"reuse", "fresh"} else "reuse"
+        self.allow_cross_glossary_cache = (
+            allow_cross_glossary_cache and self.cache_policy == "reuse"
+        )
         self.cache = TranslationCache()
         self.progress_callback = None
         self.cancel_check = None
@@ -196,7 +211,8 @@ class SemanticsTranslator:
         if temperature is not None:
             self.temperature = float(temperature)
         else:
-            self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", "1.1"))
+            default_temperature = "0.2" if self.quality_mode == "high" else "0.3"
+            self.temperature = float(os.environ.get("OPENAI_TEMPERATURE", default_temperature))
         self._clients: dict[tuple[str, str], AsyncOpenAI] = {}
         self.stats = TranslationStats()
         self.stats.quality_fallback_model = self.quality_fallback_model
@@ -368,18 +384,26 @@ class SemanticsTranslator:
 7. 返回的 JSON 必须包含输入中的每一个 id，绝对不能遗漏、合并、拆分或重排！
 8. 如果输入对象包含 html_marker_requirement 字段，它列出本段必须逐字保留的 HTML 标签占位符；translation 中必须包含这些占位符，数量、拼写和先后顺序都不能改变。
 9. 如果输入对象包含 retry_hint 字段，它只说明上一轮质检失败原因；必须按 retry_hint 修正，但仍只翻译 html 字段并只返回 translation。
-10. 如果输入对象包含 text_node_rescue=true，html 字段是从同一 HTML 段落抽出的纯文本节点；必须翻译其中自然语言，保留变量名、数学公式、编号、标点和原有前后空白语义。"""
+10. 如果输入对象包含 text_node_rescue=true，html 字段是从同一 HTML 段落抽出的纯文本节点；必须翻译其中自然语言，保留变量名、数学公式、编号、标点和原有前后空白语义。
+11. 如果输入对象包含 context 字段，它只提供书名、章节和相邻段落上下文，用于消歧、衔接语气和统一指代；只翻译 html，不得把 context 的内容补写到 translation。"""
 
         if self.glossary:
-            lines = "\n".join(f"  {src} → {dst}" for src, dst in self.glossary.items())
             prompt += (
-                "\n\n【全书共享术语对照表】（所有章节统一使用，禁止译名漂移；"
-                "遇到以下原文必须严格使用对应译名；同一原文出现多次，译名必须完全一致；"
-                "若出现表中词汇的变体或大小写差异，也应尽量使用对应译名）：\n"
-                + lines
+                "\n\n输入对象可能包含 glossary 字段，它只列出当前段落实际出现的"
+                "高置信度术语。遇到其中原文时必须严格使用对应译名，禁止译名漂移；不要把 glossary "
+                "字段本身写入 translation，也不要强行套用未列出的全书术语。"
             )
 
         return prompt
+
+    def _relevant_glossary_for_html(self, html: str) -> dict[str, str]:
+        if not self.glossary:
+            return {}
+        plain_text = BeautifulSoup(
+            str(html or ""),
+            "html.parser",
+        ).get_text("", strip=False)
+        return select_relevant_glossary(self.glossary, plain_text)
 
     @property
     def _glossary_hash(self) -> str:
@@ -393,9 +417,45 @@ class SemanticsTranslator:
 
     @property
     def _cache_lang_key(self) -> str:
-        """缓存 key 的语言维度：附带 glossary hash 实现隔离。"""
+        """精确缓存命名空间：隔离提示词、档位、模型、温度和术语表。"""
+        family = self._cache_family_key
         gh = self._glossary_hash
-        return f"{self.target_lang}@{gh}" if gh else self.target_lang
+        return f"{family}@g{gh or 'none'}"
+
+    @property
+    def _cache_family_key(self) -> str:
+        temperature = f"{self.temperature:.2f}"
+        return (
+            f"{self.target_lang}@{self._CACHE_PROMPT_VERSION}@{self.quality_mode}"
+            f"@{self.model}@t{temperature}"
+        )
+
+    def _cache_key_for_context(self, context: str | None = None) -> str:
+        if not context:
+            return self._cache_lang_key
+        import hashlib
+        context_hash = hashlib.sha1(context.encode("utf-8")).hexdigest()[:12]
+        return f"{self._cache_lang_key}@c{context_hash}"
+
+    def _cache_get(self, source_html: str, context: str | None = None) -> str | None:
+        if self.cache_policy == "fresh":
+            return None
+        cached = self.cache.get(source_html, self._cache_key_for_context(context))
+        if not cached and self.allow_cross_glossary_cache:
+            cached = self.cache.get_latest_compatible(source_html, self._cache_family_key)
+        return cached
+
+    def _cache_set(
+        self,
+        source_html: str,
+        translated_html: str,
+        context: str | None = None,
+    ) -> None:
+        self.cache.set(
+            source_html,
+            translated_html,
+            self._cache_key_for_context(context),
+        )
 
     def _extract_json_from_response(self, text: str) -> dict:
         text = text.strip()
@@ -839,10 +899,11 @@ class SemanticsTranslator:
         payload: list[dict],
         *,
         preferred_model: str | None = None,
+        system_prompt: str | None = None,
     ) -> tuple[dict[int, str], dict]:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         self._raise_if_cancelled()
-        system_prompt = self._build_system_prompt()
+        system_prompt = system_prompt or self._build_system_prompt()
         protected_payload: list[dict] = []
         protected_replacements: dict[int, dict[str, str]] = {}
         for item in payload:
@@ -854,6 +915,17 @@ class SemanticsTranslator:
                 protected_html, replacements = self._protect_inline_tags(str(item.get("html", "") or ""))
             protected_item = dict(item)
             protected_item["html"] = protected_html
+            if "draft_translation" in protected_item:
+                protected_draft, _draft_replacements = self._protect_inline_tags(
+                    str(protected_item.get("draft_translation", "") or "")
+                )
+                protected_item["draft_translation"] = protected_draft
+            if self.glossary and "glossary" not in protected_item:
+                relevant = self._relevant_glossary_for_html(
+                    str(item.get("html", "") or "")
+                )
+                if relevant:
+                    protected_item["glossary"] = relevant
             marker_requirement = self._html_marker_requirement(replacements)
             if marker_requirement:
                 protected_item["html_marker_requirement"] = marker_requirement
@@ -1006,7 +1078,7 @@ class SemanticsTranslator:
         for i in range(len(html_chunks)):
             trans = translations_map.get(i, html_chunks[i])
             results.append(trans)
-            self.cache.set(html_chunks[i], trans, self._cache_lang_key)
+            self._cache_set(html_chunks[i], trans)
             self.stats.translated_chunks += 1
             self.stats.total_chunks += 1
             
@@ -1014,7 +1086,7 @@ class SemanticsTranslator:
 
     async def _translate_html_chunk(self, html_chunk: str) -> str:
         self.stats.total_chunks += 1
-        cached = self.cache.get(html_chunk, self._cache_lang_key)
+        cached = self._cache_get(html_chunk)
         if cached:
             if (
                 not self._looks_like_error_response(cached)
@@ -1029,7 +1101,7 @@ class SemanticsTranslator:
             translations_map, _ = await self._call_llm_json_batch(payload)
         
         translated = translations_map.get(0, html_chunk)
-        self.cache.set(html_chunk, translated, self._cache_lang_key)
+        self._cache_set(html_chunk, translated)
         self.stats.translated_chunks += 1
         return translated
 
@@ -1045,7 +1117,7 @@ class SemanticsTranslator:
         # 提取 inner_html 传给大模型，防止破坏外层标签属性
         inner_html = self._extract_inner_html(html)
             
-        cached = self.cache.get(inner_html, self._cache_lang_key)
+        cached = self._cache_get(inner_html)
         if cached:
             if (
                 not self._looks_like_error_response(cached)
@@ -1085,7 +1157,7 @@ class SemanticsTranslator:
             ):
                 raise ValueError("LLM returned untranslated or invalid content")
             latency_ms = int((time.monotonic() - t0) * 1000)
-            self.cache.set(inner_html, translated, self._cache_lang_key)
+            self._cache_set(inner_html, translated)
             self.stats.translated_chunks += 1
             return SingleChunkResult(
                 translated, False,
@@ -1109,6 +1181,7 @@ class SemanticsTranslator:
         progress_label: str | None = None,
         translation_strategies: list[str] | None = None,
         prior_retry_counts: list[int] | None = None,
+        contexts: list[str] | None = None,
     ) -> list["SingleChunkResult"]:
         """
         批量翻译多个 chunk，供快速 MapReduce 链路使用。
@@ -1123,7 +1196,12 @@ class SemanticsTranslator:
         inner_html_by_index: dict[int, str] = {}
         strategies = translation_strategies or ["html"] * len(html_chunks)
         prior_retries = prior_retry_counts or [0] * len(html_chunks)
-        if len(strategies) != len(html_chunks) or len(prior_retries) != len(html_chunks):
+        chunk_contexts = contexts or [""] * len(html_chunks)
+        if (
+            len(strategies) != len(html_chunks)
+            or len(prior_retries) != len(html_chunks)
+            or len(chunk_contexts) != len(html_chunks)
+        ):
             raise ValueError("translation strategy/retry metadata length mismatch")
 
         for i, html in enumerate(html_chunks):
@@ -1137,9 +1215,7 @@ class SemanticsTranslator:
             inner_html = self._extract_inner_html(html)
             inner_html_by_index[i] = inner_html
             self.stats.total_chunks += 1
-            cached = self.cache.get(inner_html, self._cache_lang_key)
-            if not cached and self.allow_cross_glossary_cache:
-                cached = self.cache.get_latest_compatible(inner_html, self.target_lang)
+            cached = self._cache_get(inner_html, chunk_contexts[i])
             strategy = strategies[i] or "html"
             if cached:
                 if (
@@ -1262,6 +1338,8 @@ class SemanticsTranslator:
                             preferred_model,
                         ),
                     }]
+                    if chunk_contexts[idx]:
+                        retry_payload[0]["context"] = chunk_contexts[idx]
                     async with self.semaphore:
                         if preferred_model:
                             self.stats.quality_fallback_attempts += 1
@@ -1300,7 +1378,7 @@ class SemanticsTranslator:
                         continue
                     break
 
-                self.cache.set(original_inner, translated, self._cache_lang_key)
+                self._cache_set(original_inner, translated, chunk_contexts[idx])
                 self.stats.translated_chunks += 1
                 results[idx] = SingleChunkResult(
                     translated_html=translated,
@@ -1327,7 +1405,7 @@ class SemanticsTranslator:
                         preferred_model=preferred_model,
                     )
                     retry_count += max(1, int(segment_meta.get("attempts") or 1))
-                    self.cache.set(original_inner, translated, self._cache_lang_key)
+                    self._cache_set(original_inner, translated, chunk_contexts[idx])
                     self.stats.translated_chunks += 1
                     results[idx] = SingleChunkResult(
                         translated_html=translated,
@@ -1426,7 +1504,7 @@ class SemanticsTranslator:
                         self.chunk_retry_budget,
                         retry_count + max(0, int(meta.get("attempts") or 1) - 1),
                     )
-                    self.cache.set(original_inner, translated, self._cache_lang_key)
+                    self._cache_set(original_inner, translated, chunk_contexts[idx])
                     self.stats.translated_chunks += 1
                     self.stats.structured_note_successes += 1
                     results[idx] = SingleChunkResult(
@@ -1470,7 +1548,12 @@ class SemanticsTranslator:
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
             self._raise_if_cancelled()
-            payload = [{"id": local_id, "html": html} for local_id, (_, html) in enumerate(batch)]
+            payload = []
+            for local_id, (idx, html) in enumerate(batch):
+                item = {"id": local_id, "html": html}
+                if chunk_contexts[idx]:
+                    item["context"] = chunk_contexts[idx]
+                payload.append(item)
             t0 = time.monotonic()
             try:
                 async with self.semaphore:
@@ -1538,7 +1621,7 @@ class SemanticsTranslator:
                         prior_retry_count=initial_retry_count,
                     )
                     continue
-                self.cache.set(original_inner, translated, self._cache_lang_key)
+                self._cache_set(original_inner, translated, chunk_contexts[idx])
                 self.stats.translated_chunks += 1
                 results[idx] = SingleChunkResult(
                     translated_html=translated,
@@ -1577,6 +1660,123 @@ class SemanticsTranslator:
             r if r is not None else SingleChunkResult(html_chunks[i], False, None, None, 0, 0, 0, "chunk not processed")
             for i, r in enumerate(results)
         ]
+
+    async def review_many_chunks_async(
+        self,
+        source_html_chunks: list[str],
+        draft_results: list["SingleChunkResult"],
+        *,
+        contexts: list[str] | None = None,
+        progress_label: str | None = None,
+    ) -> list["SingleChunkResult"]:
+        """高质量模式二次语义校对；结构不安全的校对结果会被拒绝并保留首译。"""
+        if self.quality_mode != "high":
+            return draft_results
+        if len(source_html_chunks) != len(draft_results):
+            raise ValueError("semantic review source/result length mismatch")
+        chunk_contexts = contexts or [""] * len(source_html_chunks)
+        if len(chunk_contexts) != len(source_html_chunks):
+            raise ValueError("semantic review context length mismatch")
+
+        candidates: list[tuple[int, str, SingleChunkResult]] = []
+        for idx, (source_html, draft) in enumerate(zip(source_html_chunks, draft_results)):
+            source_text = BeautifulSoup(source_html or "", "html.parser").get_text()
+            if draft.error or not self._should_translate(source_text):
+                continue
+            candidates.append((idx, self._extract_inner_html(source_html), draft))
+        if not candidates:
+            return draft_results
+
+        review_prompt = f"""你是原版书籍译文的终审编辑。目标语言是：{self.target_lang}。
+输入是 JSON 数组，每项含 id、html（原文）、draft_translation（首译）及可选 context。
+逐项核对并只返回修正版 translation：
+1. 修复漏译、错译、否定或逻辑关系改变、数字年份遗漏、人物与术语漂移、指代错误和不自然的机器翻译。
+2. 忠实保留原文事实、立场、语气、程度和争议内容，不总结、不解释、不美化、不扩写。
+3. context 只用于消歧和上下文衔接，绝不能把相邻段落补进译文。
+4. HTML 标签占位符必须逐字保留，数量、顺序和包裹关系不得改变。
+5. 首译没有实质问题时原样返回，不要为了显示修改而改写。
+6. 严格返回 {{"results":[{{"id":0,"translation":"..."}}]}}，包含全部输入 id。"""
+
+        batches: list[list[tuple[int, str, SingleChunkResult]]] = []
+        current: list[tuple[int, str, SingleChunkResult]] = []
+        current_chars = 0
+        for candidate in candidates:
+            candidate_chars = len(candidate[1]) + len(candidate[2].translated_html)
+            if current and current_chars + candidate_chars > self.batch_max_chars:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append(candidate)
+            current_chars += candidate_chars
+        if current:
+            batches.append(current)
+
+        reviewed = list(draft_results)
+        self.stats.semantic_review_attempts += len(candidates)
+        completed = 0
+
+        async def run_review_batch(
+            batch: list[tuple[int, str, SingleChunkResult]],
+        ) -> None:
+            nonlocal completed
+            payload = []
+            for idx, source_inner, draft in batch:
+                item = {
+                    "id": idx,
+                    "html": source_inner,
+                    "draft_translation": draft.translated_html,
+                }
+                if chunk_contexts[idx]:
+                    item["context"] = chunk_contexts[idx]
+                payload.append(item)
+            try:
+                async with self.semaphore:
+                    translations, meta = await self._call_llm_json_batch(
+                        payload,
+                        preferred_model=self.quality_fallback_model or self.model,
+                        system_prompt=review_prompt,
+                    )
+            except Exception as exc:
+                self.stats.semantic_review_rejected += len(batch)
+                self._emit_progress(
+                    f"语义校对调用失败，已保留首译：{self._short_error(exc)}"
+                )
+                completed += len(batch)
+                return
+
+            count = max(1, len(batch))
+            prompt_each = int((meta.get("prompt_tokens", 0) or 0) / count)
+            completion_each = int((meta.get("completion_tokens", 0) or 0) / count)
+            for idx, source_inner, draft in batch:
+                corrected = translations.get(idx, "")
+                corrected, repaired = self._repair_inline_tags_if_safe(source_inner, corrected)
+                invalid_reason = self._invalid_translation_reason(source_inner, corrected)
+                if invalid_reason:
+                    self.stats.semantic_review_rejected += 1
+                    continue
+                if corrected != draft.translated_html:
+                    self.stats.semantic_review_changed += 1
+                self._cache_set(source_inner, corrected, chunk_contexts[idx])
+                reviewed[idx] = SingleChunkResult(
+                    translated_html=corrected,
+                    cached=False,
+                    model=meta.get("model") or draft.model,
+                    base_url=meta.get("base_url") or draft.base_url,
+                    prompt_tokens=draft.prompt_tokens + prompt_each,
+                    completion_tokens=draft.completion_tokens + completion_each,
+                    latency_ms=draft.latency_ms,
+                    error=None,
+                    retry_count=draft.retry_count,
+                    error_type=None,
+                )
+            completed += len(batch)
+            if progress_label:
+                self._emit_progress(
+                    f"{progress_label}：{completed}/{len(candidates)} 段"
+                )
+
+        await asyncio.gather(*(run_review_batch(batch) for batch in batches))
+        return reviewed
 
     def _should_translate(self, text: str) -> bool:
         if not text.strip():
@@ -1617,7 +1817,7 @@ class SemanticsTranslator:
                 cached_results: dict[int, str] = {}
                 uncached: list[tuple[int, str]] = []
                 for i, h_inner in enumerate(inner_htmls):
-                    c = self.cache.get(h_inner, self._cache_lang_key)
+                    c = self._cache_get(h_inner)
                     if c:
                         cached_results[i] = c
                         self.stats.total_chunks += 1

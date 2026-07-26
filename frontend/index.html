@@ -1473,6 +1473,35 @@
 
             <div class="model-picker">
               <div class="model-picker-head">
+                <strong>翻译质量</strong>
+                <span class="model-picker-badge">默认标准</span>
+              </div>
+              <input type="hidden" id="translationQuality" value="standard" />
+              <input type="hidden" id="cachePolicy" value="reuse" />
+              <div class="model-options">
+                <label class="model-option">
+                  <input type="radio" name="translationQualityChoice" value="standard" checked>
+                  <span class="model-option-title">
+                    <span class="model-radio-dot"></span>
+                    <strong>标准模式</strong>
+                    <span class="model-current">当前使用</span>
+                  </span>
+                  <span class="model-option-desc">Flash 首译、规则质检并复用兼容缓存，速度和成本优先。</span>
+                </label>
+                <label class="model-option">
+                  <input type="radio" name="translationQualityChoice" value="high">
+                  <span class="model-option-title">
+                    <span class="model-radio-dot"></span>
+                    <strong>高质量模式</strong>
+                    <span class="model-current">当前使用</span>
+                  </span>
+                  <span class="model-option-desc">Pro 首译、章节上下文与二次语义校对，默认不复用旧译文。</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="model-picker">
+              <div class="model-picker-head">
                 <strong>翻译模型</strong>
                 <span class="model-picker-badge">默认 Flash</span>
               </div>
@@ -1500,8 +1529,8 @@
             </div>
 
             <div class="form-group" style="margin-top: 12px;">
-              <label>Temperature <span class="hint">（可选，翻译建议 1.3，纯格式/抽取可调低）</span></label>
-              <input type="number" id="temperature" min="0" max="2" step="0.1" value="1.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
+              <label>Temperature <span class="hint">（标准 0.3，高质量 0.2；越低越稳定）</span></label>
+              <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
             </div>
 
             <div class="toggle-row">
@@ -1766,6 +1795,7 @@
     const enableTranslation = $("enableTranslation");
     const translationDetails = $("translationDetails");
     const taskModeRadios = Array.from(document.querySelectorAll('input[name="taskMode"]'));
+    const translationQualityChoices = Array.from(document.querySelectorAll('input[name="translationQualityChoice"]'));
     const translationModelChoices = Array.from(document.querySelectorAll('input[name="translationModelChoice"]'));
     const translationModeCard = $("translationModeCard");
     const statusCard = $("statusCard");
@@ -2124,7 +2154,13 @@
       restartRequestedJobId = jobId;
       restartTranslationBtn.disabled = true;
       restartTranslationBtn.textContent = "排队中...";
-      fetch(`${API}/api/v2/jobs/${jobId}/restart-translation`, {
+      const restartParams = new URLSearchParams({
+        translation_quality: $("translationQuality")?.value || "standard",
+        cache_policy: $("cachePolicy")?.value || "reuse",
+        translation_model: $("translationModel")?.value || "deepseek-v4-flash",
+        temperature: $("temperature")?.value || "0.3",
+      });
+      fetch(`${API}/api/v2/jobs/${jobId}/restart-translation?${restartParams.toString()}`, {
         method: "POST",
         headers: authHeaders(jobId),
       })
@@ -3049,6 +3085,19 @@
     taskModeRadios.forEach(radio => {
       radio.addEventListener("change", () => setTaskMode(radio.value));
     });
+    translationQualityChoices.forEach(radio => {
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        const isHigh = radio.value === "high";
+        $("translationQuality").value = isHigh ? "high" : "standard";
+        $("cachePolicy").value = isHigh ? "fresh" : "reuse";
+        $("translationModel").value = isHigh ? "deepseek-v4-pro" : "deepseek-v4-flash";
+        $("temperature").value = isHigh ? "0.2" : "0.3";
+        translationModelChoices.forEach(choice => {
+          choice.checked = choice.value === $("translationModel").value;
+        });
+      });
+    });
     translationModelChoices.forEach(radio => {
       radio.addEventListener("change", () => {
         if (radio.checked) $("translationModel").value = radio.value;
@@ -3276,6 +3325,8 @@
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
         form.append("translation_model", $("translationModel").value || "deepseek-v4-flash");
+        form.append("translation_quality", $("translationQuality").value || "standard");
+        form.append("cache_policy", $("cachePolicy").value || "reuse");
         const tempVal = parseFloat($("temperature").value);
         if (!isNaN(tempVal) && tempVal >= 0 && tempVal <= 2) form.append("temperature", tempVal);
 

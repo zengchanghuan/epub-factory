@@ -3,8 +3,8 @@ C6 测试：翻译术语表注入（RAG）
 
 测试用例：
 1.  _build_system_prompt 无术语表时不含"术语对照表"
-2.  _build_system_prompt 有术语表时含"术语对照表"
-3.  术语表中所有条目出现在 prompt 中
+2.  _build_system_prompt 有术语表时说明逐段术语注入
+3.  每段只选择实际出现的最长术语
 4.  空术语表与无术语表行为一致
 5.  mock LLM：术语表中的术语被正确使用
 6.  SemanticsTranslator 默认 glossary 为空 dict
@@ -51,8 +51,8 @@ def test_prompt_with_glossary():
         glossary={"Harry Potter": "哈利·波特", "Hermione": "赫敏"},
     )
     prompt = t._build_system_prompt()
-    assert "术语对照表" in prompt, "prompt 应含术语对照表"
-    print(f"  术语部分: {prompt[prompt.find('术语'):][:100]}")
+    assert "glossary 字段" in prompt, "prompt 应说明逐段 glossary 字段"
+    print(f"  术语部分: {prompt[prompt.find('glossary'):][:100]}")
     print("  ✅ PASS")
     return True
 
@@ -68,13 +68,12 @@ def test_all_glossary_entries_in_prompt():
         "Quidditch": "魁地奇",
     }
     t = SemanticsTranslator(target_lang="zh-CN", glossary=glossary)
-    prompt = t._build_system_prompt()
+    from app.engine.glossary_extractor import select_relevant_glossary
+    selected = select_relevant_glossary(glossary, "Hogwarts hosts Quidditch.")
+    assert selected == {"Hogwarts": "霍格沃茨", "Quidditch": "魁地奇"}
+    assert "Muggle" not in selected
 
-    for src, dst in glossary.items():
-        assert src in prompt, f"原文术语 '{src}' 未出现在 prompt 中"
-        assert dst in prompt, f"目标术语 '{dst}' 未出现在 prompt 中"
-
-    print(f"  验证了 {len(glossary)} 个术语条目")
+    print(f"  当前段落注入 {len(selected)} 个相关术语")
     print("  ✅ PASS")
     return True
 
@@ -101,11 +100,14 @@ def test_glossary_used_in_translation():
     t = SemanticsTranslator(target_lang="zh-CN", glossary=glossary)
 
     prompt = t._build_system_prompt()
-    assert "wizard" in prompt, f"prompt 应含 wizard，实际:\n{prompt[-200:]}"
-    assert "巫师" in prompt, f"prompt 应含 巫师，实际:\n{prompt[-200:]}"
-    assert "spell" in prompt, f"prompt 应含 spell"
-    assert "咒语" in prompt, f"prompt 应含 咒语"
-    print("  ✅ PASS: 术语表正确注入 prompt")
+    assert "glossary 字段" in prompt
+    assert "wizard" not in prompt and "spell" not in prompt
+    assert t._relevant_glossary_for_html("<p>The wizard cast a spell.</p>") == {
+        "wizard": "巫师",
+        "spell": "咒语",
+    }
+    assert t._relevant_glossary_for_html("<p>No magic terms here.</p>") == {}
+    print("  ✅ PASS: prompt 要求读取逐段 glossary 字段")
     return True
 
 
@@ -232,7 +234,7 @@ def test_prompt_contains_base_rules():
     prompt = t._build_system_prompt()
     assert "ja" in prompt, "prompt 应含目标语言"
     assert "HTML" in prompt, "prompt 应含 HTML 规则"
-    assert "术语对照表" in prompt, "prompt 应含术语对照表"
+    assert "glossary 字段" in prompt, "prompt 应说明逐段 glossary 字段"
     print("  ✅ PASS")
     return True
 

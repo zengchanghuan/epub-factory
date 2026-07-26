@@ -145,6 +145,10 @@ python3 -m http.server 5173
 | `enable_translation` | bool | `false` | 是否开启 AI 翻译 |
 | `target_lang` | string | `zh-CN` | 翻译目标语言 |
 | `bilingual` | bool | `false` | 双语对照模式 |
+| `translation_quality` | string | `standard` | `standard`（Flash/0.3/缓存复用）或 `high`（Pro/0.2/章节上下文+语义校对） |
+| `cache_policy` | string | 按档位 | `reuse` 或 `fresh`；高质量模式默认 `fresh` |
+| `translation_model` | string | 按档位 | `deepseek-v4-flash` 或 `deepseek-v4-pro` |
+| `temperature` | float | 按档位 | 标准模式 `0.3`，高质量模式 `0.2` |
 | `glossary_json` | string | `null` | 术语表 JSON，如 `{"Harry": "哈利"}` |
 
 ## 运行测试

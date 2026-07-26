@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable
@@ -51,7 +52,14 @@ class TranslationQualityAudit:
 
 
 def _text(html: str) -> str:
-    return BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True)
+    # 不人为在相邻内联标签间插入空格。像
+    # C<small>URRICULUM</small> 这样的排版应还原为 CURRICULUM，
+    # 否则会逃过英文残留检测并制造术语误报。
+    soup = BeautifulSoup(html or "", "html.parser")
+    for br in soup.find_all("br"):
+        br.replace_with(" ")
+    raw = soup.get_text("", strip=False)
+    return re.sub(r"\s+", " ", raw).strip()
 
 
 def _extract_inner_html(html: str) -> str:
@@ -72,7 +80,17 @@ def _tag_counter(html: str) -> Counter[str]:
 
 def _numbers(text: str) -> list[str]:
     # 覆盖 3, 3.14, 1,000, 2024-06-25, 12:30 等常见形态。
-    return re.findall(r"\d+(?:[,\.\-:/]\d+)*", text or "")
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = normalized.translate(str.maketrans({
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "：": ":",
+        "／": "/",
+        "，": ",",
+        "．": ".",
+    }))
+    return re.findall(r"\d+(?:[,\.\-:/]\d+)*", normalized)
 
 
 def _latin_words(text: str) -> list[str]:
@@ -90,12 +108,18 @@ def _cjk_char_count(text: str) -> int:
 def _likely_untranslated_english(source_text: str, translated_text: str) -> bool:
     """保守识别英文源段落在中文译文中大量原样残留的情况。"""
     source_words = _latin_words(source_text)
-    if len(source_words) < 6 or not translated_text:
+    if not translated_text:
         return False
 
     normalize = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()
-    if normalize(source_text) == normalize(translated_text):
+    if (
+        normalize(source_text) == normalize(translated_text)
+        and len(source_words) >= 2
+        and _latin_char_count(source_text) >= 12
+    ):
         return True
+    if len(source_words) < 6:
+        return False
 
     translated_words = _latin_words(translated_text)
     translated_latin = _latin_char_count(translated_text)
@@ -120,6 +144,46 @@ def _likely_untranslated_english(source_text: str, translated_text: str) -> bool
 def _set_risk(current: str, new: str) -> str:
     order = {"ok": 0, "warn": 1, "fail": 2}
     return new if order[new] > order[current] else current
+
+
+def _term_spans(term: str, text: str) -> list[tuple[int, int]]:
+    if not term or not text:
+        return []
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9\s'’.\-]*", term):
+        pattern = r"\b" + re.escape(term) + r"\b"
+        return [m.span() for m in re.finditer(pattern, text, flags=re.IGNORECASE)]
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        index = text.find(term, start)
+        if index < 0:
+            break
+        spans.append((index, index + len(term)))
+        start = index + max(1, len(term))
+    return spans
+
+
+def _relevant_glossary_terms(
+    glossary: dict[str, str],
+    source_text: str,
+) -> list[tuple[str, str]]:
+    """最长短语优先，避免 French 与 French Revolution 同时制造告警。"""
+    candidates: list[tuple[int, int, str, str]] = []
+    for src, dst in glossary.items():
+        if not src or not dst:
+            continue
+        for start, end in _term_spans(src, source_text):
+            candidates.append((start, end, src, dst))
+    candidates.sort(key=lambda item: (-(item[1] - item[0]), item[0], item[2]))
+
+    selected: list[tuple[int, int, str, str]] = []
+    for candidate in candidates:
+        start, end, _src, _dst = candidate
+        if any(start < kept_end and end > kept_start for kept_start, kept_end, *_ in selected):
+            continue
+        selected.append(candidate)
+    selected.sort(key=lambda item: item[0])
+    return [(src, dst) for _start, _end, src, dst in selected]
 
 
 def audit_translation_chunk(
@@ -161,9 +225,10 @@ def audit_translation_chunk(
         audit.flags.append("suspiciously_short_translation")
         audit.risk_level = _set_risk(audit.risk_level, "warn")
 
-    src_numbers = _numbers(source_text)
+    src_numbers = Counter(_numbers(source_text))
     if src_numbers:
-        missing = [n for n in src_numbers if n not in translated_text]
+        translated_numbers = Counter(_numbers(translated_text))
+        missing = list((src_numbers - translated_numbers).elements())
         if missing:
             audit.numbers_missing = missing
             audit.flags.append("numbers_missing")
@@ -171,10 +236,8 @@ def audit_translation_chunk(
 
     glossary = glossary or {}
     missing_terms: list[str] = []
-    for src, dst in glossary.items():
-        if not src or not dst:
-            continue
-        if src in source_text and dst not in translated_text:
+    for src, dst in _relevant_glossary_terms(glossary, source_text):
+        if dst not in translated_text:
             missing_terms.append(src)
     if missing_terms:
         audit.latin_terms_missing = missing_terms

@@ -44,6 +44,16 @@ function buildFormFields(config) {
   if (config.enableTranslation) {
     fields.target_lang = config.targetLang || "zh-CN";
     fields.bilingual = String(Boolean(config.bilingual));
+    fields.translation_quality = config.translationQuality || "standard";
+    fields.cache_policy = config.cachePolicy || (
+      fields.translation_quality === "high" ? "fresh" : "reuse"
+    );
+    fields.translation_model = config.translationModel || (
+      fields.translation_quality === "high" ? "deepseek-v4-pro" : "deepseek-v4-flash"
+    );
+    fields.temperature = String(
+      config.temperature ?? (fields.translation_quality === "high" ? 0.2 : 0.3)
+    );
     if (config.glossaryJson) {
       fields.glossary_json = config.glossaryJson;
     }
@@ -129,6 +139,7 @@ function formatJobMeta(job) {
   const device = formatDevice(job.device);
   if (job.enable_translation) {
     const parts = [`AI翻译(${job.target_lang || "zh-CN"}) / ${device}`];
+    parts.push(job.translation_quality === "high" ? "高质量" : "标准");
     if (job.bilingual) parts.push("双语并排");
     return parts.join(" · ");
   }

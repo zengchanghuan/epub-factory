@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.engine.glossary_extractor import (
     extract_candidates,
+    select_relevant_glossary,
     verify_and_fix,
     merge_glossaries,
 )
@@ -69,6 +70,7 @@ def test_honorific_high_confidence():
     assert jones is not None, "Jones 未识别"
     assert jones.confidence >= 0.7, f"Jones 置信度过低: {jones.confidence}"
     assert "honorific" in jones.kinds
+    assert jones.contexts
     print(f"✓ 称谓识别置信度: {jones.confidence}")
 
 
@@ -164,6 +166,21 @@ def test_word_boundary_no_overmatch():
     print(f"✓ 整词边界: {fixed}")
 
 
+def test_relevant_glossary_prefers_longest_phrase():
+    selected = select_relevant_glossary(
+        {
+            "French": "弗伦奇",
+            "French Revolution": "法国大革命",
+            "Edmund Burke": "埃德蒙·伯克",
+        },
+        "Edmund Burke wrote about the French Revolution.",
+    )
+    assert selected == {
+        "Edmund Burke": "埃德蒙·伯克",
+        "French Revolution": "法国大革命",
+    }
+
+
 if __name__ == "__main__":
     test_extract_basic_names()
     test_blacklist_filter()
@@ -175,4 +192,5 @@ if __name__ == "__main__":
     test_verify_unfixable_logged()
     test_merge_glossaries_user_priority()
     test_word_boundary_no_overmatch()
+    test_relevant_glossary_prefers_longest_phrase()
     print("\n所有用例通过 ✓")

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import (
-    Column, DateTime, Enum, String, Boolean, Text, create_engine, event, inspect, text
+    Column, DateTime, Enum, String, Boolean, Text, Float, create_engine, event, inspect, text
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -86,7 +86,10 @@ class JobRecord(Base):
     quality_stats_json = Column(Text, nullable=True)
     translation_stats_json = Column(Text, nullable=True)
     metrics_summary = Column(Text, nullable=True)
+    temperature = Column(Float, nullable=True)
     translation_model = Column(String(64), nullable=True)
+    translation_quality = Column(String(16), nullable=True)
+    cache_policy = Column(String(16), nullable=True)
     traditional_variant = Column(String(16), nullable=True)  # auto | tw | hk
     lexicon_domains = Column(Text, nullable=True)             # JSON 数组，如 ["general","tech"]
     enable_proper_noun = Column(Boolean, nullable=False, default=True)
@@ -204,6 +207,12 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN metrics_summary TEXT")
     if "translation_model" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_model VARCHAR(64)")
+    if "temperature" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN temperature FLOAT")
+    if "translation_quality" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_quality VARCHAR(16)")
+    if "cache_policy" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN cache_policy VARCHAR(16)")
     if "traditional_variant" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN traditional_variant VARCHAR(16)")
     if "access_token" not in columns:
@@ -309,8 +318,10 @@ def _record_to_job(r: JobRecord) -> Job:
         bilingual=r.bilingual,
         glossary=glossary,
         device=DeviceProfile(r.device),
-        temperature=None,
+        temperature=getattr(r, "temperature", None),
         translation_model=getattr(r, "translation_model", None) or "deepseek-v4-flash",
+        translation_quality=getattr(r, "translation_quality", None) or "standard",
+        cache_policy=getattr(r, "cache_policy", None) or "reuse",
         traditional_variant=getattr(r, "traditional_variant", None) or "auto",
         lexicon_domains=lexicon_domains,
         enable_proper_noun=bool(getattr(r, "enable_proper_noun", True)),
@@ -556,7 +567,10 @@ def _job_to_record(job: Job) -> JobRecord:
         quality_stats_json=json.dumps(job.quality_stats.to_dict()) if job.quality_stats else "{}",
         translation_stats_json=json.dumps(job.translation_stats or {}),
         metrics_summary=job.metrics_summary or "",
+        temperature=getattr(job, "temperature", None),
         translation_model=getattr(job, "translation_model", None) or "deepseek-v4-flash",
+        translation_quality=getattr(job, "translation_quality", None) or "standard",
+        cache_policy=getattr(job, "cache_policy", None) or "reuse",
         traditional_variant=getattr(job, "traditional_variant", None) or "auto",
         lexicon_domains=json.dumps(getattr(job, "lexicon_domains", ["general", "tech", "movie"])),
         enable_proper_noun=bool(getattr(job, "enable_proper_noun", True)),
@@ -895,6 +909,10 @@ class PersistentJobStore:
         action_label: str,
         max_free_retries: int,
         started_at: datetime,
+        translation_quality: str | None = None,
+        cache_policy: str | None = None,
+        temperature: float | None = None,
+        translation_model: str | None = None,
     ) -> tuple[Optional[Job], str]:
         """Atomically claim a terminal job and replace all per-attempt state."""
         import json
@@ -925,7 +943,7 @@ class PersistentJobStore:
                 previous,
                 attempt_id=attempt_id,
                 started_at=started_at,
-                model=record.translation_model or "",
+                model=translation_model or record.translation_model or "",
                 max_free_retries=max_free_retries,
                 action_label=action_label,
             )
@@ -941,6 +959,10 @@ class PersistentJobStore:
                     quality_stats_json="{}",
                     translation_stats_json=json.dumps(stats, ensure_ascii=False),
                     metrics_summary="",
+                    translation_quality=translation_quality or record.translation_quality or "standard",
+                    cache_policy=cache_policy or record.cache_policy or "reuse",
+                    temperature=temperature if temperature is not None else record.temperature,
+                    translation_model=translation_model or record.translation_model or "deepseek-v4-flash",
                     updated_at=started_at,
                 )
             )

@@ -34,7 +34,15 @@ _GENERIC_TERMS = {
     "All", "April", "August", "English", "First", "God", "I’d", "I’m", "I’ve",
     "March", "Most", "New", "Not", "Office", "One", "People", "September",
     "That", "There", "Western", "We’re",
+    "Country", "Day", "East", "French", "History", "Life", "Men", "North",
+    "People", "Society", "South", "West", "World",
+    "As", "Corr", "English", "If", "Letter", "Letters", "See", "Such", "Works",
+    "An", "Let", "Nothing", "Some",
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 }
+_GENERIC_TERMS_CASEFOLD = {item.casefold() for item in _GENERIC_TERMS}
 
 _NOISY_ACRONYMS = {
     "AFTER", "ALL", "AND", "BACK", "DAY", "DVD", "END", "FOR", "GOD", "III",
@@ -95,7 +103,7 @@ def filter_candidates(
         term = _normalize_candidate_term(c.term)
         if not term or term in seen:
             continue
-        if term in _GENERIC_TERMS:
+        if term.casefold() in _GENERIC_TERMS_CASEFOLD:
             continue
         if re.fullmatch(r"[A-Z]{2,8}", term):
             if term in _NOISY_ACRONYMS or term not in _ALLOWED_ACRONYMS:
@@ -105,6 +113,7 @@ def filter_candidates(
             count=c.count,
             confidence=c.confidence,
             kinds=set(c.kinds),
+            contexts=list(c.contexts),
         ))
         seen.add(term)
         if len(out) >= max_terms:

@@ -50,7 +50,12 @@ def _is_zh_target(target_lang: str | None) -> bool:
 
 
 def _text_from_tag(tag: Tag) -> str:
-    text = tag.get_text(" ", strip=True) if tag else ""
+    if not tag:
+        return ""
+    clone = BeautifulSoup(str(tag), "html.parser")
+    for br in clone.find_all("br"):
+        br.replace_with(" ")
+    text = clone.get_text("", strip=False)
     text = html.unescape(text or "")
     return re.sub(r"\s+", " ", text).strip()
 
@@ -72,10 +77,25 @@ def _cjk_char_count(text: str) -> int:
     return len(re.findall(r"[\u3400-\u9fff]", text or ""))
 
 
-def _artifact_text_residual_category(text: str) -> str:
+def _artifact_text_residual_category(text: str, block: Tag | None = None) -> str:
     words = _latin_words(text)
     latin = _latin_char_count(text)
     cjk = _cjk_char_count(text)
+    block_name = str(getattr(block, "name", "") or "").lower()
+    class_tokens = {
+        str(token).lower()
+        for token in (block.get("class") or [])
+    } if isinstance(block, Tag) else set()
+    title_like = (
+        block_name in {"h1", "h2", "h3", "h4", "h5", "h6"}
+        or any(
+            marker in token
+            for token in class_tokens
+            for marker in ("toc", "title", "heading", "head", "chapter")
+        )
+    )
+    if title_like and len(words) >= 2 and latin >= 12 and cjk == 0:
+        return "short_english_title"
     if len(words) >= 10 and latin >= 80 and cjk == 0:
         return "long_english_no_cjk"
     if len(words) >= 12 and latin >= 120 and cjk < max(6, int(latin * 0.15)):
@@ -155,7 +175,7 @@ def audit_translated_epub_output(
                         report["reference_note_blocks_skipped"] += 1
                         continue
                     report["checked_text_blocks"] += 1
-                    category = _artifact_text_residual_category(text)
+                    category = _artifact_text_residual_category(text, block)
                     if not category:
                         continue
                     report["residual_blocks"] += 1

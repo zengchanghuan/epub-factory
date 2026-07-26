@@ -122,6 +122,39 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         data = res.json()
         self.assertEqual(data.get("translation_model"), "deepseek-v4-flash")
+        self.assertEqual(data.get("translation_quality"), "standard")
+        self.assertEqual(data.get("cache_policy"), "reuse")
+        self.assertEqual(data.get("temperature"), 0.3)
+
+    def test_v2_create_high_quality_defaults_to_pro_fresh_and_low_temperature(self):
+        """高质量模式默认 Pro、全新翻译和低温度。"""
+        old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
+        os.environ["SKIP_PAYMENT_CHECK"] = "1"
+        try:
+            res = self.client.post(
+                "/api/v2/jobs",
+                files={"file": ("high_quality.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+                data={
+                    "output_mode": "simplified",
+                    "enable_translation": "true",
+                    "translation_quality": "high",
+                },
+            )
+        finally:
+            if old_skip is None:
+                os.environ.pop("SKIP_PAYMENT_CHECK", None)
+            else:
+                os.environ["SKIP_PAYMENT_CHECK"] = old_skip
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["translation_model"], "deepseek-v4-pro")
+        self.assertEqual(data["translation_quality"], "high")
+        self.assertEqual(data["cache_policy"], "fresh")
+        self.assertEqual(data["temperature"], 0.2)
+        persisted = job_store.get(data["job_id"])
+        self.assertEqual(persisted.translation_quality, "high")
+        self.assertEqual(persisted.cache_policy, "fresh")
+        self.assertEqual(persisted.temperature, 0.2)
 
     def test_v2_create_translation_rejects_unknown_model(self):
         """后端拒绝 UI 外的模型名，避免客户端绕过模型护栏。"""
@@ -508,6 +541,10 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(data["translation_stats"]["free_retry_count"], 1)
         self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
         self.assertEqual(data["qa_report"]["status"], "retrying")
+        self.assertEqual(data["translation_quality"], "high")
+        self.assertEqual(data["cache_policy"], "fresh")
+        self.assertEqual(data["translation_model"], "deepseek-v4-pro")
+        self.assertEqual(data["temperature"], 0.2)
         enqueue.assert_called_once()
 
     def test_v2_retry_translation_accepts_failed_delivery_gate_job(self):

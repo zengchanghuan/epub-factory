@@ -114,10 +114,16 @@ flowchart TD
   Body --> G
   G --> Title["书名元数据翻译"]
   Title --> Chapters["正文章节 asyncio 并发<br/>并发上限受配置与 cap 双重限制"]
-  Chapters --> Translator["SemanticsTranslator<br/>JSON batch / 缓存 / 模型路由"]
+  Chapters --> Mode{"translation_quality"}
+  Mode -->|"standard"| Translator["Flash / 0.3<br/>JSON batch + 兼容缓存"]
+  Mode -->|"high"| Context["Pro / 0.2 / fresh<br/>书名 + 前后段上下文"]
+  Context --> Translator
   Translator --> Validate["返回值、HTML 结构、漏译与术语质检"]
   Validate --> Retry["质量重试 / 模型升级<br/>文本节点救援 / chunk 重试预算"]
-  Retry --> Persist["持久化 chapter/chunk/stage/stat"]
+  Retry --> Review{"high 模式?"}
+  Review -->|"是"| Semantic["Pro 二次语义校对<br/>坏结构结果自动拒绝"]
+  Review -->|"否"| Persist["持久化 chapter/chunk/stage/stat"]
+  Semantic --> Persist
   Persist --> Rescue["章节结束后的失败 chunk 补译队列"]
   Rescue --> Gate1{"失败 chunk 交付门禁"}
   Gate1 -->|"超阈值"| Stop["停止打包<br/>PARTIAL_TRANSLATION"]
@@ -145,7 +151,10 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 
 ### 3.2 翻译执行与救援
 
-- `SemanticsTranslator` 使用 SQLite `translation_cache.db`，缓存键包含目标语言与术语表哈希。
+- `standard` 默认使用 Flash、温度 `0.3` 和 `reuse`；`high` 默认使用 Pro、温度 `0.2` 和 `fresh`。
+- 高质量模式为每段提供书名、章节文件和前后段上下文，并在首译后执行一次 Pro 语义校对；校对结果若破坏 HTML、疑似未翻译或返回错误说明，自动拒绝并保留首译。
+- `SemanticsTranslator` 使用 SQLite `translation_cache.db`。精确缓存命名空间包含目标语言、提示词版本、质量档位、模型、温度、术语表哈希和上下文哈希，避免旧提示词、低质量模型或不同上下文互相污染。
+- 术语表先清理通用词和低置信度候选，再按当前段落最长匹配，只注入实际出现的术语；不再把全书全部术语塞入每个请求。
 - 普通 chunk 走 JSON batch；解释型脚注走结构化文本节点策略。
 - 模型返回需通过空结果、错误样式、疑似未翻译、HTML 结构等检查。
 - 质量失败会按预算重试，并可升级到质量模型；整段仍失败时可降级为文本节点救援。
@@ -160,7 +169,7 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 | Chunk QA | `fast_translation_runner` | 标记 warn/fail，进入失败补译队列 |
 | 预打包失败率门禁 | `fast_translation_runner` | 失败数和失败率同时超阈值时停止打包 |
 | EPUB 结构校验 | `EpubCheck` | 标记 `EPUB_VALIDATION_FAILED`，不可交付 |
-| 成品文本审计 | `translation_qa_service` | 中文目标默认要求残留块为 0；扫描失败同样不可交付 |
+| 成品文本审计 | `translation_qa_service` | 中文目标默认要求残留块为 0；可识别被 `<small>` 等内联标签拆开的英文短标题；扫描失败同样不可交付 |
 | Attempt 原子发布 | `job_runner` | 只有通过门禁的 attempt 文件才成为下载文件 |
 
 最终成品审计会检查正文与文本型图片说明；明确排除非正文文件、媒体块和纯引用型脚注。不能把“模型调用完成”或“EPUB 成功打包”当作翻译成功。

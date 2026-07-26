@@ -15,6 +15,7 @@ import html
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -154,6 +155,8 @@ async def _translate_book_title_async(
     glossary: dict[str, str],
     temperature: float | None,
     model: str | None = None,
+    quality_mode: str = "standard",
+    cache_policy: str = "reuse",
 ) -> str:
     title = (title or "").strip()
     if not title or not any(ch.isalpha() for ch in title):
@@ -164,6 +167,8 @@ async def _translate_book_title_async(
         glossary=glossary,
         temperature=temperature,
         model=model,
+        quality_mode=quality_mode,
+        cache_policy=cache_policy,
     )
     result = await translator.translate_single_chunk_async(f"<p>{html.escape(title)}</p>")
     if result.error:
@@ -348,9 +353,12 @@ async def _translate_manifest_async(
     manifest: dict,
     content_by_file: dict[str, bytes],
     glossary: dict[str, str],
+    original_book_title: str = "",
     progress_callback: ProgressCallback,
     cancel_check: CancelCheck | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    quality_mode = getattr(job, "translation_quality", "standard") or "standard"
+    cache_policy = getattr(job, "cache_policy", "reuse") or "reuse"
     translator = SemanticsTranslator(
         target_lang=job.target_lang,
         bilingual=job.bilingual,
@@ -358,6 +366,8 @@ async def _translate_manifest_async(
         temperature=getattr(job, "temperature", None),
         model=getattr(job, "translation_model", None) or None,
         allow_cross_glossary_cache=int((job.translation_stats or {}).get("translation_attempt") or 1) > 1,
+        quality_mode=quality_mode,
+        cache_policy=cache_policy,
     )
     translator.cancel_check = cancel_check
     expected_attempt_id = attempt_id_from_stats(job.translation_stats)
@@ -639,6 +649,31 @@ async def _translate_manifest_async(
         ), expected_attempt_id=expected_attempt_id)
 
     chapter_started_at_by_id: dict[str, datetime] = {}
+    chapter_contexts_by_id: dict[str, list[str]] = {}
+
+    def _build_chapter_contexts(chapter: dict, specs: list[dict]) -> list[str]:
+        if quality_mode != "high":
+            return [""] * len(specs)
+        visible = [
+            re.sub(
+                r"\s+",
+                " ",
+                BeautifulSoup(spec.get("html") or "", "html.parser").get_text(" ", strip=True),
+            ).strip()
+            for spec in specs
+        ]
+        contexts: list[str] = []
+        for index in range(len(specs)):
+            parts = []
+            if original_book_title:
+                parts.append(f"书名：{original_book_title[:200]}")
+            parts.append(f"章节文件：{chapter.get('file_path', '')}")
+            if index > 0 and visible[index - 1]:
+                parts.append(f"上一段：{visible[index - 1][:500]}")
+            if index + 1 < len(visible) and visible[index + 1]:
+                parts.append(f"下一段：{visible[index + 1][:500]}")
+            contexts.append("\n".join(parts))
+        return contexts
 
     async def run_chapter(chapter: dict) -> list[ChunkResult]:
         async with chapter_sem:
@@ -657,12 +692,23 @@ async def _translate_manifest_async(
             ), expected_attempt_id=expected_attempt_id)
             emit_progress(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
             raise_if_cancelled(cancel_check)
+            chapter_contexts = _build_chapter_contexts(chapter, specs)
+            chapter_contexts_by_id[chapter["chapter_id"]] = chapter_contexts
 
             translated = await translator.translate_many_chunks_async(
                 [c["html"] for c in specs],
                 progress_label=f"快速翻译 {chapter['file_path']}",
                 translation_strategies=[c.get("translation_strategy") or "html" for c in specs],
+                contexts=chapter_contexts,
             )
+            if quality_mode == "high":
+                emit_progress(f"高质量语义校对 {chapter['file_path']}（{len(specs)} 段）")
+                translated = await translator.review_many_chunks_async(
+                    [c["html"] for c in specs],
+                    translated,
+                    contexts=chapter_contexts,
+                    progress_label=f"语义校对 {chapter['file_path']}",
+                )
             raise_if_cancelled(cancel_check)
             chunk_results: list[ChunkResult] = []
             chunk_statuses: list[ChunkStatus] = []
@@ -784,6 +830,11 @@ async def _translate_manifest_async(
                         progress_label=f"失败段落补译 {chapter['file_path']}",
                         translation_strategies=[spec.get("translation_strategy") or "html"],
                         prior_retry_counts=[int(getattr(old_cr, "retry_count", 0) or 0)],
+                        contexts=[(
+                            chapter_contexts_by_id.get(chapter["chapter_id"], [""] * len(chapter.get("chunks") or []))[position]
+                            if position < len(chapter_contexts_by_id.get(chapter["chapter_id"], []))
+                            else ""
+                        )],
                     )
                     res = translated[0]
                     new_cr, status, _warned, _failed_quality = _build_chunk_result(chapter, spec, res)
@@ -948,6 +999,8 @@ def run_fast_translation_job(
             glossary=glossary,
             temperature=getattr(job, "temperature", None),
             model=getattr(job, "translation_model", None) or None,
+            quality_mode=getattr(job, "translation_quality", "standard") or "standard",
+            cache_policy=getattr(job, "cache_policy", "reuse") or "reuse",
         ))
         timings.append(("BookTitle", (time.monotonic() - t) * 1000))
         _log_stage(
@@ -964,10 +1017,14 @@ def run_fast_translation_job(
             manifest=manifest,
             content_by_file=content_by_file,
             glossary=glossary,
+            original_book_title=original_book_title,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         ))
         translation_stats.update({
+            "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
+            "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
+            "temperature": getattr(job, "temperature", None),
             "glossary_stats": glossary_result.stats,
             "glossary_terms_total": len(glossary),
             "book_title_original": original_book_title,

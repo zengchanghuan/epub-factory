@@ -232,6 +232,26 @@ def test_bilingual_persisted():
     return True
 
 
+def test_translation_quality_settings_persisted():
+    """质量档位、缓存策略和温度重启进程后仍可恢复。"""
+    store = make_store()
+    job = make_job(
+        enable_translation=True,
+        translation_model="deepseek-v4-pro",
+        translation_quality="high",
+        cache_policy="fresh",
+        temperature=0.2,
+    )
+    store.add(job)
+
+    fetched = store.get(job.id)
+    assert fetched.translation_model == "deepseek-v4-pro"
+    assert fetched.translation_quality == "high"
+    assert fetched.cache_policy == "fresh"
+    assert fetched.temperature == 0.2
+    return True
+
+
 def test_storage_auto_select_memory():
     print("\n" + "=" * 60)
     print("🧪 Test 11: 环境变量未设置时使用内存 JobStore")
@@ -289,6 +309,7 @@ if __name__ == "__main__":
         test_updated_at_changes,
         test_multiple_jobs_independent,
         test_bilingual_persisted,
+        test_translation_quality_settings_persisted,
         test_storage_auto_select_memory,
         test_storage_auto_select_persistent,
     ]

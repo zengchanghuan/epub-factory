@@ -47,6 +47,15 @@ test("F10-4 AI 翻译可选择模型", () => {
   assert.ok(html.includes('form.append("translation_model", $("translationModel").value || "deepseek-v4-flash")'), "提交时应传 translation_model");
 });
 
+test("F10-4b AI 翻译可选择标准/高质量档位", () => {
+  assert.ok(html.includes('id="translationQuality" value="standard"'), "默认应为标准质量");
+  assert.ok(html.includes('name="translationQualityChoice" value="high"'), "应提供高质量模式");
+  assert.ok(html.includes('id="cachePolicy" value="reuse"'), "标准模式默认复用缓存");
+  assert.ok(html.includes('form.append("translation_quality"'), "提交时应传质量档位");
+  assert.ok(html.includes('form.append("cache_policy"'), "提交时应传缓存策略");
+  assert.ok(html.includes('$("temperature").value = isHigh ? "0.2" : "0.3"'), "档位应同步稳定温度");
+});
+
 test("F10-5 MOBI/AZW3 禁用翻译模式", () => {
   assert.ok(html.includes('isTranslationSupportedForSelectedFile'), "应有文件类型判断");
   assert.ok(html.includes('[".epub", ".pdf", ".docx", ".md", ".markdown"].includes(ext)'), "仅可翻译合适文件类型");

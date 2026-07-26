@@ -111,6 +111,10 @@ class JobStore:
         action_label: str,
         max_free_retries: int,
         started_at: datetime,
+        translation_quality: str | None = None,
+        cache_policy: str | None = None,
+        temperature: float | None = None,
+        translation_model: str | None = None,
     ) -> tuple[Optional[Job], str]:
         """Atomically validate, reset, and claim a new translation attempt."""
         with self._lock:
@@ -128,13 +132,21 @@ class JobStore:
                 previous,
                 attempt_id=attempt_id,
                 started_at=started_at,
-                model=getattr(job, "translation_model", "") or "",
+                model=translation_model or getattr(job, "translation_model", "") or "",
                 max_free_retries=max_free_retries,
                 action_label=action_label,
             )
             self._chunks = {k: c for k, c in self._chunks.items() if c.job_id != job_id}
             prefix = f"{job_id}:"
             self._chapters = {k: c for k, c in self._chapters.items() if not k.startswith(prefix)}
+            if translation_quality is not None:
+                job.translation_quality = translation_quality
+            if cache_policy is not None:
+                job.cache_policy = cache_policy
+            if temperature is not None:
+                job.temperature = temperature
+            if translation_model is not None:
+                job.translation_model = translation_model
             job.status = JobStatus.pending
             job.message = f"{action_label}已排队（第 {stats['translation_attempt']} 次尝试）"
             job.error_code = None

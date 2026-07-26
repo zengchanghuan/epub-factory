@@ -82,6 +82,7 @@ class GlossaryCandidate:
     count: int
     confidence: float = 0.0  # 0~1，>= 0.7 视为高置信度（如称谓后接的人名）
     kinds: set[str] = field(default_factory=set)  # honorific|capitalized|acronym
+    contexts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +113,7 @@ def extract_candidates(
     counter: Counter[str] = Counter()
     high_conf: set[str] = set()
     kinds_by_term: dict[str, set[str]] = {}
+    contexts_by_term: dict[str, list[str]] = {}
     sentence_initials: Counter[str] = Counter()
 
     for text in texts:
@@ -130,6 +132,7 @@ def extract_candidates(
                 counter[term] += 1
                 high_conf.add(term)
                 kinds_by_term.setdefault(term, set()).add("honorific")
+                _append_context(contexts_by_term, term, text, *m.span(1))
 
         # 连续大写词
         for m in _CAPITALIZED_RUN_RE.finditer(text):
@@ -137,6 +140,7 @@ def extract_candidates(
             if _is_valid_term(term):
                 counter[term] += 1
                 kinds_by_term.setdefault(term, set()).add("capitalized")
+                _append_context(contexts_by_term, term, text, *m.span(1))
 
         # 缩写
         for m in _ACRONYM_RE.finditer(text):
@@ -144,6 +148,7 @@ def extract_candidates(
             if len(term) >= 2 and term not in _SENTENCE_INITIAL_BLACKLIST:
                 counter[term] += 1
                 kinds_by_term.setdefault(term, set()).add("acronym")
+                _append_context(contexts_by_term, term, text, *m.span(1))
 
     stats.raw_candidates = len(counter)
 
@@ -175,6 +180,7 @@ def extract_candidates(
             count=cnt,
             confidence=confidence,
             kinds=kinds,
+            contexts=list(contexts_by_term.get(term, [])),
         ))
 
     stats.after_filter = len(filtered)
@@ -203,6 +209,25 @@ def _normalize(term: str) -> str:
     return term
 
 
+def _append_context(
+    contexts_by_term: dict[str, list[str]],
+    term: str,
+    text: str,
+    start: int,
+    end: int,
+    *,
+    limit: int = 2,
+) -> None:
+    samples = contexts_by_term.setdefault(term, [])
+    if len(samples) >= limit:
+        return
+    left = max(0, start - 80)
+    right = min(len(text), end + 80)
+    sample = re.sub(r"\s+", " ", text[left:right]).strip()
+    if sample and sample not in samples:
+        samples.append(sample)
+
+
 def _is_valid_term(term: str) -> bool:
     """基本有效性：长度、字符种类。"""
     if not term:
@@ -220,13 +245,15 @@ def _is_valid_term(term: str) -> bool:
 _GLOSSARY_SYSTEM_PROMPT = """你是一位资深的图书翻译家，专长是把专有名词翻译为符合中文出版习惯的固定译名。
 
 要求：
-1. 输入是一个英文专有名词数组（含人名、地名、机构名、缩写等）。
+1. 输入是候选术语对象数组，每项包含 term、kind 和原书 context。必须结合上下文判断它是否真是专名。
 2. 输出 JSON 对象，格式必须为：{"translations": {"原文": "译名", ...}}
 3. 翻译原则：
    - 人名采用通行的音译（如 Harry → 哈利、Smith → 史密斯）
    - 地名采用通行译法（如 London → 伦敦、Hogwarts → 霍格沃茨）
    - 同一姓氏 / 词根必须使用同一汉字（如 Smith 与 Mrs. Smith 中的 Smith 一致）
    - 缩写若有通行中文译名则译，否则保留原文（如 NASA → 美国国家航空航天局；DNA → DNA）
+   - 普通名词、形容词、国籍形容词和依语境变化的词不要收入术语表，保持原文作为值
+   - 优先保留完整短语，不要用短词覆盖更具体的长词组
    - 不确定的保留原文（不要瞎编）
 4. 严禁输出任何解释、注释或 markdown 包裹。
 """
@@ -254,8 +281,15 @@ async def translate_glossary(
     if not candidates:
         return {}
 
-    terms = [c.term for c in candidates]
-    batches = [terms[i:i + max_terms_per_call] for i in range(0, len(terms), max_terms_per_call)]
+    entries = [
+        {
+            "term": c.term,
+            "kind": sorted(c.kinds),
+            "contexts": list(c.contexts[:2]),
+        }
+        for c in candidates
+    ]
+    batches = [entries[i:i + max_terms_per_call] for i in range(0, len(entries), max_terms_per_call)]
 
     try:
         from openai import AsyncOpenAI
@@ -288,6 +322,7 @@ async def translate_glossary(
         for batch_idx, batch in enumerate(batches, start=1):
             try:
                 user_msg = json.dumps(batch, ensure_ascii=False)
+                batch_terms = {item["term"] for item in batch}
                 resp = await client.chat.completions.create(
                     model=model,
                     messages=[
@@ -310,7 +345,7 @@ async def translate_glossary(
                     for k, v in translations.items():
                         if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
                             # 只保留发生了语言变换的（避免把保留原文的也加入字典）
-                            if k.strip() != v.strip():
+                            if k.strip() in batch_terms and k.strip() != v.strip():
                                 merged[k.strip()] = v.strip()
                 logger.info(
                     "glossary llm batch ok",
@@ -325,7 +360,7 @@ async def translate_glossary(
         except Exception:
             pass
 
-    logger.info("glossary llm done", extra={"total_terms": len(terms), "translated": len(merged)})
+    logger.info("glossary llm done", extra={"total_terms": len(entries), "translated": len(merged)})
     return merged
 
 
@@ -390,12 +425,7 @@ def verify_and_fix(
     fixed = translated_html
     # 收集原文出现过哪些术语
     appearing_terms: list[tuple[str, str]] = []
-    for src, dst in glossary.items():
-        if not src or not dst:
-            continue
-        # 整词匹配（英文术语：单词边界；中文术语：直接 in）
-        if _term_in_text(src, original_html):
-            appearing_terms.append((src, dst))
+    appearing_terms.extend(select_relevant_glossary(glossary, original_html).items())
 
     if not appearing_terms:
         return translated_html, result
@@ -427,6 +457,42 @@ def _term_in_text(term: str, text: str) -> bool:
         pattern = r"\b" + re.escape(term) + r"\b"
         return bool(re.search(pattern, text))
     return term in text
+
+
+def select_relevant_glossary(
+    glossary: dict[str, str],
+    text: str,
+    *,
+    max_terms: int = 32,
+) -> dict[str, str]:
+    """只选择当前文本命中的术语，并用最长短语优先消除重叠短词。"""
+    matches: list[tuple[int, int, str, str]] = []
+    for src, dst in (glossary or {}).items():
+        if not src or not dst:
+            continue
+        if re.match(r"^[A-Za-z][\w\s'’\-\.]*$", src):
+            pattern = r"\b" + re.escape(src) + r"\b"
+            spans = [m.span() for m in re.finditer(pattern, text or "", flags=re.IGNORECASE)]
+        else:
+            spans = []
+            start = 0
+            while text and (index := text.find(src, start)) >= 0:
+                spans.append((index, index + len(src)))
+                start = index + max(1, len(src))
+        for start, end in spans:
+            matches.append((start, end, src, dst))
+
+    matches.sort(key=lambda item: (-(item[1] - item[0]), item[0], item[2]))
+    selected: list[tuple[int, int, str, str]] = []
+    for match in matches:
+        start, end, _src, _dst = match
+        if any(start < kept_end and end > kept_start for kept_start, kept_end, *_ in selected):
+            continue
+        selected.append(match)
+        if len(selected) >= max_terms:
+            break
+    selected.sort(key=lambda item: item[0])
+    return {src: dst for _start, _end, src, dst in selected}
 
 
 def _replace_term(text: str, src: str, dst: str) -> str:

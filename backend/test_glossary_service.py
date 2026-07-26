@@ -12,12 +12,28 @@ def test_filter_candidates_removes_noise_and_possessives():
         GlossaryCandidate("Prior’s", 5, 0.9, {"honorific"}),
         GlossaryCandidate("THE", 10, 0.7, {"acronym"}),
         GlossaryCandidate("CPA", 10, 0.7, {"acronym"}),
+        GlossaryCandidate("French", 12, 0.5, {"capitalized"}),
+        GlossaryCandidate("Society", 8, 0.5, {"capitalized"}),
     ]
     filtered = glossary_service.filter_candidates(candidates)
     terms = [c.term for c in filtered]
     assert "Prior" in terms
     assert "CPA" in terms
     assert "THE" not in terms
+    assert "French" not in terms
+    assert "Society" not in terms
+
+
+def test_filter_candidates_preserves_context_samples():
+    candidate = GlossaryCandidate(
+        "Edmund Burke",
+        5,
+        0.5,
+        {"capitalized"},
+        ["Edmund Burke wrote the Reflections."],
+    )
+    filtered = glossary_service.filter_candidates([candidate])
+    assert filtered[0].contexts == ["Edmund Burke wrote the Reflections."]
 
 
 def test_build_consistent_glossary_priority():
@@ -50,5 +66,7 @@ def test_build_consistent_glossary_priority():
 if __name__ == "__main__":
     test_filter_candidates_removes_noise_and_possessives()
     print("  ✅ test_filter_candidates_removes_noise_and_possessives")
+    test_filter_candidates_preserves_context_samples()
+    print("  ✅ test_filter_candidates_preserves_context_samples")
     test_build_consistent_glossary_priority()
     print("  ✅ test_build_consistent_glossary_priority")

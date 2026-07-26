@@ -204,6 +204,31 @@ class TestTranslationQaService(unittest.TestCase):
         self.assertEqual(audit["residual_categories"]["long_english_no_cjk"], 1)
         self.assertEqual(audit["samples"][0]["file"], "EPUB/text/chapter1.html")
 
+    def test_artifact_audit_catches_split_small_caps_toc_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            epub_path = Path(tmp) / "translated.epub"
+            with zipfile.ZipFile(epub_path, "w") as zf:
+                zf.writestr("mimetype", "application/epub+zip")
+                zf.writestr(
+                    "EPUB/text/frontmatter.html",
+                    """
+                    <html><body>
+                    <h2>目录</h2>
+                    <p class="tocsubhead">C<small>URRICULUM</small> V<small>ITAE OF</small> E<small>DMUND</small> B<small>URKE</small></p>
+                    </body></html>
+                    """,
+                )
+
+            audit = audit_translated_epub_output(epub_path, target_lang="zh-CN")
+
+        self.assertEqual(audit["status"], "failed")
+        self.assertEqual(audit["residual_blocks"], 1)
+        self.assertEqual(audit["residual_categories"]["short_english_title"], 1)
+        self.assertEqual(
+            audit["samples"][0]["snippet"],
+            "CURRICULUM VITAE OF EDMUND BURKE",
+        )
+
     def test_artifact_audit_ignores_non_body_but_checks_caption_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             epub_path = Path(tmp) / "translated.epub"

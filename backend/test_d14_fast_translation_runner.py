@@ -154,6 +154,100 @@ def test_translation_failure_delivery_gate():
     }) is False
 
 
+def test_fast_translation_runner_high_quality_context_and_review():
+    """高质量模式应传章节上下文、执行二次校对，并记录策略统计。"""
+    marker = uuid.uuid4().hex[:10]
+    old_translate_glossary = glossary_service.translate_glossary
+    old_call = SemanticsTranslator._call_llm_json_batch
+    observed = {"context": 0, "review": 0}
+
+    async def fake_translate_glossary(*_args, **_kwargs):
+        return {}
+
+    async def fake_call(self, payload, **kwargs):
+        is_review = "终审编辑" in str(kwargs.get("system_prompt") or "")
+        translations = {}
+        for item in payload:
+            item_id = int(item["id"])
+            source_html = str(item["html"])
+            if item.get("context"):
+                observed["context"] += 1
+            if is_review:
+                observed["review"] += 1
+                draft = str(item.get("draft_translation") or "")
+                translations[item_id] = (
+                    "这是终审修正后的正文。"
+                    if "首译正文" in draft
+                    else draft
+                )
+            elif "Annotated and Illustrated Double Helix" in source_html:
+                translations[item_id] = "注释图解版《双螺旋》"
+            elif marker in source_html:
+                translations[item_id] = "这是首译正文。"
+            elif "Chapter 1" in source_html:
+                translations[item_id] = "第一章"
+            else:
+                translations[item_id] = "已翻译"
+        return (
+            translations,
+            {
+                "model": "deepseek-v4-pro",
+                "base_url": "fake://llm",
+                "prompt_tokens": 20,
+                "completion_tokens": 30,
+            },
+        )
+
+    glossary_service.translate_glossary = fake_translate_glossary
+    SemanticsTranslator._call_llm_json_batch = fake_call
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            inp = Path(tmp) / "input.epub"
+            out = Path(tmp) / "output.epub"
+            _make_epub(inp, marker)
+            job = Job(
+                id=f"d14_high_{marker}",
+                source_filename="input.epub",
+                output_mode=OutputMode.simplified,
+                trace_id=uuid.uuid4().hex,
+                input_path=str(inp),
+                enable_translation=True,
+                target_lang="zh-CN",
+                translation_model="deepseek-v4-pro",
+                translation_quality="high",
+                cache_policy="fresh",
+                temperature=0.2,
+                device=DeviceProfile.generic,
+            )
+
+            result = run_fast_translation_job(
+                job=job,
+                input_path=inp,
+                output_path=out,
+                progress_callback=lambda _msg: None,
+                stage_callback=lambda _stage, _msg, _elapsed=None: None,
+            )
+
+            assert out.is_file()
+            assert observed["context"] > 0
+            assert observed["review"] > 0
+            assert result.translation_stats["translation_quality"] == "high"
+            assert result.translation_stats["cache_policy"] == "fresh"
+            assert result.translation_stats["temperature"] == 0.2
+            assert result.translation_stats["semantic_review_attempts"] > 0
+            assert result.translation_stats["semantic_review_changed"] > 0
+            out_book = epub.read_epub(str(out))
+            combined = "\n".join(
+                item.get_content().decode("utf-8", errors="ignore")
+                for item in out_book.get_items()
+                if item.get_type() == 9
+            )
+            assert "这是终审修正后的正文" in combined
+    finally:
+        glossary_service.translate_glossary = old_translate_glossary
+        SemanticsTranslator._call_llm_json_batch = old_call
+
+
 def test_delivery_gate_result_keeps_retryable_qa_report():
     stats = {
         "model": "deepseek-v4-flash",
@@ -413,6 +507,7 @@ if __name__ == "__main__":
     tests = [
         test_fast_translation_runner_glossary_audit,
         test_translation_failure_delivery_gate,
+        test_fast_translation_runner_high_quality_context_and_review,
         test_delivery_gate_result_keeps_retryable_qa_report,
         test_fast_translation_runner_rescues_failed_chunk_queue,
         test_fast_translation_runner_keeps_failed_chunk_after_rescue_queue_exhausted,

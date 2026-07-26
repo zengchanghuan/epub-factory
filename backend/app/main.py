@@ -85,15 +85,47 @@ TRANSLATION_MODEL_CHOICES = {
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
 }
+TRANSLATION_QUALITY_CHOICES = {"standard", "high"}
+CACHE_POLICY_CHOICES = {"reuse", "fresh"}
 DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-flash").strip()
 if DEFAULT_TRANSLATION_MODEL not in TRANSLATION_MODEL_CHOICES:
     DEFAULT_TRANSLATION_MODEL = "deepseek-v4-flash"
 
 
-def _normalize_translation_model(model: Optional[str], enable_translation: bool) -> str:
+def _normalize_translation_quality(value: Optional[str], enable_translation: bool) -> str:
+    if not enable_translation:
+        return "standard"
+    normalized = (value or "standard").strip().lower()
+    if normalized not in TRANSLATION_QUALITY_CHOICES:
+        allowed = ", ".join(sorted(TRANSLATION_QUALITY_CHOICES))
+        raise HTTPException(status_code=400, detail=f"translation_quality 仅支持：{allowed}")
+    return normalized
+
+
+def _normalize_cache_policy(
+    value: Optional[str],
+    enable_translation: bool,
+    translation_quality: str,
+) -> str:
+    if not enable_translation:
+        return "reuse"
+    normalized = (value or ("fresh" if translation_quality == "high" else "reuse")).strip().lower()
+    if normalized not in CACHE_POLICY_CHOICES:
+        allowed = ", ".join(sorted(CACHE_POLICY_CHOICES))
+        raise HTTPException(status_code=400, detail=f"cache_policy 仅支持：{allowed}")
+    return normalized
+
+
+def _normalize_translation_model(
+    model: Optional[str],
+    enable_translation: bool,
+    *,
+    translation_quality: str = "standard",
+) -> str:
     if not enable_translation:
         return ""
-    value = (model or DEFAULT_TRANSLATION_MODEL).strip()
+    default_model = "deepseek-v4-pro" if translation_quality == "high" else DEFAULT_TRANSLATION_MODEL
+    value = (model or default_model).strip()
     if value not in TRANSLATION_MODEL_CHOICES:
         allowed = ", ".join(TRANSLATION_MODEL_CHOICES)
         raise HTTPException(status_code=400, detail=f"translation_model 仅支持：{allowed}")
@@ -750,6 +782,9 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "translation_model": getattr(job, "translation_model", "") or "",
+        "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
+        "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
+        "temperature": getattr(job, "temperature", None),
         "error_code": job.error_code,
         "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
@@ -1173,6 +1208,8 @@ async def create_job_v2(
     target_lang: str = Form("zh-CN"),
     bilingual: bool = Form(False),
     translation_model: str = Form(""),
+    translation_quality: str = Form("standard"),
+    cache_policy: str = Form(""),
     glossary_json: Optional[str] = Form(None),
     device: DeviceProfile = Form(DeviceProfile.generic),
     out_trade_no: Optional[str] = Form(None),
@@ -1184,7 +1221,7 @@ async def create_job_v2(
     enable_precision_polish: bool = Form(False),         # L4 精校开关
     polish_order_no: Optional[str] = Form(None),         # AI 精校支付宝订单号（开启 L4 时必填）
 ):
-    """上传文件并创建后台任务，创建后立即返回（v2 契约）。temperature 不传时：翻译任务默认 1.3，纯格式转换不调用 LLM。"""
+    """上传文件并创建后台任务。标准模式默认 Flash/0.3/复用缓存，高质量模式默认 Pro/0.2/全新翻译。"""
     import os as _os
     import hmac as _hmac
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
@@ -1212,11 +1249,17 @@ async def create_job_v2(
         except (json.JSONDecodeError, ValueError):
             raise HTTPException(status_code=400, detail="glossary_json 格式错误，应为 JSON 对象字符串")
 
+    translation_quality = _normalize_translation_quality(translation_quality, enable_translation)
+    cache_policy = _normalize_cache_policy(cache_policy, enable_translation, translation_quality)
     if temperature is None and enable_translation:
-        temperature = 1.3
+        temperature = 0.2 if translation_quality == "high" else 0.3
     elif not enable_translation:
         temperature = None
-    translation_model = _normalize_translation_model(translation_model, enable_translation)
+    translation_model = _normalize_translation_model(
+        translation_model,
+        enable_translation,
+        translation_quality=translation_quality,
+    )
 
     # 解析 lexicon_domains
     lexicon_domains = ["general", "tech", "movie"]
@@ -1358,6 +1401,8 @@ async def create_job_v2(
         target_lang=target_lang,
         bilingual=bilingual,
         translation_model=translation_model,
+        translation_quality=translation_quality,
+        cache_policy=cache_policy,
         glossary=glossary,
         device=device,
         temperature=temperature,
@@ -1390,6 +1435,9 @@ async def create_job_v2(
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "translation_model": job.translation_model,
+        "translation_quality": job.translation_quality,
+        "cache_policy": job.cache_policy,
+        "temperature": job.temperature,
         "device": job.device.value,
         "traditional_variant": job.traditional_variant,
         "created_at": job.created_at.isoformat(),
@@ -2383,11 +2431,27 @@ def retry_translation_v2(job_id: str, request: Request, background_tasks: Backgr
         raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
     if job.error_code != ErrorCode.PARTIAL_TRANSLATION.value:
         raise HTTPException(status_code=400, detail="当前任务未处于质检失败状态")
-    return _restart_translation_job(job, background_tasks, action_label="免费重译")
+    return _restart_translation_job(
+        job,
+        background_tasks,
+        action_label="免费重译",
+        translation_quality="high",
+        cache_policy="fresh",
+        translation_model="deepseek-v4-pro",
+        temperature=0.2,
+    )
 
 
 @app.post("/api/v2/jobs/{job_id}/restart-translation")
-def restart_translation_v2(job_id: str, request: Request, background_tasks: BackgroundTasks):
+def restart_translation_v2(
+    job_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    translation_quality: Optional[str] = None,
+    cache_policy: Optional[str] = None,
+    translation_model: Optional[str] = None,
+    temperature: Optional[float] = None,
+):
     """重启翻译任务：用于取消、失败后的人工重新排队。"""
     job = job_store.get(job_id)
     if not job:
@@ -2396,10 +2460,50 @@ def restart_translation_v2(job_id: str, request: Request, background_tasks: Back
         raise HTTPException(status_code=403, detail="无权访问该任务")
     if not job.enable_translation:
         raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
-    return _restart_translation_job(job, background_tasks, action_label="重启翻译")
+    quality = _normalize_translation_quality(
+        translation_quality or getattr(job, "translation_quality", "standard"),
+        True,
+    )
+    policy = _normalize_cache_policy(
+        cache_policy or getattr(job, "cache_policy", None),
+        True,
+        quality,
+    )
+    model = _normalize_translation_model(
+        translation_model or getattr(job, "translation_model", None),
+        True,
+        translation_quality=quality,
+    )
+    resolved_temperature = (
+        temperature
+        if temperature is not None
+        else getattr(job, "temperature", None)
+    )
+    if resolved_temperature is None:
+        resolved_temperature = 0.2 if quality == "high" else 0.3
+    if not 0 <= resolved_temperature <= 2:
+        raise HTTPException(status_code=400, detail="temperature 必须在 0 到 2 之间")
+    return _restart_translation_job(
+        job,
+        background_tasks,
+        action_label="重启翻译",
+        translation_quality=quality,
+        cache_policy=policy,
+        translation_model=model,
+        temperature=resolved_temperature,
+    )
 
 
-def _restart_translation_job(job: Job, background_tasks: BackgroundTasks, action_label: str):
+def _restart_translation_job(
+    job: Job,
+    background_tasks: BackgroundTasks,
+    action_label: str,
+    *,
+    translation_quality: str | None = None,
+    cache_policy: str | None = None,
+    translation_model: str | None = None,
+    temperature: float | None = None,
+):
     if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
         raise HTTPException(status_code=400, detail="任务仍在处理中；如需重启，请先停止当前翻译。")
     if not Path(job.input_path).exists():
@@ -2416,6 +2520,10 @@ def _restart_translation_job(job: Job, background_tasks: BackgroundTasks, action
         action_label=action_label,
         max_free_retries=max_retries,
         started_at=now_utc,
+        translation_quality=translation_quality,
+        cache_policy=cache_policy,
+        temperature=temperature,
+        translation_model=translation_model,
     )
     if reason == "retry_limit":
         raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")

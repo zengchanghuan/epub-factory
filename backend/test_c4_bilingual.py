@@ -25,13 +25,18 @@ from app.models import Job, OutputMode, DeviceProfile
 # ─── 辅助：构造一个 mock 过 LLM 调用的翻译器 ─────────────────────────────────
 
 def make_translator(bilingual: bool) -> SemanticsTranslator:
-    t = SemanticsTranslator(target_lang="zh-CN", bilingual=bilingual)
-    # mock _call_llm：将 <p>...</p> 中的英文替换为中文占位
-    async def fake_llm(html_chunk: str) -> str:
-        return html_chunk.replace("Hello world", "你好世界").replace(
-            "Second paragraph", "第二段落"
-        )
-    t._call_llm = fake_llm
+    t = SemanticsTranslator(target_lang="zh-CN", bilingual=bilingual, cache_policy="fresh")
+    # mock 当前 JSON batch 接口，避免测试依赖本机历史缓存。
+    async def fake_llm(payload, **_kwargs):
+        translated = {}
+        for item in payload:
+            translated[int(item["id"])] = (
+                str(item["html"])
+                .replace("Hello world", "你好世界")
+                .replace("Second paragraph", "第二段落")
+            )
+        return translated, {"model": "fake", "base_url": "fake://llm"}
+    t._call_llm_json_batch = fake_llm
     return t
 
 
