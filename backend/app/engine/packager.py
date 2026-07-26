@@ -109,6 +109,32 @@ def _fix_missing_xml_namespaces(text: str) -> str:
     return text
 
 
+def _fix_svg_path_serialization(text: str) -> str:
+    """
+    Restore empty SVG path elements that ebooklib's HTML parser nests.
+
+    An original sequence of ``<svg:path .../>`` can otherwise become multiple
+    opening path tags followed by closing tags at the end of the SVG. The XML
+    remains well-formed, but readers render the graphic as a blank page.
+    """
+    if not re.search(r"</(?:svg:)?path\s*>", text, flags=re.IGNORECASE):
+        return text
+
+    def close_path(match: re.Match) -> str:
+        tag = match.group(0)
+        if tag.rstrip().endswith("/>"):
+            return tag
+        return tag[:-1].rstrip() + "/>"
+
+    text = re.sub(
+        r"<(?:svg:)?path\b[^>]*>",
+        close_path,
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"</(?:svg:)?path\s*>", "", text, flags=re.IGNORECASE)
+
+
 class EpubPackager:
     def __init__(self, book, output_path):
         self.book = book
@@ -182,6 +208,7 @@ class EpubPackager:
 
                 if "<svg" in content.lower() or "<image" in content.lower():
                     content = _fix_svg_attributes(content)
+                    content = _fix_svg_path_serialization(content)
                 content = _fix_missing_xml_namespaces(content)
 
                 # Fix 2: ebooklib 清空了 <head>，补回 <title>

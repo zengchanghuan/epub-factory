@@ -201,7 +201,7 @@ def test_packager_restores_svg_namespace_in_html_cover():
         cover.write_text(
             """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml"><head/>
-<body><svg:svg><svg:path d="M0 0"/></svg:svg></body></html>""",
+<body><svg:svg><svg:path d="M0 0"><svg:path d="M1 1"></svg:path></svg:path></svg:svg></body></html>""",
             encoding="utf-8",
         )
 
@@ -214,6 +214,9 @@ def test_packager_restores_svg_namespace_in_html_cover():
             repaired = zf.read("EPUB/cover.html").decode("utf-8")
         assert 'xmlns:svg="http://www.w3.org/2000/svg"' in repaired
         assert "<head><title>cover</title></head>" in repaired
+        assert repaired.count("<svg:path") == 2
+        assert repaired.count("<svg:path") == repaired.count("/>")
+        assert "</svg:path>" not in repaired
 
 
 def test_packager_adds_required_epub3_navigation():
