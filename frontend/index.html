@@ -2093,6 +2093,16 @@
           pollJobV2(jobId);
         })
         .catch(err => {
+          if (/任务仍在处理中|已被其他请求重启/.test(err.message || "")) {
+            hideQaReport();
+            setStatus("running", "重译任务已在运行，请勿重复提交");
+            appendProgressLog("重译任务已在运行，请勿重复提交");
+            startJobTimer();
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(() => pollJobV2(jobId), 2000);
+            pollJobV2(jobId);
+            return;
+          }
           retryTranslationBtn.disabled = false;
           retryTranslationBtn.textContent = "重新翻译";
           errorMsg.textContent = err.message;
