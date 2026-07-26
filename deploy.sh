@@ -80,6 +80,12 @@ ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
     echo "Installing calibre for format conversion..."
     sudo apt-get update && sudo apt-get install -y calibre
   fi
+
+  # EPUBCheck 需要 Java；缺失时所有新成品都会被保守判定为校验失败。
+  if ! command -v java &> /dev/null; then
+    echo "Installing Java runtime for EPUBCheck..."
+    sudo apt-get update && sudo apt-get install -y default-jre-headless
+  fi
   
   cd "$PROJECT_NAME/backend"
   if [ ! -d ".venv" ]; then
