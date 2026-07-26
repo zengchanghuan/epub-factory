@@ -1018,6 +1018,7 @@ def run_fast_translation_job(
             make_get_chapter_content(job.id),
             book_title=translated_book_title if translated_book_title != original_book_title else None,
             original_book_title=original_book_title,
+            target_lang=job.target_lang,
         )
         timings.append(("ReducePackage", (time.monotonic() - t) * 1000))
         _log_stage("reducing", timings[-1][1])

@@ -21,6 +21,7 @@ from app.domain.book_reduce_service import (
     reduce_and_package,
 )
 from app.engine.packager import EpubPackager
+from app.engine.toc_rebuilder import TocRebuilder
 
 
 def test_set_and_get_chapter_output():
@@ -191,6 +192,81 @@ def test_packager_syncs_stale_serialized_toc_files():
         assert "Chapter 1" not in (oebps / "toc.ncx").read_text(encoding="utf-8")
 
 
+def test_toc_rebuilder_preserves_existing_hierarchy_and_localizes_titles():
+    """已有目录必须保留层级和 href，只更新高置信度译名。"""
+    book = epub.EpubBook()
+    chapter = epub.EpubHtml(title="Chapter", file_name="chapter.xhtml", lang="zh-CN")
+    chapter.content = '<html><body><h1 id="c1">第一章</h1></body></html>'
+    notes = epub.EpubHtml(title="Notes", file_name="notes.xhtml", lang="zh-CN")
+    notes.content = '<html><body><p id="n9">脚注内容</p></body></html>'
+    book.add_item(chapter)
+    book.add_item(notes)
+    book.toc = (
+        epub.Link("chapter.xhtml#c1", "Chapter 1", "c1"),
+        (
+            epub.Section("Footnotes", "notes.xhtml"),
+            [epub.Link("notes.xhtml#n9", "Page 9", "n9")],
+        ),
+    )
+
+    rebuilt = TocRebuilder().rebuild(book)
+
+    assert len(rebuilt.toc) == 2
+    assert rebuilt.toc[0].title == "第一章"
+    assert rebuilt.toc[0].href == "chapter.xhtml#c1"
+    section, children = rebuilt.toc[1]
+    assert section.title == "脚注"
+    assert section.href == "notes.xhtml"
+    assert children[0].title == "第9页"
+    assert children[0].href == "notes.xhtml#n9"
+
+
+def test_toc_rebuilder_does_not_localize_common_titles_for_non_chinese_target():
+    """非中文目标语言不能因正文偶有中文而把通用目录名改成中文。"""
+    book = epub.EpubBook()
+    chapter = epub.EpubHtml(title="Introduction", file_name="chapter.xhtml", lang="en")
+    chapter.content = '<html><body><h1 id="c1">Introduction 中文引文</h1></body></html>'
+    book.add_item(chapter)
+    book.toc = (epub.Link("chapter.xhtml#c1", "Introduction", "c1"),)
+
+    rebuilt = TocRebuilder().rebuild(book, target_lang="fr")
+
+    assert rebuilt.toc[0].title == "Introduction 中文引文"
+
+
+def test_packager_prefers_fragment_specific_toc_titles():
+    """同一文件的多个锚点不能都被最后一个标题覆盖。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "nav.xhtml").write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><ol>
+<li><a href="chapter.xhtml#one">Old one</a></li>
+<li><a href="chapter.xhtml#two">Old two</a></li>
+</ol></nav></body></html>""",
+            encoding="utf-8",
+        )
+        (root / "toc.ncx").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+<navPoint id="one"><navLabel><text>Old one</text></navLabel><content src="chapter.xhtml#one"/></navPoint>
+<navPoint id="two"><navLabel><text>Old two</text></navLabel><content src="chapter.xhtml#two"/></navPoint>
+</navMap></ncx>""",
+            encoding="utf-8",
+        )
+        book = epub.EpubBook()
+        book.toc = (
+            epub.Link("chapter.xhtml#one", "第一节", "one"),
+            epub.Link("chapter.xhtml#two", "第二节", "two"),
+        )
+
+        assert EpubPackager(book, root / "out.epub")._sync_serialized_toc_files(root) is True
+        nav = (root / "nav.xhtml").read_text(encoding="utf-8")
+        ncx = (root / "toc.ncx").read_text(encoding="utf-8")
+        assert "第一节" in nav and "第二节" in nav
+        assert "第一节" in ncx and "第二节" in ncx
+
+
 def test_packager_restores_svg_namespace_in_html_cover():
     """ebooklib 丢失 SVG 命名空间时，.html 封面也必须在后处理中修复。"""
     with tempfile.TemporaryDirectory() as tmp:
@@ -217,6 +293,32 @@ def test_packager_restores_svg_namespace_in_html_cover():
         assert repaired.count("<svg:path") == 2
         assert repaired.count("<svg:path") == repaired.count("/>")
         assert "</svg:path>" not in repaired
+
+
+def test_packager_restores_default_namespace_for_unprefixed_svg():
+    """二次序列化后的 <svg>/<path> 也必须回到 SVG 命名空间。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "mimetype").write_text("application/epub+zip", encoding="utf-8")
+        cover = root / "EPUB" / "cover.xhtml"
+        cover.parent.mkdir()
+        cover.write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head/>
+<body><svg><path d="M0 0"><path d="M1 1"></path></path></svg></body></html>""",
+            encoding="utf-8",
+        )
+        output = root / "out.epub"
+        packager = EpubPackager(epub.EpubBook(), output)
+        packager._repack(root)
+        packager._post_fix()
+
+        with zipfile.ZipFile(output) as zf:
+            repaired = zf.read("EPUB/cover.xhtml").decode("utf-8")
+        assert '<svg xmlns="http://www.w3.org/2000/svg">' in repaired
+        assert repaired.count("<path") == 2
+        assert repaired.count("<path") == repaired.count("/>")
+        assert "</path>" not in repaired
 
 
 def test_packager_adds_required_epub3_navigation():
@@ -253,7 +355,11 @@ def _run():
         test_reduce_and_package_overrides_chapter,
         test_reduce_and_package_syncs_translated_toc_files,
         test_packager_syncs_stale_serialized_toc_files,
+        test_toc_rebuilder_preserves_existing_hierarchy_and_localizes_titles,
+        test_toc_rebuilder_does_not_localize_common_titles_for_non_chinese_target,
+        test_packager_prefers_fragment_specific_toc_titles,
         test_packager_restores_svg_namespace_in_html_cover,
+        test_packager_restores_default_namespace_for_unprefixed_svg,
         test_packager_adds_required_epub3_navigation,
     ]
     passed = 0

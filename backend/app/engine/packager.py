@@ -85,6 +85,14 @@ def _fix_svg_attributes(text: str) -> str:
 
 def _fix_missing_xml_namespaces(text: str) -> str:
     """Restore namespace declarations dropped by ebooklib serialization."""
+    if re.search(r"<svg(?=[\s>])", text, flags=re.IGNORECASE):
+        text = re.sub(
+            r"<svg(?![^>]*\bxmlns\s*=)(?=[\s>])",
+            '<svg xmlns="http://www.w3.org/2000/svg"',
+            text,
+            flags=re.IGNORECASE,
+        )
+
     for prefix, uri in XML_NAMESPACE_URIS.items():
         if not re.search(rf"(?:<|\s){re.escape(prefix)}:", text, flags=re.IGNORECASE):
             continue
@@ -307,7 +315,8 @@ class EpubPackager:
 
         href_path, fragment = urldefrag(unquote(href))
         normalized = cls._normalized_href_key(href)
-        candidates = [normalized]
+        candidates = [f"{normalized}#{fragment}"] if fragment else []
+        candidates.append(normalized)
         if fragment:
             candidates.append(cls._normalized_href_key(href_path))
 
@@ -325,15 +334,23 @@ class EpubPackager:
         return list(dict.fromkeys(candidates))
 
     def _toc_title_map(self) -> dict[str, str]:
-        title_map: dict[str, str] = {}
+        title_candidates: dict[str, list[str]] = {}
         for href, title in self._flatten_toc(getattr(self.book, "toc", [])):
             text = str(title or "").strip()
             if not text:
                 continue
-            title_map[self._normalized_href_key(href)] = text
             path, fragment = urldefrag(unquote(href or ""))
+            path_key = self._normalized_href_key(path)
+            exact_key = f"{path_key}#{fragment}" if fragment else path_key
+            title_candidates.setdefault(exact_key, []).append(text)
             if fragment:
-                title_map[f"{self._normalized_href_key(path)}#{fragment}"] = text
+                title_candidates.setdefault(path_key, []).append(text)
+
+        title_map: dict[str, str] = {}
+        for key, titles in title_candidates.items():
+            unique = list(dict.fromkeys(titles))
+            if len(unique) == 1:
+                title_map[key] = unique[0]
         return title_map
 
     def _sync_serialized_toc_files(self, temp_dir: Path) -> bool:
