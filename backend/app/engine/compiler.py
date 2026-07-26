@@ -52,7 +52,7 @@ class PipelineMetrics:
 
 EPUBCHECK_JAR = os.environ.get(
     "EPUBCHECK_JAR",
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "tools", "epubcheck-5.1.0", "epubcheck.jar")
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "tools", "epubcheck-5.1.0", "epubcheck.jar")
 )
 
 

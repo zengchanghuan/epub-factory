@@ -191,6 +191,56 @@ def test_packager_syncs_stale_serialized_toc_files():
         assert "Chapter 1" not in (oebps / "toc.ncx").read_text(encoding="utf-8")
 
 
+def test_packager_restores_svg_namespace_in_html_cover():
+    """ebooklib 丢失 SVG 命名空间时，.html 封面也必须在后处理中修复。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "mimetype").write_text("application/epub+zip", encoding="utf-8")
+        cover = root / "EPUB" / "cover.html"
+        cover.parent.mkdir()
+        cover.write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head/>
+<body><svg:svg><svg:path d="M0 0"/></svg:svg></body></html>""",
+            encoding="utf-8",
+        )
+
+        output = root / "out.epub"
+        packager = EpubPackager(epub.EpubBook(), output)
+        packager._repack(root)
+        packager._post_fix()
+
+        with zipfile.ZipFile(output) as zf:
+            repaired = zf.read("EPUB/cover.html").decode("utf-8")
+        assert 'xmlns:svg="http://www.w3.org/2000/svg"' in repaired
+        assert "<head><title>cover</title></head>" in repaired
+
+
+def test_packager_adds_required_epub3_navigation():
+    """ebooklib 固定输出 EPUB 3，缺少 nav 文件时必须自动补齐。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        output = root / "out.epub"
+        book = epub.EpubBook()
+        book.set_identifier("d9-nav")
+        book.set_title("D9 Nav")
+        book.set_language("en")
+        chapter = epub.EpubHtml(title="Chapter", file_name="chapter.xhtml", lang="en")
+        chapter.content = "<html><body><h1>Chapter</h1></body></html>"
+        book.add_item(chapter)
+        book.add_item(epub.EpubNcx())
+        book.spine.append(chapter)
+        book.toc = (epub.Link("chapter.xhtml", "Chapter", "chapter"),)
+
+        assert EpubPackager(book, output).save() is True
+
+        with zipfile.ZipFile(output) as zf:
+            opf_name = next(name for name in zf.namelist() if name.endswith(".opf"))
+            opf = zf.read(opf_name).decode("utf-8")
+            assert any(name.endswith("nav.xhtml") for name in zf.namelist())
+        assert 'properties="nav"' in opf
+
+
 def _run():
     cases = [
         test_set_and_get_chapter_output,
@@ -200,6 +250,8 @@ def _run():
         test_reduce_and_package_overrides_chapter,
         test_reduce_and_package_syncs_translated_toc_files,
         test_packager_syncs_stale_serialized_toc_files,
+        test_packager_restores_svg_namespace_in_html_cover,
+        test_packager_adds_required_epub3_navigation,
     ]
     passed = 0
     for fn in cases:

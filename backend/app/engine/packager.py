@@ -67,6 +67,11 @@ SVG_CASE_FIXES = {
     'zoomandpan': 'zoomAndPan',
 }
 
+XML_NAMESPACE_URIS = {
+    "svg": "http://www.w3.org/2000/svg",
+    "xlink": "http://www.w3.org/1999/xlink",
+}
+
 
 def _fix_svg_attributes(text: str) -> str:
     for wrong, correct in SVG_CASE_FIXES.items():
@@ -78,6 +83,32 @@ def _fix_svg_attributes(text: str) -> str:
     return text
 
 
+def _fix_missing_xml_namespaces(text: str) -> str:
+    """Restore namespace declarations dropped by ebooklib serialization."""
+    for prefix, uri in XML_NAMESPACE_URIS.items():
+        if not re.search(rf"(?:<|\s){re.escape(prefix)}:", text, flags=re.IGNORECASE):
+            continue
+        if re.search(rf"\bxmlns:{re.escape(prefix)}\s*=", text, flags=re.IGNORECASE):
+            continue
+
+        text, replacements = re.subn(
+            r"<html(?=[\s>])",
+            f'<html xmlns:{prefix}="{uri}"',
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if replacements == 0:
+            text = re.sub(
+                r"<svg:svg(?=[\s>])",
+                f'<svg:svg xmlns:{prefix}="{uri}"',
+                text,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+    return text
+
+
 class EpubPackager:
     def __init__(self, book, output_path):
         self.book = book
@@ -86,12 +117,22 @@ class EpubPackager:
     def save(self):
         try:
             self._fix_toc_uids(self.book)
+            self._ensure_epub3_navigation(self.book)
             epub.write_epub(self.output_path, self.book, {})
             self._post_fix()
             return True
         except Exception as e:
             print(f"Package Error: {e}")
             return False
+
+    @staticmethod
+    def _ensure_epub3_navigation(book) -> None:
+        """ebooklib always writes EPUB 3, which requires exactly one nav item."""
+        nav_items = [item for item in book.get_items() if isinstance(item, epub.EpubNav)]
+        if nav_items:
+            return
+        book.add_item(epub.EpubNav())
+        print("🔧 [PackageFix] Added missing EPUB 3 nav document")
 
     @staticmethod
     def _fix_toc_uids(book) -> None:
@@ -128,20 +169,27 @@ class EpubPackager:
             if self._sync_serialized_toc_files(temp_dir):
                 fixes_applied.append("toc files")
 
-            # Fix 1: SVG 大小写敏感属性
-            for xhtml_path in temp_dir.rglob("*.xhtml"):
+            document_paths = [
+                path
+                for path in temp_dir.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".xhtml", ".html", ".htm"}
+            ]
+
+            # Fix 1: SVG 大小写敏感属性与 ebooklib 丢失的命名空间
+            for xhtml_path in document_paths:
                 content = xhtml_path.read_text(encoding="utf-8", errors="ignore")
                 original = content
 
-                if '<svg' in content.lower() or '<image' in content.lower():
+                if "<svg" in content.lower() or "<image" in content.lower():
                     content = _fix_svg_attributes(content)
+                content = _fix_missing_xml_namespaces(content)
 
                 # Fix 2: ebooklib 清空了 <head>，补回 <title>
-                if '<head/>' in content:
-                    fname = xhtml_path.stem.replace('_', ' ')
+                if "<head/>" in content:
+                    fname = xhtml_path.stem.replace("_", " ")
                     content = content.replace(
-                        '<head/>',
-                        f'<head><title>{fname}</title></head>'
+                        "<head/>",
+                        f"<head><title>{fname}</title></head>",
                     )
 
                 if content != original:
@@ -165,9 +213,9 @@ class EpubPackager:
 
                 # 3b: 在含有 SVG 的 item 上声明 properties="svg"
                 svg_files = set()
-                for xhtml_path in temp_dir.rglob("*.xhtml"):
+                for xhtml_path in document_paths:
                     xhtml_content = xhtml_path.read_text(encoding="utf-8", errors="ignore")
-                    if '<svg' in xhtml_content.lower():
+                    if "<svg" in xhtml_content.lower():
                         svg_files.add(xhtml_path.name)
 
                 for svg_file in svg_files:
