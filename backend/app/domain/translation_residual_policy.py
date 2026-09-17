@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
+from urllib.parse import urlsplit
 
 
 def normalize_text(text: str) -> str:
@@ -17,10 +18,26 @@ def confirmed_preserved_terms(glossary: dict | None) -> list[str]:
             if str(source).strip() and normalize_text(str(source)) == normalize_text(str(target))]
 
 
+def is_preserved_reference(text: str) -> bool:
+    """Only a complete URL/DOI is exempt; surrounding prose is not."""
+    value = unicodedata.normalize("NFKC", text or "").strip()
+    if re.fullmatch(r"(?:doi:\s*)?10\.\d{4,9}/[^\s<>\"\u201c\u201d]+", value, re.I):
+        return True
+    if not re.fullmatch(r"(?:https?://|www\.)[^\s<>\"\u201c\u201d]+", value, re.I):
+        return False
+    try:
+        parsed = urlsplit(value if "://" in value else "https://" + value)
+        return bool(parsed.hostname and not parsed.username and not parsed.password
+                    and parsed.scheme.lower() in {"http", "https"})
+    except ValueError:
+        return False
+
+
 def residual_category(text: str, *, source_text: str | None = None,
                       title_like: bool = False, preserved_terms: Iterable[str] = ()) -> str:
     normalized = normalize_text(text)
-    if not normalized or normalized in {normalize_text(term) for term in preserved_terms}:
+    if (not normalized or is_preserved_reference(text)
+            or normalized in {normalize_text(term) for term in preserved_terms}):
         return ""
     latin = sum("LATIN" in unicodedata.name(ch, "") for ch in text)
     words = [word for word in re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text)

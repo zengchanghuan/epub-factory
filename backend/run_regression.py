@@ -37,6 +37,7 @@ D_SUITE = [
     "test_d20_checkout_webhook.py",
     "test_d22_release_continuity.py",
     "test_d23_flash_alias.py",
+    "test_d24_delivery_policy.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

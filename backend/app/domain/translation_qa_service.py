@@ -35,14 +35,17 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
+QA_RULES_VERSION = "20260917-references-delivery-v1"
+
 
 def max_free_retries() -> int:
     return int(os.environ.get("EPUB_TRANSLATION_MAX_FREE_RETRIES", "-1"))
 
 
 def _flag(report: dict[str, Any], code: str, message: str) -> None:
-    if code not in report["flags"]:
-        report["flags"].append(code)
+    if code in report["flags"]:
+        return
+    report["flags"].append(code)
     report["checks"].append({"code": code, "message": message})
 
 
@@ -118,6 +121,7 @@ def audit_translated_epub_output(
 ) -> dict[str, Any]:
     """Scan final EPUB text for obvious untranslated body blocks before delivery."""
     report: dict[str, Any] = {
+        "rules_version": QA_RULES_VERSION,
         "status": "passed",
         "target_lang": target_lang or "",
         "html_files": 0,
@@ -229,8 +233,13 @@ def build_translation_qa_report(
     artifact_audit = stats.get("artifact_audit") if isinstance(stats.get("artifact_audit"), dict) else {}
 
     report: dict[str, Any] = {
+        "rules_version": QA_RULES_VERSION,
         "status": "passed",
         "score": 100,
+        "delivery_status": "pending",
+        "can_deliver": False,
+        "review_chunks": audit_warn,
+        "categories_may_overlap": True,
         "summary": "翻译质检通过",
         "flags": [],
         "checks": [],
@@ -241,7 +250,7 @@ def build_translation_qa_report(
     }
 
     if error_code == "TRANSLATION_PROVIDER_UNAVAILABLE" or stats.get("provider_blocked"):
-        report.update(status="blocked", score=None,
+        report.update(status="blocked", delivery_status="blocked", score=None,
                       retryable=(report["max_free_retries"] < 0
                                  or report["free_retry_count"] < report["max_free_retries"]),
                       summary=stats.get("last_error") or "模型服务暂不可用，译文缓存已保留")
@@ -283,6 +292,7 @@ def build_translation_qa_report(
     report["score"] = max(0, int(report["score"]))
     if report["flags"]:
         report["status"] = "failed"
+        report["delivery_status"] = "failed"
         report["retryable"] = (
             report["max_free_retries"] < 0
             or report["free_retry_count"] < report["max_free_retries"]
@@ -291,6 +301,11 @@ def build_translation_qa_report(
     elif audit_warn:
         report["status"] = "warning"
         report["summary"] = f"{audit_warn} 个段落建议复核"
+
+    if (report["status"] not in {"failed", "blocked"}
+            and artifact_audit.get("status") in {"passed", "skipped"}
+            and output_path and Path(output_path).is_file()):
+        report.update(delivery_status="passed", can_deliver=True)
 
     return report
 

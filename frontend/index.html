@@ -2335,15 +2335,18 @@
         !qaReport
         || !report
         || !terminalStatuses.has(data.status)
-        || (!["failed", "blocked"].includes(report.status) && data.status !== "qa_failed")
+        || (!["failed", "blocked", "warning"].includes(report.status) && data.status !== "qa_failed")
       ) {
         hideQaReport();
         return;
       }
       const checks = Array.isArray(report.checks) ? report.checks : [];
       const providerBlocked = report.status === "blocked";
-      $("qaTitle").textContent = providerBlocked ? "翻译因模型服务问题暂停" : "翻译质检未通过";
-      $("qaSummary").textContent = providerBlocked ? report.summary : checks.length
+      const reviewOnly = report.status === "warning";
+      $("qaTitle").textContent = providerBlocked ? "翻译因模型服务问题暂停" : reviewOnly ? "译本可下载，建议复核" : "翻译质检未通过";
+      $("qaSummary").textContent = reviewOnly
+        ? `${report.summary || "部分段落建议复核"}。规则告警不等同于已确认的翻译错误。`
+        : providerBlocked ? report.summary : checks.length
         ? "翻译结果未达到交付标准，请查看下列问题。"
         : (report.summary || "翻译结果未通过交付质检");
       $("qaChecks").innerHTML = checks.slice(0, 5).map(item => `<li>${escapeHtml(item.message || item.code || "")}</li>`).join("");
@@ -2351,10 +2354,13 @@
       const maxRetries = Number(report.max_free_retries || 0);
       const attempt = Number(report.translation_attempt || 1);
       const retryMeta = maxRetries < 0 ? `已重译 ${retryCount} 次` : `免费重译 ${retryCount}/${maxRetries}`;
-      $("qaMeta").textContent = providerBlocked
+      $("qaMeta").textContent = reviewOnly
+        ? `当前第 ${attempt} 次尝试 · 分类可能重叠，不应相加为错误段落数`
+        : providerBlocked
         ? `已保留成功译文 · 当前第 ${attempt} 次尝试`
         : `质检分 ${report.score ?? 0} / 100 · 当前第 ${attempt} 次尝试 · ${retryMeta}`;
       retryTranslationBtn.disabled = !report.retryable;
+      retryTranslationBtn.hidden = reviewOnly;
       retryTranslationBtn.textContent = report.retryable ? (providerBlocked ? "服务恢复后继续翻译" : "重新翻译") : "当前不可重译";
       retryTranslationBtn.dataset.jobId = data.job_id || currentJobId || "";
       translationDiagnosticsBtn.dataset.jobId = data.job_id || currentJobId || "";

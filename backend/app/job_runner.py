@@ -19,7 +19,7 @@ from .cancellation import JobCancelled, raise_if_cancelled
 from .converter import converter
 from .domain.notification_service import notify_job_completed
 from .domain.status_resolver import resolve_after_conversion
-from .domain.translation_qa_service import attach_translation_qa_report, audit_translated_epub_output
+from .domain.translation_qa_service import attach_translation_qa_report, audit_translated_epub_output, build_translation_qa_report
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats
 from .error_reporter import report_error
 from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
@@ -119,9 +119,16 @@ def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
     )
     stats = dict(getattr(result, "translation_stats", {}) or {})
     stats["artifact_audit"] = audit
+    qa = build_translation_qa_report(
+        translation_stats=stats, output_path=output_path,
+        error_code=getattr(result, "error_code", None),
+    )
+    stats["qa_report"] = qa
+    stats["deliverable"] = qa["can_deliver"]
+    stats["delivery_gate_failed"] = qa["delivery_status"] == "failed"
     result.translation_stats = stats
 
-    if audit.get("status") not in {"failed", "scan_error"}:
+    if qa["delivery_status"] != "failed":
         return
 
     residual = int(audit.get("residual_blocks") or 0)
@@ -136,11 +143,13 @@ def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
             f"翻译交付质检执行失败：{audit.get('reason') or '无法读取成品 EPUB'}。"
             "已停止交付，请重新翻译或联系管理员。"
         )
-    else:
+    elif residual:
         result.message = (
             f"翻译交付质检未通过：成品 EPUB 仍有 {residual}/{checked} "
             "个正文段落疑似未翻译。已停止交付，请重新翻译。"
         )
+    else:
+        result.message = f"翻译交付质检未通过：{qa['summary']}。已停止交付，请查看失败诊断。"
 
 
 def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditional_variant: str) -> str:
