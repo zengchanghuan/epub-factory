@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
+from app.domain.translation_residual_policy import residual_category
 
 from app.engine.chunk_extractor import (
     BLOCK_TAGS,
@@ -77,10 +78,7 @@ def _cjk_char_count(text: str) -> int:
     return len(re.findall(r"[\u3400-\u9fff]", text or ""))
 
 
-def _artifact_text_residual_category(text: str, block: Tag | None = None) -> str:
-    words = _latin_words(text)
-    latin = _latin_char_count(text)
-    cjk = _cjk_char_count(text)
+def _artifact_text_residual_category(text: str, block: Tag | None = None, preserved_terms=()) -> str:
     block_name = str(getattr(block, "name", "") or "").lower()
     class_tokens = {
         str(token).lower()
@@ -94,15 +92,7 @@ def _artifact_text_residual_category(text: str, block: Tag | None = None) -> str
             for marker in ("toc", "title", "heading", "head", "chapter")
         )
     )
-    if title_like and len(words) >= 2 and latin >= 12 and cjk == 0:
-        return "short_english_title"
-    if len(words) >= 10 and latin >= 80 and cjk == 0:
-        return "long_english_no_cjk"
-    if len(words) >= 12 and latin >= 120 and cjk < max(6, int(latin * 0.15)):
-        return "likely_untranslated"
-    if cjk > 0 and len(words) >= 12 and latin > max(160, cjk * 2.5):
-        return "mixed_latin_dominant"
-    return ""
+    return residual_category(text, title_like=title_like, preserved_terms=preserved_terms)
 
 
 def _is_non_body_document(member_name: str, soup: BeautifulSoup) -> bool:
@@ -124,6 +114,7 @@ def audit_translated_epub_output(
     target_lang: str | None = "zh-CN",
     bilingual: bool = False,
     sample_limit: int = 12,
+    preserved_terms=(),
 ) -> dict[str, Any]:
     """Scan final EPUB text for obvious untranslated body blocks before delivery."""
     report: dict[str, Any] = {
@@ -194,7 +185,7 @@ def audit_translated_epub_output(
                         report["reference_note_blocks_skipped"] += 1
                         continue
                     report["checked_text_blocks"] += 1
-                    category = _artifact_text_residual_category(text, block)
+                    category = _artifact_text_residual_category(text, block, preserved_terms)
                     if not category:
                         continue
                     report["residual_blocks"] += 1
@@ -248,6 +239,14 @@ def build_translation_qa_report(
         "max_free_retries": max_free_retries(),
         "translation_attempt": int(stats.get("translation_attempt") or 1),
     }
+
+    if error_code == "TRANSLATION_PROVIDER_UNAVAILABLE" or stats.get("provider_blocked"):
+        report.update(status="blocked", score=None,
+                      retryable=(report["max_free_retries"] < 0
+                                 or report["free_retry_count"] < report["max_free_retries"]),
+                      summary=stats.get("last_error") or "模型服务暂不可用，译文缓存已保留")
+        _flag(report, "provider_unavailable", report["summary"])
+        return report
 
     if failed:
         _flag(report, "failed_chunks", f"{failed} 个段落翻译失败")

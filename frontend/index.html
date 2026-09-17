@@ -1252,6 +1252,7 @@
     }
     .tasks-status.queued           { background: var(--warning-bg);  color: var(--warning-text); }
     .tasks-status.pending_payment  { background: #fff7ed; color: #b45309; }
+    .tasks-status.awaiting_confirmation { background: #f3f0ff; color: #5b4acb; }
     .tasks-status.running          { background: #eff6ff; color: #1d4ed8; }
     .tasks-status.completed        { background: var(--success-bg);  color: #166534; }
     .tasks-status.partial_completed{ background: var(--warning-bg);  color: var(--warning-text); }
@@ -1473,6 +1474,21 @@
               </select>
             </div>
 
+            <div class="form-group" style="margin-top: 12px;">
+              <label>翻译策略 <span class="hint">（自动分析全书，也可人工锁定）</span></label>
+              <select id="translationStrategy">
+                <option value="auto" selected>自动判断（推荐）</option>
+                <option value="neutral_faithful">中性忠实</option>
+                <option value="literary_narrative">文学叙事</option>
+                <option value="academic_rigorous">学术严谨</option>
+                <option value="mirror_fidelity">镜像级忠实</option>
+                <option value="practical_technical">实用技术</option>
+              </select>
+              <div id="translationStrategyHint" class="hint" style="margin-top:6px;">
+                上传后先分析元数据、目录和正文样本；探针失败时自动回退，不阻塞翻译。
+              </div>
+            </div>
+
             <div class="model-picker">
               <div class="model-picker-head">
                 <strong>翻译质量</strong>
@@ -1497,7 +1513,7 @@
                     <strong>高质量模式</strong>
                     <span class="model-current">当前使用</span>
                   </span>
-                  <span class="model-option-desc">Pro 首译、章节上下文与风险段落语义校对，复用已验证的同配置译文。</span>
+                  <span class="model-option-desc">所选模型首译、章节上下文与风险段落语义校对，复用已验证的同配置译文。</span>
                 </label>
                 <label class="model-option">
                   <input type="radio" name="translationQualityChoice" value="literary">
@@ -1516,7 +1532,7 @@
                 <strong>翻译模型</strong>
                 <span class="model-picker-badge">默认 Flash</span>
               </div>
-              <input type="hidden" id="translationModel" value="deepseek-v4-flash" />
+              <input type="hidden" id="translationModel" value="deepseek-flash" />
               <div class="model-options">
                 <label class="model-option">
                   <input type="radio" name="translationModelChoice" value="deepseek-v4-pro">
@@ -1528,10 +1544,10 @@
                   <span class="model-option-desc">优先稳定性，适合手动指定复杂 EPUB；坏段落补译会自动升级。</span>
                 </label>
                 <label class="model-option">
-                  <input type="radio" name="translationModelChoice" value="deepseek-v4-flash" checked>
+                  <input type="radio" name="translationModelChoice" value="deepseek-flash" checked>
                   <span class="model-option-title">
                     <span class="model-radio-dot"></span>
-                    <strong>DeepSeek V4 Flash</strong>
+                    <strong>DeepSeek V4.1 Flash</strong>
                     <span class="model-current">当前使用</span>
                   </span>
                   <span class="model-option-desc">速度更快，适合结构简单、对成本更敏感的任务。</span>
@@ -1565,6 +1581,52 @@
               <div id="glossaryError" style="display:none; margin-top:4px; font-size:12px; color:var(--error);"></div>
             </div>
           </div>
+      </div>
+
+      <div id="translationPreflightPanel" class="task-panel" style="display:none; margin-top:16px; border-color:#7c6fe8;">
+        <div class="task-panel-title">AI 图书分析确认</div>
+        <div class="pricing-notice" style="margin-bottom:12px;">
+          支付前请确认文体、翻译策略、术语和角色。只有点击“确认并生成支付订单”后才会创建订单。
+        </div>
+        <div id="preflightSummary" style="font-size:14px; line-height:1.8;"></div>
+        <details style="margin:10px 0;">
+          <summary style="cursor:pointer;">查看判断依据与抽样范围</summary>
+          <div id="preflightEvidence" class="hint" style="white-space:pre-wrap; margin-top:8px;"></div>
+        </details>
+        <div class="form-group">
+          <label>全书翻译策略</label>
+          <select id="preflightStrategy">
+            <option value="neutral_faithful">中性忠实</option>
+            <option value="literary_narrative">文学叙事</option>
+            <option value="academic_rigorous">学术严谨</option>
+            <option value="mirror_fidelity">镜像级忠实</option>
+            <option value="practical_technical">实用技术</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>术语对照表 <span class="hint">（可直接修订）</span></label>
+          <textarea id="preflightGlossary" style="width:100%;height:130px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;line-height:1.6;"></textarea>
+        </div>
+        <div class="form-group">
+          <label>角色设定集 <span class="hint">（每行：原名 = 译名 | 身份）</span></label>
+          <textarea id="preflightCharacters" style="width:100%;height:110px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;line-height:1.6;"></textarea>
+        </div>
+        <details style="margin:10px 0;">
+          <summary style="cursor:pointer;">章节级策略覆盖</summary>
+          <div id="preflightChapters" style="margin-top:8px;max-height:260px;overflow:auto;"></div>
+        </details>
+        <div class="form-group">
+          <label>人工调整原因 <span class="hint">（可选，便于复核）</span></label>
+          <input id="preflightOverrideReason" type="text" maxlength="500" placeholder="例如：附录需要技术严谨策略" />
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;margin:10px 0;">
+          <input id="preflightBilingual" type="checkbox" /> 生成双语对照版本
+        </label>
+        <label style="display:flex;gap:8px;align-items:center;margin:10px 0;">
+          <input id="preflightTermHighlights" type="checkbox" /> 在译文中标记已确认术语（默认关闭）
+        </label>
+        <div id="preflightError" style="display:none;color:var(--error);font-size:13px;margin:8px 0;"></div>
+        <button id="confirmPreflightBtn" class="submit-btn" type="button">确认并生成支付订单</button>
       </div>
 
       <!-- 价格提示（格式转换固定 ¥5.99） -->
@@ -1683,7 +1745,7 @@
           <div id="errorCodeMsg" style="display:none; margin-top:6px;
                font-size:12px; color:#6b7280; font-family: monospace;"></div>
           <div class="qa-report" id="qaReport">
-            <div class="qa-report-title">翻译质检未通过</div>
+            <div class="qa-report-title" id="qaTitle">翻译质检未通过</div>
             <div class="qa-report-summary" id="qaSummary"></div>
             <ul class="qa-check-list" id="qaChecks"></ul>
             <div class="qa-meta" id="qaMeta"></div>
@@ -1763,7 +1825,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-  <script src="lib.js"></script>
+  <script src="lib.js?v=20260917-flash-alias"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
 
@@ -1856,11 +1918,183 @@
     let lastTranslationTimingLog = "";
     let translationTimingCopyTimer = null;
     let alipayPopup = null;
+    let currentTranslationPreflight = null;
+
+    const TRANSLATION_STRATEGY_LABELS = {
+      neutral_faithful: "中性忠实",
+      literary_narrative: "文学叙事",
+      academic_rigorous: "学术严谨",
+      mirror_fidelity: "镜像级忠实",
+      practical_technical: "实用技术",
+    };
+
+    function renderTranslationPreflight(preflight, jobId, bilingual = false) {
+      if (!preflight || !jobId) return;
+      currentTranslationPreflight = preflight;
+      currentJobId = jobId;
+      const profile = preflight.profile || {};
+      const confidence = Math.round(Number(profile.confidence || 0) * 100);
+      const strategy = preflight.resolved_strategy || "neutral_faithful";
+      $("preflightSummary").innerHTML = [
+        `<strong>AI 判定：</strong>${escapeHtml(profile.genre || "类型未知")}`,
+        `<strong>建议策略：</strong>${escapeHtml(TRANSLATION_STRATEGY_LABELS[strategy] || strategy)}`,
+        `<strong>判断置信度：</strong>${confidence}%`,
+        `<strong>语言复杂度：</strong>${escapeHtml((profile.complexity || {}).source_level || "unknown")} / ${escapeHtml((profile.complexity || {}).syntax || "unknown")}`,
+      ].join("<br>");
+      const evidence = (profile.evidence || [])
+        .map(item => `• ${item.source || "sample"}：${item.reason || ""}`)
+        .join("\n");
+      const sampling = profile.sampling || {};
+      $("preflightEvidence").textContent = [
+        evidence || "暂无模型依据，已使用保守回退。",
+        `抽样：目录 ${sampling.toc_entries || 0} 项，正文 ${sampling.sample_count || 0} 处，共 ${sampling.sample_chars || 0} 字符。`,
+        ...(preflight.confirmation_reasons || []).map(item => `需注意：${item}`),
+      ].join("\n");
+      $("preflightStrategy").value = strategy;
+      $("preflightGlossary").value = Object.entries(preflight.glossary || {})
+        .map(([source, translated]) => `${source} = ${translated}`)
+        .join("\n");
+      $("preflightCharacters").value = (preflight.characters || [])
+        .map(item => {
+          const base = `${item.source_name || ""} = ${item.translated_name || ""}`;
+          return item.role && item.role !== "unknown" ? `${base} | ${item.role}` : base;
+        })
+        .join("\n");
+      $("preflightBilingual").checked = Boolean(bilingual);
+      $("preflightTermHighlights").checked = Boolean(preflight.enable_term_highlights);
+      const strategyOptions = Object.entries(TRANSLATION_STRATEGY_LABELS)
+        .map(([value, label]) => `<option value="${value}">${label}</option>`)
+        .join("");
+      $("preflightChapters").innerHTML = (preflight.chapters || []).map(chapter => `
+        <label style="display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center;margin:6px 0;">
+          <span title="${escapeHtml(chapter.file_path || "")}">${escapeHtml(chapter.file_path || chapter.chapter_id || "章节")} <small class="hint">(${Number(chapter.chunk_count || 0)} 段)</small></span>
+          <select class="chapter-strategy-override" data-chapter-id="${escapeHtml(chapter.chapter_id || "")}">
+            <option value="">继承全书策略</option>
+            ${strategyOptions}
+          </select>
+        </label>
+      `).join("");
+      const overrides = preflight.chapter_strategy_overrides || {};
+      document.querySelectorAll(".chapter-strategy-override").forEach(select => {
+        select.value = overrides[select.dataset.chapterId] || "";
+      });
+      $("preflightError").style.display = "none";
+      $("translationPreflightPanel").style.display = "block";
+      $("translationPreflightPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function parsePreflightCharacters(text) {
+      const existing = new Map(
+        (currentTranslationPreflight?.characters || [])
+          .filter(item => item && item.source_name)
+          .map(item => [item.source_name, { ...item }])
+      );
+      const characters = [];
+      const errors = [];
+      String(text || "").split("\n").forEach((raw, index) => {
+        const line = raw.trim();
+        if (!line) return;
+        const [mapping, role = ""] = line.split("|", 2);
+        const parsed = parseGlossaryInput(mapping);
+        const entries = Object.entries(parsed.glossary || {});
+        if (parsed.errors.length || entries.length !== 1) {
+          errors.push(`角色第 ${index + 1} 行格式错误`);
+          return;
+        }
+        const [sourceName, translatedName] = entries[0];
+        characters.push({
+          ...(existing.get(sourceName) || {}),
+          source_name: sourceName,
+          translated_name: translatedName,
+          role: role.trim() || existing.get(sourceName)?.role || "unknown",
+          status: "confirmed",
+        });
+      });
+      return { characters, errors };
+    }
+
+    function showTranslationPayment(data) {
+      const amount = data.amount || "—";
+      $("translationPriceDisplay").textContent = `¥${amount}`;
+      $("translationCharDisplay").textContent = "图书画像与翻译设定已确认";
+      $("translationPayLink").href = data.pay_url || "#";
+      $("translationPayLink").textContent = "前往支付宝付款";
+      $("translationPayArea").style.display = data.pay_url ? "block" : "none";
+      if (data.pay_url) reportCheckoutEvent("quote_shown");
+    }
+
+    async function confirmTranslationPreflight() {
+      if (!currentJobId || !currentTranslationPreflight) return;
+      const glossaryResult = parseGlossaryInput($("preflightGlossary").value);
+      const characterResult = parsePreflightCharacters($("preflightCharacters").value);
+      const errors = [...glossaryResult.errors, ...characterResult.errors];
+      if (errors.length) {
+        $("preflightError").textContent = errors.join("；");
+        $("preflightError").style.display = "block";
+        return;
+      }
+      const chapterOverrides = {};
+      document.querySelectorAll(".chapter-strategy-override").forEach(select => {
+        if (select.value) chapterOverrides[select.dataset.chapterId] = select.value;
+      });
+      const button = $("confirmPreflightBtn");
+      button.disabled = true;
+      button.textContent = "正在创建订单...";
+      $("preflightError").style.display = "none";
+      try {
+        const headers = {
+          ...clientHeaders(),
+          ...authHeaders(currentJobId),
+          "Content-Type": "application/json",
+        };
+        const response = await fetch(`${API}/api/v2/jobs/${currentJobId}/confirm-profile`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            translation_strategy: $("preflightStrategy").value,
+            glossary: glossaryResult.glossary,
+            characters: characterResult.characters,
+            chapter_strategy_overrides: chapterOverrides,
+            override_reason: $("preflightOverrideReason").value,
+            bilingual: $("preflightBilingual").checked,
+            enable_term_highlights: $("preflightTermHighlights").checked,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || "画像确认失败");
+        currentJobStatus = data.status || "pending_payment";
+        currentTranslationPreflight = data.translation_preflight || currentTranslationPreflight;
+        $("translationPreflightPanel").style.display = "none";
+        setStatus("pending", data.message || "画像已确认");
+        if (data.status === "pending_payment") showTranslationPayment(data);
+        startJobTimer();
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(() => pollJobV2(currentJobId), 2000);
+        pollJobV2(currentJobId);
+      } catch (error) {
+        $("preflightError").textContent = error.message;
+        $("preflightError").style.display = "block";
+      } finally {
+        button.disabled = false;
+        button.textContent = "确认并生成支付订单";
+      }
+    }
+
+    function reportCheckoutEvent(event) {
+      const jobId = currentJobId;
+      if (!jobId) return;
+      fetch(`${API}/api/v2/jobs/${encodeURIComponent(jobId)}/checkout-events`, {
+        method: "POST", keepalive: true,
+        headers: { ...authHeaders(jobId), "Content-Type": "application/json" },
+        body: JSON.stringify({ event }),
+      }).catch(() => {}); // Telemetry must never block payment.
+    }
 
     function openAlipayPopup(event) {
       const link = event.currentTarget;
       if (!link || !link.href || link.getAttribute("href") === "#") return;
       event.preventDefault();
+      reportCheckoutEvent("payment_clicked");
       const width = 520;
       const height = 720;
       const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
@@ -2101,13 +2335,15 @@
         !qaReport
         || !report
         || !terminalStatuses.has(data.status)
-        || (report.status !== "failed" && data.status !== "qa_failed")
+        || (!["failed", "blocked"].includes(report.status) && data.status !== "qa_failed")
       ) {
         hideQaReport();
         return;
       }
       const checks = Array.isArray(report.checks) ? report.checks : [];
-      $("qaSummary").textContent = checks.length
+      const providerBlocked = report.status === "blocked";
+      $("qaTitle").textContent = providerBlocked ? "翻译因模型服务问题暂停" : "翻译质检未通过";
+      $("qaSummary").textContent = providerBlocked ? report.summary : checks.length
         ? "翻译结果未达到交付标准，请查看下列问题。"
         : (report.summary || "翻译结果未通过交付质检");
       $("qaChecks").innerHTML = checks.slice(0, 5).map(item => `<li>${escapeHtml(item.message || item.code || "")}</li>`).join("");
@@ -2115,9 +2351,11 @@
       const maxRetries = Number(report.max_free_retries || 0);
       const attempt = Number(report.translation_attempt || 1);
       const retryMeta = maxRetries < 0 ? `已重译 ${retryCount} 次` : `免费重译 ${retryCount}/${maxRetries}`;
-      $("qaMeta").textContent = `质检分 ${report.score ?? 0} / 100 · 当前第 ${attempt} 次尝试 · ${retryMeta}`;
+      $("qaMeta").textContent = providerBlocked
+        ? `已保留成功译文 · 当前第 ${attempt} 次尝试`
+        : `质检分 ${report.score ?? 0} / 100 · 当前第 ${attempt} 次尝试 · ${retryMeta}`;
       retryTranslationBtn.disabled = !report.retryable;
-      retryTranslationBtn.textContent = report.retryable ? "重新翻译" : "当前不可重译";
+      retryTranslationBtn.textContent = report.retryable ? (providerBlocked ? "服务恢复后继续翻译" : "重新翻译") : "当前不可重译";
       retryTranslationBtn.dataset.jobId = data.job_id || currentJobId || "";
       translationDiagnosticsBtn.dataset.jobId = data.job_id || currentJobId || "";
       qaReport.classList.add("visible");
@@ -2169,7 +2407,7 @@
 
     function restartTranslation(jobId) {
       if (!jobId || !restartTranslationBtn) return;
-      if (currentJobStatus === "queued" || currentJobStatus === "running" || currentJobStatus === "pending_payment") {
+      if (currentJobStatus === "awaiting_confirmation" || currentJobStatus === "queued" || currentJobStatus === "running" || currentJobStatus === "pending_payment") {
         errorMsg.textContent = "任务仍在处理中；如需重启，请先停止当前翻译。";
         errorMsg.style.display = "block";
         return;
@@ -2180,7 +2418,8 @@
       const restartParams = new URLSearchParams({
         translation_quality: $("translationQuality")?.value || "standard",
         cache_policy: $("cachePolicy")?.value || "reuse",
-        translation_model: $("translationModel")?.value || "deepseek-v4-flash",
+        translation_model: $("translationModel")?.value || "deepseek-flash",
+        translation_strategy: $("translationStrategy")?.value || "auto",
         temperature: $("temperature")?.value || "0.3",
       });
       fetch(`${API}/api/v2/jobs/${jobId}/restart-translation?${restartParams.toString()}`, {
@@ -2346,7 +2585,7 @@
     function loadTaskList() {
       const emptyEl = $("tasksEmpty");
       const listEl = $("tasksList");
-      fetch(`${API}/api/v2/jobs`, { headers: clientHeaders() })
+      fetch(`${API}/api/v2/jobs`, { headers: clientHeaders(), cache: "no-store" })
         .then(r => r.json())
         .then(data => {
           const items = (data.items || []);
@@ -2395,7 +2634,7 @@
     });
 
     function handleTaskPrimaryAction(jobId) {
-      fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId) })
+      fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId), cache: "no-store" })
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
           if (data.status === "completed" && data.download_url) {
@@ -2493,15 +2732,37 @@
     }
 
     function pollJobV2(jobId) {
-      fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId) })
+      fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId), cache: "no-store" })
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
           setTaskUiMode(!!data.enable_translation);
           const s = data.status || "";
           const previousJobStatus = currentJobStatus;
           currentJobStatus = s;
+          if (
+            data.enable_translation
+            && !previousJobStatus
+            && $("translationStrategy")
+            && data.translation_strategy
+          ) {
+            $("translationStrategy").value = data.translation_strategy;
+            $("translationStrategy").dispatchEvent(new Event("change"));
+          }
           if (s && s !== previousJobStatus) {
             loadTaskList();
+          }
+          if (s === "awaiting_confirmation" && data.translation_preflight) {
+            if (pollTimer) clearInterval(pollTimer);
+            stopJobTimer();
+            submitBtn.disabled = true;
+            setStatus("pending", "图书分析完成，请确认翻译设定");
+            showView("upload");
+            renderTranslationPreflight(
+              data.translation_preflight,
+              data.job_id,
+              data.bilingual,
+            );
+            return;
           }
           const attemptStartedAt = data.enable_translation && data.translation_stats
             ? data.translation_stats.attempt_started_at || ""
@@ -3117,17 +3378,25 @@
         const isPremium = quality !== "standard";
         $("translationQuality").value = quality;
         $("cachePolicy").value = isPremium ? "verified" : "reuse";
-        $("translationModel").value = isPremium ? "deepseek-v4-pro" : "deepseek-v4-flash";
         $("temperature").value = isPremium ? "0.2" : "0.3";
-        translationModelChoices.forEach(choice => {
-          choice.checked = choice.value === $("translationModel").value;
-        });
       });
     });
     translationModelChoices.forEach(radio => {
       radio.addEventListener("change", () => {
         if (radio.checked) $("translationModel").value = radio.value;
       });
+    });
+    $("translationStrategy").addEventListener("change", () => {
+      const strategy = $("translationStrategy").value || "auto";
+      const hints = {
+        auto: "上传后先分析元数据、目录和正文样本；探针失败时自动回退，不阻塞翻译。",
+        neutral_faithful: "忠实、清晰、克制；适合类型不明确或混合文体。",
+        literary_narrative: "重视对话、人物声音和场景氛围，但不得增删事实。",
+        academic_rigorous: "锁定术语、定义和论证链，避免为了通俗而简化概念。",
+        mirror_fidelity: "保留修辞、长句结构和时代语感；建议同时开启双语并排以便溯源。",
+        practical_technical: "优先保证步骤、警告、参数、命令和专业名词准确。",
+      };
+      $("translationStrategyHint").textContent = hints[strategy] || hints.auto;
     });
 
     async function estimatePolishPrice() {
@@ -3241,7 +3510,7 @@
 
     function pollJobEvents(jobId) {
       if (!jobId) return;
-      fetch(`${API}/api/v2/jobs/${jobId}/events`, { headers: authHeaders(jobId) })
+      fetch(`${API}/api/v2/jobs/${jobId}/events`, { headers: authHeaders(jobId), cache: "no-store" })
         .then(r => r.ok ? r.json() : { items: [] })
         .then(data => {
           (data.items || []).forEach((item, index) => {
@@ -3350,9 +3619,11 @@
       if (isTranslationMode) {
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
-        form.append("translation_model", $("translationModel").value || "deepseek-v4-flash");
+        form.append("translation_model", $("translationModel").value || "deepseek-flash");
         form.append("translation_quality", $("translationQuality").value || "standard");
         form.append("cache_policy", $("cachePolicy").value || "reuse");
+        form.append("translation_strategy", $("translationStrategy").value || "auto");
+        form.append("profile_confirmation", "true");
         const tempVal = parseFloat($("temperature").value);
         if (!isNaN(tempVal) && tempVal >= 0 && tempVal <= 2) form.append("temperature", tempVal);
 
@@ -3400,7 +3671,17 @@
         $("metaTraceId").textContent = data.trace_id || "-";
         $("metaFilename").textContent = isBatchMode ? `${data.file_count} 个文件` : (data.source_filename || "-");
 
-        if (data.status === "pending_payment") {
+        if (data.status === "awaiting_confirmation") {
+          setStatus("pending", "图书分析完成，请确认翻译设定");
+          stopJobTimer();
+          renderTranslationPreflight(
+            data.translation_preflight,
+            data.job_id,
+            $("enableBilingual").checked,
+          );
+          loadTaskList();
+          return;
+        } else if (data.status === "pending_payment") {
           setStatus("pending", "等待支付完成后自动开始...");
           $("queueNotice").classList.add("visible");
 
@@ -3411,6 +3692,7 @@
             $("conversionPriceDisplay").textContent = `¥${data.amount || "5.99"}`;
             $("conversionPayArea").style.display = "block";
             $("conversionPriceHint").style.display = "none";
+            reportCheckoutEvent("quote_shown");
           } else if (data.pay_url) {
             const amt = data.amount || "—";
             const chars = data.estimated_chars || 0;
@@ -3433,6 +3715,7 @@
             $("translationPayLink").href = data.pay_url;
             $("translationPayLink").textContent = isBatchMode ? "前往支付宝支付整批订单" : "前往支付宝付款";
             $("translationPayArea").style.display = "block";
+            reportCheckoutEvent("quote_shown");
           }
         } else {
           setStatus("running", data.message || "任务已进入后台队列");
@@ -3457,6 +3740,7 @@
     }
 
     submitBtn.addEventListener("click", submitJob);
+    $("confirmPreflightBtn").addEventListener("click", confirmTranslationPreflight);
 
     // ─── 结果操作区（下载）────────────────────────────────────────────────────
     function showResultActions(jobId, downloadUrl) {

@@ -4,7 +4,7 @@ set -euo pipefail
 ACTION=${1:?Usage: deploy-server.sh ARCHIVE_OR_--check [PROJECT_DIR]}
 PROJECT_DIR=${2:-/home/ubuntu/epub-factory}
 SERVICES=(epub-factory epub-factory-worker epub-factory-beat)
-for cmd in python3 systemctl curl java; do
+for cmd in python3 systemctl curl java flock; do
   command -v "$cmd" >/dev/null || { echo "Missing server prerequisite: $cmd" >&2; exit 1; }
 done
 [[ -d "$PROJECT_DIR/backend/.venv" && -f "$PROJECT_DIR/backend/.env" ]] || {
@@ -12,6 +12,18 @@ done
 }
 [[ -f "$PROJECT_DIR/tools/epubcheck-5.1.0/epubcheck.jar" ]] || { echo 'EPUBCheck is missing' >&2; exit 1; }
 sudo -n true || { echo 'Run sudo -v in the server terminal first, or configure the deployment account sudo permission.' >&2; exit 1; }
+# One server-side lock covers both Macs, including backups and service restarts.
+# Never remove the lock file: removing it would let a new process lock another inode.
+if [[ "$ACTION" != --check ]]; then
+  lock_umask=$(umask)
+  umask 077
+  exec 9>"$PROJECT_DIR/.deploy.lock"
+  umask "$lock_umask"
+  flock -n 9 || { echo 'Another deployment is in progress; retry after it finishes.' >&2; exit 1; }
+fi
+if [[ $(systemctl show nginx -p LoadState --value 2>/dev/null) == loaded ]]; then
+  sudo -n /usr/sbin/nginx -t
+fi
 for service in "${SERVICES[@]}"; do
   [[ $(systemctl show "$service" -p LoadState --value) == loaded ]] || { echo "Service not installed: $service" >&2; exit 1; }
 done
@@ -46,17 +58,82 @@ check_jobs
 [[ "$ACTION" != --check ]] || exit 0
 ARCHIVE=$(realpath "$ACTION")
 BACKUP="$PROJECT_DIR/deploy-backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# Validate the release before stopping services or changing production defaults.
+python3 - "$ARCHIVE" "$PROJECT_DIR" <<'PY'
+import hashlib, json, sys, zipfile
+from pathlib import Path
+archive, root = map(Path, sys.argv[1:])
+root = root.resolve()
+with zipfile.ZipFile(archive) as z:
+    manifest = json.loads(z.read('deploy-manifest.json'))
+    if set(z.namelist()) != set(manifest) | {'deploy-manifest.json'}:
+        raise SystemExit('Unexpected archive entries')
+    for name, digest in manifest.items():
+        path = Path(name)
+        if path.is_absolute() or '..' in path.parts or not (root / path).resolve().is_relative_to(root):
+            raise SystemExit('Unsafe archive path')
+        if hashlib.sha256(z.read(name)).hexdigest() != digest:
+            raise SystemExit('Release checksum mismatch')
+print('Release contents verified before maintenance.')
+PY
 restore_ingress() {
   result=$?
   if [[ $result != 0 ]]; then
     echo "Deployment failed. Backup (if created): $BACKUP. See docs/DEPLOY.md." >&2
-    sudo -n systemctl start epub-factory epub-factory-beat || true
+    sudo -n systemctl start "${SERVICES[@]}" || true
   fi
 }
 trap restore_ingress EXIT
 # Close the submission window, then recheck jobs before replacing code.
 sudo -n systemctl stop epub-factory epub-factory-beat
 check_jobs
+sudo -n systemctl stop epub-factory-worker
+# Keep a consistent server-local runtime backup before schema migrations or config edits.
+"$PROJECT_DIR/backend/.venv/bin/python" - "$PROJECT_DIR" "$BACKUP" <<'PY'
+import os, shutil, sqlite3, sys
+from pathlib import Path
+from dotenv import dotenv_values, set_key
+from sqlalchemy.engine import make_url
+
+root, backup = map(Path, sys.argv[1:])
+backup.mkdir(parents=True, mode=0o700)
+backup.chmod(0o700)
+env = root / 'backend/.env'
+config = dotenv_values(env)
+shutil.copy2(env, backup / 'production.env')
+(backup / 'production.env').chmod(0o600)
+url = make_url(os.environ.get('DATABASE_URL') or config.get('DATABASE_URL') or 'sqlite:///./epub_jobs.db')
+if url.get_backend_name() != 'sqlite':
+    raise SystemExit('A verified external database backup is required before this deployment.')
+database = Path(url.database).expanduser()
+if not database.is_absolute():
+    database = root / 'backend' / database
+paths = [('jobs.sqlite3', database), ('translation-cache.sqlite3', root / 'backend/translation_cache.db')]
+for name, path in paths:
+    if not path.is_file():
+        if name == 'jobs.sqlite3':
+            raise SystemExit('Production database missing; refusing deployment.')
+        continue
+    with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as source:
+        with sqlite3.connect(backup / name) as target:
+            source.backup(target)
+            if target.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise SystemExit('Runtime backup validation failed.')
+    (backup / name).chmod(0o600)
+# Preserve all credentials and pricing; change only the approved model/queue defaults.
+for key, value in {
+    'OPENAI_MODEL': 'deepseek-flash',
+    'EPUB_DEFAULT_TRANSLATION_MODEL': 'deepseek-flash',
+    'EPUB_TRANSLATION_PROACTIVE_QUALITY_MODEL_ENABLED': '0',
+    'CELERY_VISIBILITY_TIMEOUT': str(max(
+        10800,
+        int(config.get('EPUB_BOOK_TIME_LIMIT') or int(config.get('EPUB_BOOK_SOFT_TIME_LIMIT') or 7200) + 300) + 1800,
+        int(config.get('CELERY_TASK_TIME_LIMIT') or 1800) + 1800,
+    )),
+}.items():
+    set_key(str(env), key, value)
+print('Server-local database/cache/config backups verified; production defaults updated.')
+PY
 # Validate all paths and hashes before changing any production file.
 python3 - "$ARCHIVE" "$PROJECT_DIR" "$BACKUP" <<'PY'
 import hashlib, json, sys, zipfile
@@ -73,7 +150,7 @@ with zipfile.ZipFile(archive) as z:
             raise SystemExit('Unsafe archive path')
         if hashlib.sha256(z.read(name)).hexdigest() != digest:
             raise SystemExit(f'Checksum mismatch: {name}')
-    backup.mkdir(parents=True)
+    backup.mkdir(parents=True, exist_ok=True)
     new_files = []
     with zipfile.ZipFile(backup / 'previous-code.zip', 'w', zipfile.ZIP_DEFLATED) as previous:
         for name in manifest:

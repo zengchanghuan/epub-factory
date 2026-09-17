@@ -1,6 +1,6 @@
 # EPUB Factory 当前架构
 
-> 更新时间：2026-07-26
+> 更新时间：2026-07-27
 >
 > 状态：`current`
 >
@@ -14,7 +14,8 @@ flowchart TB
   FE --> API["FastAPI<br/>backend/app/main.py"]
 
   API --> Auth["认证<br/>SMS / Google / WeChat / JWT"]
-  API --> Pay["支付<br/>Alipay 下单 / webhook / recover"]
+  API --> Preflight["支付前翻译确认<br/>Book Profiler / 术语 / 角色 / 章节策略"]
+  Preflight --> Pay["支付<br/>确认后 Alipay 下单 / webhook / recover"]
   API --> JobAPI["任务 API<br/>/api/v1/jobs /api/v2/jobs<br/>/api/v2/batches"]
   API --> Repair["EPUB 修复 API<br/>/api/v2/repair/*"]
   API --> Admin["统计与反馈 API"]
@@ -60,7 +61,14 @@ sequenceDiagram
   participant Runner as run_job
   participant Pipeline as 翻译流水线
 
-  UI->>API: 创建或重启翻译任务
+  UI->>API: 上传翻译书稿
+  API->>Store: awaiting_confirmation + 可编辑画像
+  API-->>UI: 画像 / 依据 / 术语 / 角色 / 章节策略
+  UI->>API: 显式确认或修订
+  API->>Store: 原子锁定确认快照
+  API->>API: 确认后才创建支付订单
+  UI->>API: 支付完成或免支付测试
+  API->>Store: 创建或重启 translation attempt
   API->>Store: 创建新 attempt_id 并重置本轮统计
   API-->>Runner: job_id + expected_attempt_id
   Runner->>Store: 校验当前 attempt_id
@@ -94,6 +102,7 @@ sequenceDiagram
 - Store 更新携带 `expected_attempt_id`，旧 Worker 的迟到写入不会覆盖新任务状态。
 - 翻译输出先写入 attempt 专属隐藏文件，只有通过交付检查后才移动为最终文件。
 - 取消、被新 attempt 取代或失败时，attempt 专属成品会被删除。
+- 支付前的章节策略编辑只列出实际章节和前后置内容；独立脚注文件继续参与翻译，但继承全书策略，避免为大量单行脚注生成冗余控件。
 
 ## 3. EPUB AI 翻译主链路
 
@@ -101,7 +110,11 @@ sequenceDiagram
 flowchart TD
   A["run_job"] --> B["非 LLM 预处理<br/>EpubConverter / ExtremeCompiler"]
   B --> C["build_manifest<br/>文档分类 + 稳定 locator"]
-  C --> D["chunk 分类"]
+  C --> Profile["Book Profiler<br/>元数据 + TOC + 前言/首章/分布式样本"]
+  Profile --> Confirm["支付前确认<br/>策略 + 术语 + 角色 + 章节覆盖"]
+  Confirm --> PayGate["创建支付订单 / 支付成功"]
+  PayGate --> Route["固定策略矩阵<br/>已确认全书策略 + 章节覆盖"]
+  Route --> D["chunk 分类"]
 
   D --> Media["含 img/svg/image 的块<br/>不发送模型，原样保留"]
   D --> Caption["文本型 caption/legend<br/>普通 HTML 翻译"]
@@ -109,24 +122,26 @@ flowchart TD
   D --> ExplainNote["解释型脚注/尾注<br/>text_nodes 策略翻译"]
   D --> Body["正文及普通脚注引用标记<br/>普通 HTML 翻译"]
 
-  Caption --> G["全书术语表<br/>全局 + 自动 + 用户"]
+  Caption --> G["全书术语表<br/>全局 + 自动 + 用户 + 可靠角色译名"]
   ExplainNote --> G
   Body --> G
   G --> Title["书名元数据翻译"]
-  Title --> Chapters["正文章节 asyncio 并发<br/>请求并发按成功/失败动态调节"]
+  Title --> ContextPack["翻译前生成只读上下文包<br/>章节抽样提要 + 相邻原文 + 相关人物"]
+  ContextPack --> Chapters["正文章节 asyncio 并发<br/>请求并发按成功/失败动态调节"]
   Chapters --> Mode{"translation_quality"}
-  Mode -->|"standard"| Translator["Flash / 0.3 / reuse<br/>自适应 JSON batch"]
-  Mode -->|"high"| Context["Pro / 0.2 / verified<br/>书名 + 前后段上下文"]
+  Mode -->|"standard"| Translator["Flash / 0.3 / reuse<br/>只读上下文 + 自适应 JSON batch"]
+  Mode -->|"high"| Context["Pro / 0.2 / verified<br/>只读章节摘要 + 前后段上下文"]
   Mode -->|"literary"| StyleSample["抽取全书代表段落<br/>生成一次书级风格档案"]
   StyleSample --> LiteraryDraft["Pro / 0.2 / verified<br/>上下文 + 风格档案"]
   Context --> Translator
   LiteraryDraft --> Translator
-  Translator --> Validate["返回值、HTML 结构、漏译与术语质检"]
+  Translator --> Validate["返回值、HTML 结构、漏译、句子结构与术语质检"]
   Validate --> Retry["质量重试 / 健康路由与模型升级<br/>批次拆分 / 文本节点救援"]
   Retry --> Review{"质量模式"}
   Review -->|"standard"| Persist["持久化 chapter/chunk/stage/stat"]
   Review -->|"high"| Semantic["风险规则 + 稳定抽样<br/>只审校高风险段落"]
-  Review -->|"literary"| Polish["连续章节润色<br/>保持作者声音与术语"]
+  Review -->|"literary + 允许润色策略"| Polish["连续章节润色<br/>保持作者声音与术语"]
+  Review -->|"literary + 镜像/学术/技术策略"| Verify
   Semantic --> Persist
   Polish --> Verify["对照原文语义回查<br/>修复增译、漏译、逻辑偏差"]
   Verify --> Safe{"HTML/数字/术语/长度安全?"}
@@ -134,9 +149,10 @@ flowchart TD
   Safe -->|"不通过"| Keep["拒绝润色结果<br/>保留上一安全译文"]
   Keep --> Persist
   Persist --> Rescue["章节结束后的失败 chunk 补译队列"]
-  Rescue --> Gate1{"失败 chunk 交付门禁"}
+  Rescue --> Consistency["跨章节标准术语 / 角色译名一致性复核"]
+  Consistency --> Gate1{"失败 chunk 交付门禁"}
   Gate1 -->|"超阈值"| Stop["停止打包<br/>PARTIAL_TRANSLATION"]
-  Gate1 -->|"允许继续"| Reduce["按 locator 回写<br/>单语覆盖或双语并排"]
+  Gate1 -->|"允许继续"| Reduce["按 locator 回写<br/>单语/双语 + 可选确定性术语标记"]
   Reduce --> Package["TOC 重建 + EpubPackager"]
   Package --> EpubCheck["EpubCheck"]
   EpubCheck --> ArtifactQA["最终成品扫描<br/>正文 + 文本型 caption"]
@@ -160,13 +176,23 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 
 ### 3.2 翻译执行与救援
 
-- `standard` 默认使用 Flash、温度 `0.3` 和 `reuse`；`high` 与 `literary` 默认使用 Pro、温度 `0.2` 和 `verified`。`verified` 只读取目标语言、提示词、质量档位、模型、温度、术语表、上下文和风格档案完全一致的精确缓存，不跨配置借用旧译文。
-- 高质量模式为每段提供书名、章节文件和前后段上下文；风险规则覆盖长段、标题、复杂 HTML、数字/逻辑词/术语异常和疑似原文，并对其余段落做稳定抽样，只对命中的段落执行 Pro 语义校对。
+- `Book Profiler` 在正式翻译前读取有界的 OPF 元数据、TOC、前言/首章和全书分布式样本，输出带 Schema、证据、置信度、人物设定和抽样哈希的任务画像。默认复用当前翻译供应商；解析或调用失败时使用低置信度本地规则并继续任务。
+- 前端翻译上传显式请求二阶段确认。后端先保存 `awaiting_confirmation` 任务并返回可编辑画像；用户确认前不创建支付宝订单、不入队。确认接口原子保存版本化快照，重复点击不会重复下单。
+- 确认面板可修订全书策略、术语、角色译名/身份、双语模式、术语标记及章节策略。章节覆盖策略会改变该章实际 System Prompt、缓存上下文和文学润色权限。
+- 策略只能从 `neutral_faithful / literary_narrative / academic_rigorous / mirror_fidelity / practical_technical` 五个版本化资产中选择。前端可在提交前锁定策略，用户选择优先于探针；`mirror_fidelity`、学术和技术策略不会进入强文学润色。
+- 各质量档位默认首选 Flash，显式 Pro 选择仍有效；`standard` 使用温度 `0.3` 和 `reuse`，`high` 与 `literary` 使用温度 `0.2` 和 `verified`，切换质量档位不自动覆盖模型。`verified` 只读取目标语言、提示词、质量档位、模型、温度、术语表、上下文和风格档案完全一致的精确缓存，不跨配置借用旧译文。
+- 所有质量模式都使用翻译开始前生成的只读章节抽样提要和相邻原文，不依赖其他并发请求完成顺序；高质量模式使用更长窗口。不存在“请求完成后串行更新滑动窗口”的可变状态。
+- 高质量模式的风险规则覆盖长段、标题、复杂 HTML、数字、否定/因果/转折关系、术语异常和疑似原文，并对其余段落做稳定抽样，只对命中的段落使用所选主模型进行语义校对；失败补译可在既有预算内升级 Pro。
 - 文学模式先从全书代表段落生成一次书级风格档案，再按连续章节进行润色，并对照原文执行语义回查；任何破坏 HTML、数字、强制术语或出现危险长度变化的候选结果都会被拒绝，回退到上一版安全译文。
-- `SemanticsTranslator` 使用 SQLite `translation_cache.db`。精确缓存命名空间包含目标语言、提示词版本、质量档位、模型、温度、术语表哈希和上下文哈希，避免旧提示词、低质量模型或不同上下文互相污染。
+- `SemanticsTranslator` 使用 SQLite `translation_cache.db`。精确缓存命名空间包含目标语言、提示词版本、质量档位、模型、温度、策略版本、画像哈希、术语表哈希和上下文哈希，避免旧提示词、低质量模型或不同文体策略互相污染。
 - 术语表先清理通用词和低置信度候选，再按当前段落最长匹配，只注入实际出现的术语；不再把全书全部术语塞入每个请求。
+- 画像中的人物只有带原文证据才会保留；可靠人物译名合并进术语表，每个请求只注入当前段落命中的人物子集。任务统计保存可审计的术语目录、角色集、画像和策略来源。
 - 普通 chunk 走自适应 JSON batch：稳定时在上限内扩大批次，批量失败时递归拆分；解释型脚注走结构化文本节点策略。
 - 单本书的模型请求由自适应并发限制器控制：失败时逐级降并发，连续成功后逐步恢复；复杂单段可主动路由到质量模型，路由排序综合近期失败、冷却和延迟。
+- 可选 Redis 令牌桶按供应商和模型共享 RPM/TPM，调用前预留估算 Token，成功后按真实用量修正。该能力默认关闭，只有显式配置 `EPUB_LLM_RATE_LIMITER_ENABLED=1` 及正数 RPM/TPM 后生效；Redis 故障时回退现有进程内限制器。
+- 可选 Redis 全局健康路由共享供应商/模型失败、冷却和延迟状态；通过 `EPUB_LLM_GLOBAL_HEALTH_ENABLED=1` 启用，故障时继续使用进程内健康排序。
+- Chunk QA 增加保守的句子结构对齐信号；全章完成后聚合跨章节标准术语和角色译名漂移。两者用于定位人工复核，不单独阻断交付。
+- 用户显式开启时，Reduce 前根据已确认术语表确定性插入 `epub-term` 标签及原文映射；默认关闭，不让模型改写或生成标签。
 - 模型返回需通过空结果、错误样式、疑似未翻译、HTML 结构等检查。
 - 质量失败会按预算重试，并可升级到质量模型；整段仍失败时可降级为文本节点救援。
 - 初轮章节翻译结束后，`failed_chunk_rescue` 对未耗尽预算的失败段落再排队补译。
@@ -196,6 +222,7 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 ## 6. 可观测性与数据
 
 - `jobs`：任务身份、输入输出、状态、错误、整体统计；批量转换额外使用 `batch_id / batch_index / batch_size` 关联子任务，不另建批次表。
+- `jobs.translation_strategy`：用户提交的 `auto` 或人工锁定策略；支付前画像、确认版本、术语目录、角色集及章节覆盖保存在当前 attempt 的 `translation_stats.translation_preflight`。
 - `job_chapters`：章节类型与成功、失败、缓存数量。
 - `job_chunks`：定位器、模型、Token、延迟、重试、错误与审计结果。
 - `job_stages`：预处理、Manifest、术语表、翻译、Reduce、校验等事件。
@@ -238,6 +265,11 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 | `backend/app/main.py` | FastAPI 路由、任务创建/重启/取消、调度与诊断接口 |
 | `backend/app/job_runner.py` | 整本任务生命周期、attempt 隔离、最终成品门禁与通知 |
 | `backend/app/domain/fast_translation_runner.py` | EPUB 快速翻译编排、章节并发、chunk QA、失败救援、Reduce 与校验 |
+| `backend/app/domain/book_profile_service.py` | 图书探针抽样、结构化画像、证据审计与非阻塞回退 |
+| `backend/app/domain/translation_preflight_service.py` | 支付前画像、术语、角色与章节清单的有界预分析 |
+| `backend/app/domain/translation_strategy.py` | 五类版本化策略、动态 Prompt 片段、角色检索与只读章节摘要 |
+| `backend/app/domain/translation_consistency_audit.py` | 跨章节标准术语与角色译名一致性信号 |
+| `backend/app/domain/term_highlight_service.py` | 已确认术语的确定性 XHTML 标记 |
 | `backend/app/domain/manifest_service.py` | 文档分类和 Chunk Manifest |
 | `backend/app/engine/chunk_extractor.py` | 正文、caption、媒体块、脚注/尾注分类和稳定 locator |
 | `backend/app/engine/cleaners/semantics_translator.py` | 模型调用、缓存、批处理、质量重试、文本节点与 chunk 救援 |
@@ -245,5 +277,7 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 | `backend/app/domain/book_reduce_service.py` | 全书 Reduce、书名同步、TOC 重建与打包 |
 | `backend/app/domain/translation_attempt.py` | attempt 身份与重启统计重置 |
 | `backend/app/domain/translation_qa_service.py` | 最终 EPUB 残留扫描和 QA 报告 |
+| `backend/app/infra/llm_token_bucket.py` | 可选 Redis 跨 Worker RPM/TPM 令牌桶 |
+| `backend/app/infra/llm_route_health.py` | 可选 Redis 跨 Worker 模型路由健康状态 |
 | `backend/app/storage.py` / `storage_db.py` | 内存/持久化 Store |
 | `backend/app/tasks/job_pipeline.py` | Celery 整本任务入口 |

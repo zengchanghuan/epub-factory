@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -30,9 +31,12 @@ from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_not
 from .job_runner import run_job
 from .models import DeviceProfile, ErrorCode, Job, JobStage, JobStatus, OutputMode, StageStatus, TraditionalVariant
 from .storage import job_store
+from .order_events import record_event, make_event_router
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
+from .domain.translation_strategy import TRANSLATION_STRATEGY_CHOICES
+from .domain.translation_preflight_service import build_translation_preflight
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -82,14 +86,19 @@ _TRANSLATION_FIXED_PRICE: str = _os.environ.get("TRANSLATION_PRICE_CNY", "").str
 TRANSLATION_PRICE_CNY: str = _TRANSLATION_FIXED_PRICE or CONVERSION_PRICE_CNY
 
 TRANSLATION_MODEL_CHOICES = {
-    "deepseek-v4-flash": "DeepSeek V4 Flash",
+    "deepseek-flash": "DeepSeek V4.1 Flash",
+    # Keep explicit legacy selections for historical jobs/cache keys.
+    "deepseek-v4-flash": "DeepSeek V4.1 Flash（旧名称兼容）",
+    "deepseek-v4-flash-vision-exp": "DeepSeek V4.1 Flash（旧视觉名称兼容）",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
 }
 TRANSLATION_QUALITY_CHOICES = {"standard", "high", "literary"}
 CACHE_POLICY_CHOICES = {"reuse", "verified", "fresh"}
-DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-v4-flash").strip()
+DEFAULT_TRANSLATION_MODEL = _os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL", "deepseek-flash").strip()
+if DEFAULT_TRANSLATION_MODEL in {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}:
+    DEFAULT_TRANSLATION_MODEL = "deepseek-flash"
 if DEFAULT_TRANSLATION_MODEL not in TRANSLATION_MODEL_CHOICES:
-    DEFAULT_TRANSLATION_MODEL = "deepseek-v4-flash"
+    DEFAULT_TRANSLATION_MODEL = "deepseek-flash"
 
 
 def _normalize_translation_quality(value: Optional[str], enable_translation: bool) -> str:
@@ -99,6 +108,16 @@ def _normalize_translation_quality(value: Optional[str], enable_translation: boo
     if normalized not in TRANSLATION_QUALITY_CHOICES:
         allowed = ", ".join(sorted(TRANSLATION_QUALITY_CHOICES))
         raise HTTPException(status_code=400, detail=f"translation_quality 仅支持：{allowed}")
+    return normalized
+
+
+def _normalize_translation_strategy(value: Optional[str], enable_translation: bool) -> str:
+    if not enable_translation:
+        return "auto"
+    normalized = (value or "auto").strip().lower()
+    if normalized not in TRANSLATION_STRATEGY_CHOICES:
+        allowed = ", ".join(sorted(TRANSLATION_STRATEGY_CHOICES))
+        raise HTTPException(status_code=400, detail=f"translation_strategy 仅支持：{allowed}")
     return normalized
 
 
@@ -125,12 +144,8 @@ def _normalize_translation_model(
 ) -> str:
     if not enable_translation:
         return ""
-    default_model = (
-        "deepseek-v4-pro"
-        if translation_quality in {"high", "literary"}
-        else DEFAULT_TRANSLATION_MODEL
-    )
-    value = (model or default_model).strip()
+    # Quality selects the review pipeline, not a silent model/cost upgrade.
+    value = (model or DEFAULT_TRANSLATION_MODEL).strip()
     if value not in TRANSLATION_MODEL_CHOICES:
         allowed = ", ".join(TRANSLATION_MODEL_CHOICES)
         raise HTTPException(status_code=400, detail=f"translation_model 仅支持：{allowed}")
@@ -330,6 +345,8 @@ def _amount_equal(a: str, b: str) -> bool:
 # ---------- API v2 状态与响应映射 ----------
 def _job_to_v2_status(job: Job) -> str:
     """将内部 JobStatus 映射为 API v2 状态字符串。"""
+    if job.status in (JobStatus.awaiting_confirmation, JobStatus.confirming):
+        return "awaiting_confirmation"
     if job.status == JobStatus.pending_payment:
         return "pending_payment"
     if job.status == JobStatus.pending:
@@ -381,7 +398,13 @@ def _job_qa_report(job: Job) -> dict | None:
     # 运行中的失败计数仍可能被后续自动重试或最终补译消除，不能提前作为
     # 最终质检结论返回。重译刚排队时保留 retrying 状态用于接口反馈。
     if (
-        job.status in (JobStatus.pending_payment, JobStatus.pending, JobStatus.running)
+        job.status in (
+            JobStatus.awaiting_confirmation,
+            JobStatus.confirming,
+            JobStatus.pending_payment,
+            JobStatus.pending,
+            JobStatus.running,
+        )
         and report.get("status") != "retrying"
     ):
         return None
@@ -664,6 +687,14 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
         "literary_verification_attempts": int(stats.get("literary_verification_attempts") or 0),
         "literary_verification_changed": int(stats.get("literary_verification_changed") or 0),
         "literary_verification_rejected": int(stats.get("literary_verification_rejected") or 0),
+        "global_rate_limit_acquisitions": int(stats.get("global_rate_limit_acquisitions") or 0),
+        "global_rate_limit_wait_ms": int(stats.get("global_rate_limit_wait_ms") or 0),
+        "global_route_health_reads": int(stats.get("global_route_health_reads") or 0),
+        "global_route_health_writes": int(stats.get("global_route_health_writes") or 0),
+        "consistency_violations": int(stats.get("consistency_violations") or 0),
+        "consistency_chapters_affected": int(stats.get("consistency_chapters_affected") or 0),
+        "term_highlight_count": int(stats.get("term_highlight_count") or 0),
+        "chapter_strategy_overrides_applied": int(stats.get("chapter_strategy_overrides_applied") or 0),
     }
     failed_chunk_locations = _chunk_location_samples(job, chunks, limit=8)
 
@@ -793,6 +824,12 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
 def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     """构建 v2 任务详情响应。"""
     download_url = _attach_download_sig(job.id, download_url_path) if _job_can_download(job) else None
+    public_translation_stats = dict(job.translation_stats or {})
+    translation_preflight = public_translation_stats.pop("translation_preflight", None)
+    expose_full_preflight = job.status in (
+        JobStatus.awaiting_confirmation,
+        JobStatus.confirming,
+    )
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -810,11 +847,16 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "translation_model": getattr(job, "translation_model", "") or "",
         "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
         "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
+        "translation_strategy": getattr(job, "translation_strategy", "auto") or "auto",
+        "translation_preflight": (
+            translation_preflight
+            if job.enable_translation and expose_full_preflight else None
+        ),
         "temperature": getattr(job, "temperature", None),
         "error_code": job.error_code,
         "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
-        "translation_stats": job.translation_stats or None,
+        "translation_stats": public_translation_stats or None,
         "translation_timing": _job_translation_timing(job),
         "qa_report": _job_qa_report(job),
         "metrics_summary": job.metrics_summary or None,
@@ -1098,6 +1140,7 @@ async def create_job(
     target_lang: str = Form("zh-CN"),
     bilingual: bool = Form(False),
     translation_model: str = Form(""),
+    translation_strategy: str = Form("auto"),
     glossary_json: Optional[str] = Form(None),  # JSON 字符串: '{"Harry": "哈利"}'
     device: DeviceProfile = Form(DeviceProfile.generic),
     out_trade_no: Optional[str] = Form(None),
@@ -1126,6 +1169,7 @@ async def create_job(
         except (json.JSONDecodeError, ValueError):
             raise HTTPException(status_code=400, detail="glossary_json 格式错误，应为 JSON 对象字符串")
     translation_model = _normalize_translation_model(translation_model, enable_translation)
+    translation_strategy = _normalize_translation_strategy(translation_strategy, enable_translation)
 
     job_id = uuid.uuid4().hex[:12]
     trace_id = uuid.uuid4().hex
@@ -1149,6 +1193,7 @@ async def create_job(
         target_lang=target_lang,
         bilingual=bilingual,
         translation_model=translation_model,
+        translation_strategy=translation_strategy,
         glossary=glossary,
         device=device,
         traditional_variant=traditional_variant.value,
@@ -1169,6 +1214,7 @@ async def create_job(
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "translation_model": job.translation_model,
+        "translation_strategy": job.translation_strategy,
         "device": job.device,
         "traditional_variant": job.traditional_variant,
         "message": "任务已创建",
@@ -1189,6 +1235,9 @@ def get_job(job_id: str, request: Request):
         "output_mode": job.output_mode,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
+        "bilingual": job.bilingual,
+        "translation_model": getattr(job, "translation_model", "") or "",
+        "translation_strategy": getattr(job, "translation_strategy", "auto") or "auto",
         "device": job.device,
         "status": job.status,
         "message": job.message,
@@ -1237,6 +1286,8 @@ async def create_job_v2(
     translation_model: str = Form(""),
     translation_quality: str = Form("standard"),
     cache_policy: str = Form(""),
+    translation_strategy: str = Form("auto"),
+    profile_confirmation: bool = Form(False),
     glossary_json: Optional[str] = Form(None),
     device: DeviceProfile = Form(DeviceProfile.generic),
     out_trade_no: Optional[str] = Form(None),
@@ -1250,7 +1301,7 @@ async def create_job_v2(
 ):
     """上传文件并创建后台任务。
 
-    标准模式默认 Flash/0.3/复用缓存；高质量模式默认 Pro/0.2/验证缓存；
+    各质量档位默认 Flash；标准模式 0.3/复用缓存，高质量模式 0.2/验证缓存；
     文学模式增加全书风格档案、章节编辑和原文语义回查。
     """
     import os as _os
@@ -1282,6 +1333,7 @@ async def create_job_v2(
 
     translation_quality = _normalize_translation_quality(translation_quality, enable_translation)
     cache_policy = _normalize_cache_policy(cache_policy, enable_translation, translation_quality)
+    translation_strategy = _normalize_translation_strategy(translation_strategy, enable_translation)
     if temperature is None and enable_translation:
         temperature = 0.2 if translation_quality in {"high", "literary"} else 0.3
     elif not enable_translation:
@@ -1361,7 +1413,50 @@ async def create_job_v2(
     estimated_chars = 0
 
     pricing_info = {}
-    if not _skip_payment:
+    translation_preflight = None
+    require_profile_confirmation = bool(
+        enable_translation
+        and profile_confirmation
+        and safe_name.lower().endswith(".epub")
+    )
+    if require_profile_confirmation:
+        try:
+            translation_preflight = await asyncio.to_thread(
+                build_translation_preflight,
+                epub_path=input_path,
+                job_id=job_id,
+                target_lang=target_lang,
+                translation_model=translation_model,
+                requested_strategy=translation_strategy,
+                user_glossary=glossary,
+            )
+            pricing_info = _estimate_translation_pricing(
+                str(input_path),
+                target_lang,
+                glossary,
+            )
+            estimated_chars = pricing_info.get("total_chars", 0)
+            expected_amount = (
+                _TEST_PRICE
+                if _is_admin_test
+                else pricing_info.get(
+                    "price_cny",
+                    _calc_translation_price(estimated_chars),
+                )
+            )
+            job_status = JobStatus.awaiting_confirmation
+        except Exception as exc:
+            input_path.unlink(missing_ok=True)
+            logger.error(
+                "Failed to build translation preflight: %s",
+                exc,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="图书分析暂时失败，请稍后重试",
+            )
+    elif not _skip_payment:
         try:
             if enable_translation:
                 # 翻译：按 Token 动态定价 + 缓存命中率折扣
@@ -1427,6 +1522,7 @@ async def create_job_v2(
         token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
         creator_ip=client_ip,
         creator_session=client_session,
+        is_test_order=_is_admin_test,
         expected_amount=expected_amount,
         enable_translation=enable_translation,
         target_lang=target_lang,
@@ -1434,6 +1530,7 @@ async def create_job_v2(
         translation_model=translation_model,
         translation_quality=translation_quality,
         cache_policy=cache_policy,
+        translation_strategy=translation_strategy,
         glossary=glossary,
         device=device,
         temperature=temperature,
@@ -1444,7 +1541,25 @@ async def create_job_v2(
         precision_polish_order_no=polish_order_no or "",
         user_id=current_user.id if current_user else None,
         status=job_status,
-        translation_stats=initial_translation_stats() if enable_translation else {},
+        message=(
+            "请确认图书画像与翻译设定"
+            if job_status == JobStatus.awaiting_confirmation
+            else (
+                "请完成支付以启动任务"
+                if job_status == JobStatus.pending_payment
+                else "任务已创建，已进入后台队列"
+            )
+        ),
+        translation_stats=(
+            {
+                **initial_translation_stats(),
+                **(
+                    {"translation_preflight": translation_preflight}
+                    if translation_preflight else {}
+                ),
+            }
+            if enable_translation else {}
+        ),
     )
     job_store.add(job)
 
@@ -1460,7 +1575,15 @@ async def create_job_v2(
         "trace_id": job.trace_id,
         "access_token": job.access_token,
         "status": _job_to_v2_status(job),
-        "message": "请完成支付以启动任务" if job_status == JobStatus.pending_payment else "任务已创建，已进入后台队列",
+        "message": (
+            "请确认图书画像与翻译设定"
+            if job_status == JobStatus.awaiting_confirmation
+            else (
+                "请完成支付以启动任务"
+                if job_status == JobStatus.pending_payment
+                else "任务已创建，已进入后台队列"
+            )
+        ),
         "source_filename": job.source_filename,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
@@ -1468,6 +1591,7 @@ async def create_job_v2(
         "translation_model": job.translation_model,
         "translation_quality": job.translation_quality,
         "cache_policy": job.cache_policy,
+        "translation_strategy": job.translation_strategy,
         "temperature": job.temperature,
         "device": job.device.value,
         "traditional_variant": job.traditional_variant,
@@ -1477,7 +1601,254 @@ async def create_job_v2(
         "amount": expected_amount,
         "estimated_chars": estimated_chars,
         "pricing": pricing_info or None,
+        "translation_preflight": translation_preflight,
     }
+
+
+def _confirmed_translation_preflight(
+    *,
+    existing: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], str, bool, dict[str, str]]:
+    """Validate bounded user edits and produce the immutable confirmed snapshot."""
+    if not isinstance(existing, dict) or not existing:
+        raise HTTPException(status_code=409, detail="该任务缺少可确认的图书画像")
+    requested_strategy = str(
+        payload.get("translation_strategy")
+        or existing.get("resolved_strategy")
+        or "neutral_faithful"
+    ).strip().lower()
+    if requested_strategy == "auto":
+        requested_strategy = str(
+            existing.get("resolved_strategy") or "neutral_faithful"
+        )
+    strategy = _normalize_translation_strategy(requested_strategy, True)
+
+    raw_glossary = payload.get("glossary", existing.get("glossary") or {})
+    if not isinstance(raw_glossary, dict):
+        raise HTTPException(status_code=400, detail="glossary 必须是 JSON 对象")
+    glossary: dict[str, str] = {}
+    for source, translated in list(raw_glossary.items())[:240]:
+        source_text = str(source).strip()[:180]
+        translated_text = str(translated).strip()[:180]
+        if source_text and translated_text:
+            glossary[source_text] = translated_text
+
+    raw_characters = payload.get("characters", existing.get("characters") or [])
+    if not isinstance(raw_characters, list):
+        raise HTTPException(status_code=400, detail="characters 必须是 JSON 数组")
+    characters: list[dict[str, Any]] = []
+    for item in raw_characters[:120]:
+        if not isinstance(item, dict):
+            continue
+        source_name = str(item.get("source_name") or "").strip()[:120]
+        if not source_name:
+            continue
+        translated_name = str(item.get("translated_name") or "").strip()[:120]
+        aliases = [
+            str(alias).strip()[:100]
+            for alias in (item.get("aliases") or [])[:12]
+            if str(alias).strip()
+        ] if isinstance(item.get("aliases"), list) else []
+        relationships = [
+            str(value).strip()[:180]
+            for value in (item.get("relationships") or [])[:16]
+            if str(value).strip()
+        ] if isinstance(item.get("relationships"), list) else []
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        character = {
+            "source_name": source_name,
+            "translated_name": translated_name,
+            "aliases": aliases,
+            "pronouns": str(item.get("pronouns") or "unknown").strip()[:80],
+            "role": str(item.get("role") or "unknown").strip()[:240],
+            "relationships": relationships,
+            "evidence": str(item.get("evidence") or "").strip()[:320],
+            "confidence": round(confidence, 3),
+            "status": str(item.get("status") or "confirmed").strip()[:32],
+        }
+        characters.append(character)
+        if translated_name:
+            glossary[source_name] = translated_name
+
+    chapter_keys = {
+        str(item.get("chapter_id") or "")
+        for item in existing.get("chapters") or []
+        if isinstance(item, dict) and str(item.get("chapter_id") or "")
+    }
+    raw_overrides = payload.get(
+        "chapter_strategy_overrides",
+        existing.get("chapter_strategy_overrides") or {},
+    )
+    if not isinstance(raw_overrides, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="chapter_strategy_overrides 必须是 JSON 对象",
+        )
+    chapter_overrides: dict[str, str] = {}
+    for chapter_id, value in list(raw_overrides.items())[:500]:
+        chapter_key = str(chapter_id).strip()
+        if chapter_key not in chapter_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"未知章节：{chapter_key[:120]}",
+            )
+        chapter_overrides[chapter_key] = _normalize_translation_strategy(
+            str(value),
+            True,
+        )
+        if chapter_overrides[chapter_key] == "auto":
+            chapter_overrides.pop(chapter_key)
+
+    glossary_rows_by_source = {
+        str(item.get("source") or ""): dict(item)
+        for item in existing.get("glossary_catalog") or []
+        if isinstance(item, dict) and str(item.get("source") or "")
+    }
+    glossary_catalog: list[dict[str, Any]] = []
+    for source, translated in sorted(glossary.items(), key=lambda item: item[0].casefold()):
+        row = glossary_rows_by_source.get(source, {
+            "source": source,
+            "type": "term",
+            "aliases": [],
+            "first_location": "",
+            "source_example": "",
+            "origin": "user",
+            "confidence": 1.0,
+        })
+        row.update({
+            "source": source,
+            "translation": translated,
+            "origin": "user",
+            "status": "confirmed",
+        })
+        glossary_catalog.append(row)
+
+    confirmed = dict(existing)
+    profile = dict(existing.get("profile") or {})
+    profile["characters"] = characters
+    confirmed.update({
+        "version": int(existing.get("version") or 1) + 1,
+        "status": "confirmed",
+        "confirmed": True,
+        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "override_reason": str(payload.get("override_reason") or "").strip()[:500],
+        "resolved_strategy": strategy,
+        "strategy_source": "user_confirmed",
+        "glossary": glossary,
+        "glossary_catalog": glossary_catalog,
+        "characters": characters,
+        "profile": profile,
+        "chapter_strategy_overrides": chapter_overrides,
+        "enable_term_highlights": bool(payload.get("enable_term_highlights", False)),
+    })
+    return confirmed, strategy, bool(payload.get("bilingual", False)), glossary
+
+
+@app.post("/api/v2/jobs/{job_id}/confirm-profile")
+def confirm_translation_profile_v2(
+    job_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Confirm profiler output and only then create the payment order."""
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not job.enable_translation:
+        raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
+    if job.status != JobStatus.awaiting_confirmation:
+        raise HTTPException(
+            status_code=409,
+            detail="当前任务已确认或正在确认，请勿重复提交",
+        )
+    preflight = (job.translation_stats or {}).get("translation_preflight")
+    confirmed, strategy, bilingual, glossary = _confirmed_translation_preflight(
+        existing=preflight,
+        payload=payload,
+    )
+    begin = getattr(job_store, "begin_translation_confirmation", None)
+    if not callable(begin):
+        raise HTTPException(status_code=500, detail="当前存储后端不支持画像确认")
+    claimed = begin(
+        job.id,
+        translation_strategy=strategy,
+        bilingual=bilingual,
+        glossary=glossary,
+        translation_preflight=confirmed,
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="任务已由其他请求确认，请勿重复提交")
+
+    skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in (
+        "1", "true", "yes",
+    )
+    amount = claimed.expected_amount or _calc_translation_price(0)
+    pay_url = None
+    try:
+        if not skip_payment:
+            pay_url = create_alipay_page_pay(
+                out_trade_no=claimed.id,
+                total_amount=amount,
+                subject=f"EPUB AI 翻译服务 - {claimed.source_filename[:50]}",
+                return_url=f"https://fixepub.com/?job_id={claimed.id}",
+            )
+        next_status = JobStatus.pending if skip_payment else JobStatus.pending_payment
+        next_message = (
+            "画像已确认，任务已进入后台队列"
+            if skip_payment else "画像已确认，请完成支付以启动任务"
+        )
+        finish = getattr(job_store, "finish_translation_confirmation", None)
+        refreshed = finish(
+            claimed.id,
+            status=next_status,
+            message=next_message,
+            expected_amount=amount,
+        ) if callable(finish) else None
+        if not refreshed:
+            raise RuntimeError("画像确认状态写入失败")
+    except Exception as exc:
+        rollback = getattr(job_store, "rollback_translation_confirmation", None)
+        if callable(rollback):
+            rollback(job.id, "支付订单创建失败，请重新确认")
+        logger.error(
+            "Failed to finish translation confirmation: %s",
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试")
+
+    add_stage = getattr(job_store, "add_stage", None)
+    if callable(add_stage):
+        now = datetime.now(timezone.utc)
+        add_stage(JobStage(
+            job_id=job.id,
+            stage_name="translation_profile_confirmed",
+            status=StageStatus.completed,
+            started_at=now,
+            finished_at=now,
+            metadata={
+                "message": "图书画像、术语、角色和章节策略已确认",
+                "level": "info",
+                "strategy": strategy,
+                "context_version": confirmed["version"],
+            },
+        ))
+    if skip_payment:
+        _enqueue_conversion(refreshed, background_tasks)
+    response = _job_to_v2_detail(refreshed, None)
+    response.update({
+        "pay_url": pay_url,
+        "amount": amount,
+        "translation_preflight": confirmed,
+    })
+    return response
 
 
 def _list_batch_jobs(batch_id: str) -> list[Job]:
@@ -1684,6 +2055,7 @@ async def create_batch_v2(
             creator_ip=client_ip,
             creator_session=client_session,
             user_id=current_user.id if current_user else None,
+            is_test_order=is_admin_test,
             expected_amount=expected_amount if index == 0 else "",
             batch_id=batch_id,
             batch_index=index,
@@ -1931,6 +2303,8 @@ def _enum_value(value) -> str:
 def _diagnose_error_category(error_message: str | None, audit_flags: list | None = None) -> str:
     msg = (error_message or "").lower()
     flags = set(audit_flags or [])
+    if "insufficient balance" in msg or "余额不足" in msg or "error code: 402" in msg:
+        return "provider_balance"
     if "likely_untranslated" in flags or "untranslated" in msg:
         return "untranslated_response"
     if "empty_translation" in flags or "missing translation" in msg:
@@ -2319,7 +2693,11 @@ def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
     model_timeout_count = int(stats.get("timeout_errors") or 0)
     connection_count = int(stats.get("connection_errors") or 0)
     likely_causes = []
-    if error_categories.get("untranslated_response") or (stats.get("audit_flags_count") or {}).get("likely_untranslated"):
+    if stats.get("provider_blocked") or error_categories.get("provider_balance"):
+        likely_causes.append("模型服务余额不足，属于服务配置问题；恢复服务后可复用成功译文缓存继续")
+    untranslated_count = int((stats.get("audit_flags_count") or {}).get("likely_untranslated") or 0)
+    balance_count = int(error_categories.get("provider_balance") or 0)
+    if error_categories.get("untranslated_response") or untranslated_count > balance_count:
         likely_causes.append("模型返回原文或近似原文，系统已拦截以避免中英混杂交付")
     if error_categories.get("timeout") or model_timeout_count:
         likely_causes.append("模型 API 响应超时，可能与上游服务负载或单批内容过长有关")
@@ -2466,8 +2844,8 @@ def retry_translation_v2(job_id: str, request: Request, background_tasks: Backgr
         raise HTTPException(status_code=403, detail="无权访问该任务")
     if not job.enable_translation:
         raise HTTPException(status_code=400, detail="该任务不是 AI 翻译任务")
-    if job.error_code != ErrorCode.PARTIAL_TRANSLATION.value:
-        raise HTTPException(status_code=400, detail="当前任务未处于质检失败状态")
+    if job.error_code not in {ErrorCode.PARTIAL_TRANSLATION.value, ErrorCode.TRANSLATION_PROVIDER_UNAVAILABLE.value}:
+        raise HTTPException(status_code=400, detail="当前任务未处于质检失败或模型服务暂停状态")
     return _restart_translation_job(
         job,
         background_tasks,
@@ -2487,6 +2865,7 @@ def restart_translation_v2(
     translation_quality: Optional[str] = None,
     cache_policy: Optional[str] = None,
     translation_model: Optional[str] = None,
+    translation_strategy: Optional[str] = None,
     temperature: Optional[float] = None,
 ):
     """重启翻译任务：用于取消、失败后的人工重新排队。"""
@@ -2511,6 +2890,10 @@ def restart_translation_v2(
         True,
         translation_quality=quality,
     )
+    strategy = _normalize_translation_strategy(
+        translation_strategy or getattr(job, "translation_strategy", "auto"),
+        True,
+    )
     resolved_temperature = (
         temperature
         if temperature is not None
@@ -2527,6 +2910,7 @@ def restart_translation_v2(
         translation_quality=quality,
         cache_policy=policy,
         translation_model=model,
+        translation_strategy=strategy,
         temperature=resolved_temperature,
     )
 
@@ -2539,9 +2923,16 @@ def _restart_translation_job(
     translation_quality: str | None = None,
     cache_policy: str | None = None,
     translation_model: str | None = None,
+    translation_strategy: str | None = None,
     temperature: float | None = None,
 ):
-    if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
+    if job.status in (
+        JobStatus.awaiting_confirmation,
+        JobStatus.confirming,
+        JobStatus.pending,
+        JobStatus.running,
+        JobStatus.pending_payment,
+    ):
         raise HTTPException(status_code=400, detail="任务仍在处理中；如需重启，请先停止当前翻译。")
     if not Path(job.input_path).exists():
         raise HTTPException(status_code=410, detail="原始上传文件已过期，无法重启翻译")
@@ -2561,6 +2952,7 @@ def _restart_translation_job(
         cache_policy=cache_policy,
         temperature=temperature,
         translation_model=translation_model,
+        translation_strategy=translation_strategy,
     )
     if reason == "retry_limit":
         raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")
@@ -2662,13 +3054,17 @@ def recover_job_payment(job_id: str, request: Request):
 
 @app.post("/api/v2/jobs/{job_id}/cancel")
 def cancel_job_v2(job_id: str, request: Request):
-    """取消任务（v2）。仅当任务为 queued 或 running 时可取消。"""
+    """取消任务（v2）。画像待确认、queued 或 running 时可取消。"""
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
-    if job.status not in (JobStatus.pending, JobStatus.running):
+    if job.status not in (
+        JobStatus.awaiting_confirmation,
+        JobStatus.pending,
+        JobStatus.running,
+    ):
         raise HTTPException(status_code=400, detail="当前状态不可取消")
     message = "用户已停止翻译" if job.enable_translation else "用户取消"
     job_store.update_status(job_id, JobStatus.cancelled, message)
@@ -2929,6 +3325,7 @@ async def alipay_webhook(request: Request):
                 if not expected or not _amount_equal(actual, expected):
                     logger.warning("Alipay webhook batch amount mismatch", extra={"job_id": out_trade_no})
                     return Response("fail")
+                record_event(job_store, out_trade_no, "payment_succeeded", "verified_webhook")
                 if not _release_batch(batch_id):
                     logger.info("Alipay batch webhook ignored (already processed)", extra={"job_id": out_trade_no})
                 else:
@@ -2949,6 +3346,8 @@ async def alipay_webhook(request: Request):
             if not _amount_equal(actual, expected):
                 logger.warning("Alipay webhook amount mismatch", extra={"job_id": out_trade_no})
                 return Response("fail")
+
+            record_event(job_store, out_trade_no, "payment_succeeded", "verified_webhook")
 
             # 条件原子更新：只有"首次确认支付成功"的 webhook 会拿到 True，
             # 后续重试 / 并发回调一律返回 False，避免重复入队 → 重复消费 Token。
@@ -3359,6 +3758,7 @@ def robots_txt():
         "Allow: /",
         "Disallow: /api/",
         "Disallow: /admin.html",
+        "Disallow: /orders-admin.html",
         "Sitemap: https://fixepub.com/sitemap.xml",
     ])
     return Response(content=content, media_type="text/plain")
@@ -3392,6 +3792,24 @@ def _favicon():
     if favicon_path.is_file():
         return FileResponse(str(favicon_path), media_type="image/x-icon")
     return Response(status_code=204)
+
+from .admin.router import make_router as make_admin_router
+app.include_router(make_admin_router(job_store, UPLOAD_DIR, OUTPUT_DIR, _enqueue_conversion))
+app.include_router(make_event_router(job_store, _authorize_job_access))
+
+
+@app.middleware("http")
+async def admin_private_cache(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches")):
+        # A refresh must recover authoritative state and a newly signed download URL.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    elif path == "/" or path.endswith((".html", ".js", ".css")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
 
 if _FRONTEND_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

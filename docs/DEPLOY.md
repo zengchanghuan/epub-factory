@@ -10,8 +10,8 @@
 # 首次安装部署公钥，需要在本机终端输入一次服务器密码。
 bash scripts/setup-deploy-ssh.sh
 
-# 后续免密部署，可在任意目录执行。
-bash /Users/tristan/workspace/epub-factory/deploy.sh
+# 后续免密部署：进入本机实际工程目录，不依赖用户名或固定目录。
+bash deploy.sh
 
 # 仅检查连接、服务器环境和运行中的任务，不发布。
 bash deploy.sh --check
@@ -28,6 +28,10 @@ DEPLOY_HOST=ubuntu@81.71.22.79 DEPLOY_PORT=22 bash deploy.sh
 免密安装脚本生成专用密钥 `~/.ssh/id_ed25519_fixepub`，只把公钥追加到服务器 `authorized_keys`，保留已有公钥；不保存密码、不修改 SSH 服务配置。私钥没有口令，保存在本机权限受限的 SSH 目录中，不进入工程或部署包。已有密钥可通过 `DEPLOY_KEY` 指定；带口令的密钥需先加入 ssh-agent。仅生成密钥可运行 `bash scripts/setup-deploy-ssh.sh --prepare`。部署入口启用 `BatchMode=yes` 和严格主机校验，认证异常会立即失败，不退回密码登录。
 
 服务器执行 `sudo -n`：若账号没有免密 sudo，优先使用下面的腾讯云终端方式，在同一终端执行 `sudo -v` 后发布。脚本不会保存、传输文件形式的密码，也不会修改 sudo 权限。
+
+首页和脚本由 Nginx 静态入口提供，须设置 `Cache-Control: no-cache, must-revalidate`，不能只依赖 FastAPI 中间件。发布后分别核验公网首页、带版本的 `lib.js` 和任务 API；任务接口应为 `no-store`。原下单浏览器的会话和任务令牌须保留，新浏览器/新会话不会自动获得历史订单权限。
+
+入口重载前运行 `sudo /usr/sbin/nginx -t`。如证书与私钥不匹配，不直接重载当前仍正常运行的入口；先验证已安装证书的配对、域名和有效期，备份站点配置，再修正路径并通过校验。2026-09-17 已将本机站点证书指向与现有私钥匹配的 `/etc/nginx/ssl/fixepub.com.pem`，未更换密钥。
 
 ## 腾讯云网页终端部署
 
@@ -51,12 +55,25 @@ curl -fsS https://fixepub.com/api/healthz
 ## 发布行为
 
 - 使用 Git 文件清单打包当前磁盘上的源码，包含未提交修改及未被忽略的新源码文件。采用源码目录和扩展名白名单；数据库、译文缓存、上传书籍、成品、日志、`.env`、密钥、虚拟环境及其他运行数据不进入发布包。
-- 包内记录每个文件的 SHA-256。服务器校验路径和校验值，备份即将覆盖的代码及当前依赖版本，然后覆盖源码、更新依赖。
+- 包内记录每个文件的 SHA-256。服务器维护前校验路径和校验值，备份即将覆盖的代码及当前依赖版本，然后覆盖源码、更新依赖。
+- 已有 SQLite 服务升级会在服务器本地一致性备份订单数据库、译文缓存及 `.env`，权限为目录 0700、数据文件 0600，不导出到本机。其他数据库须先完成外部备份，脚本会拒绝自动继续。
+- 保留密钥、定价及用户权限，只将翻译默认模型设为 Flash、关闭首轮复杂块直接升级，并把可见性超时设为至少 10800 秒且大于任务硬时限。
 - 若数据库有排队或运行中的任务，拒绝部署。实际发布时短暂停止 API 和 beat，再次检查任务，避免检查后新任务进入；因此会有短暂维护中断。
 - 重启 API、worker、beat，并检查服务状态及本机 `/healthz`；本机入口还会验证公网 `/api/healthz`（校验 JSON 状态为 `ok`）。任何失败返回非零退出码，不会输出部署成功。
+- 正式发布持有服务器工程目录下的 `.deploy.lock` 排他锁，覆盖备份、配置更新和服务重启。另一台 Mac 同时发布会明确拒绝，不互相覆盖；`--check` 只是只读快照，不保留发布权。入口证书配置在维护前校验。
 - 不清空缓存，不更改订单支付状态，不自动重跑历史订单。删除源码文件的迁移需单独处理；本脚本不会删除服务器上未列入发布包的文件。
 
 整书时限默认 7200/7500 秒。若需覆盖，在服务器 `backend/.env` 设置 `EPUB_BOOK_SOFT_TIME_LIMIT` 和 `EPUB_BOOK_TIME_LIMIT`，硬时限必须大于软时限。
+
+默认模型名为 `deepseek-flash`（DeepSeek V4.1 Flash）。旧 `deepseek-v4-flash` 和 `deepseek-v4-flash-vision-exp` 只保留兼容，历史订单和缓存键不批量改写。最新官方说明以[更新日志](https://api-docs.deepseek.com/zh-cn/updates/)为准，Pro 显式选择仍保留。
+
+## 两台 Mac 共用工程
+
+每台 Mac 独立安装部署公钥：在各自工程目录运行 `bash scripts/setup-deploy-ssh.sh`，各自私钥保留在 `~/.ssh/id_ed25519_fixepub`。不通过 Git、共享文件夹或发布包同步私钥，不覆盖另一台 Mac 的公钥。已有受控密钥可在本机通过 `DEPLOY_KEY` 指定；不要把个人绝对路径写入仓库。
+
+常规流程：工作区干净后运行 `git pull --ff-only`，确认两台 Mac 使用同一提交，再运行 `bash deploy.sh --check` 和 `bash deploy.sh`。有未提交修改时先保存并审查，不强制拉取或覆盖。负责修改的一台先提交和推送，另一台再拉取；`push.sh` 仍要求已提交的干净 `main`。
+
+两台 Mac 只同步代码。生产 `.env`、订单数据库、译文缓存、上传文件和译后文件均留在服务器，部署不会用本机数据替换它们。不要同时发布；服务器锁是误操作兜底。这里只验证了隔离本机目录/密钥的离线测试，另一台 Mac 的真实免密连接仍需在那台机器执行 `--check`。
 
 腾讯 TokenHub 备用通道已移除，旧的 `TOKENHUB_BASE_URL` 和 `TOKENHUB_API_KEY` 不再读取，服务器 `.env` 中残留这两项也不会启用该通道。翻译继续使用 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`；若曾手动把 TokenHub 地址填入 `OPENAI_BASE_URL` 或 `OPENAI_BASE_URL_FALLBACKS`，需将其改为仍可用的服务地址并配置对应密钥。发布包不包含任何 API 密钥。
 
@@ -69,6 +86,6 @@ curl -fsS https://fixepub.com/api/healthz
 - `pip-freeze.txt`：更新依赖前的版本；
 - `deploy-manifest.json`：本次发布的文件及哈希。
 
-失败时先查看 `journalctl -u epub-factory -u epub-factory-worker -u epub-factory-beat -n 100 --no-pager`。发布失败会尝试启动 API/beat；若新代码或依赖无法运行，应回退后再重启，不能把启动尝试当作恢复成功。
+失败时先查看 `journalctl -u epub-factory -u epub-factory-worker -u epub-factory-beat -n 100 --no-pager`。发布失败会尝试启动三个服务；若新代码或依赖无法运行，应回退后再重启，不能把启动尝试当作恢复成功。
 
-回退时停止三个服务，把 `previous-code.zip` 解压回工程目录，依据 `new-files.json` 移除本次新增的代码文件；若依赖已更新，按 `pip-freeze.txt` 恢复所需版本，再重启并检查 `/healthz`。这份备份只覆盖代码和依赖清单，不是数据库备份，不能撤销应用启动时发生的数据迁移。脚本不会自动执行数据库回滚。
+回退时停止三个服务，把 `previous-code.zip` 解压回工程目录，依据 `new-files.json` 移除本次新增的代码文件；若依赖已更新，按 `pip-freeze.txt` 恢复所需版本，再重启并检查 `/healthz`。`jobs.sqlite3`、`translation-cache.sqlite3` 和 `production.env` 是维护前的运行数据备份。代码回退不自动恢复数据库；如需恢复，须停止全部服务并另行核验，避免覆盖发布后新订单。脚本不会自动执行数据库回滚。

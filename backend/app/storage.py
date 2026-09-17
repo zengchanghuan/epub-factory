@@ -111,17 +111,30 @@ class JobStore:
         action_label: str,
         max_free_retries: int,
         started_at: datetime,
+        expected_updated_at: datetime | None = None,
+        failed_only: bool = False,
         translation_quality: str | None = None,
         cache_policy: str | None = None,
         temperature: float | None = None,
         translation_model: str | None = None,
+        translation_strategy: str | None = None,
     ) -> tuple[Optional[Job], str]:
         """Atomically validate, reset, and claim a new translation attempt."""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return None, "missing"
-            if job.status in (JobStatus.pending, JobStatus.running, JobStatus.pending_payment):
+            if job.status in (
+                JobStatus.awaiting_confirmation,
+                JobStatus.confirming,
+                JobStatus.pending,
+                JobStatus.running,
+                JobStatus.pending_payment,
+            ):
+                return job, "active"
+            if failed_only and job.status != JobStatus.failed:
+                return job, "active"
+            if expected_updated_at is not None and job.updated_at != expected_updated_at:
                 return job, "active"
             previous = dict(job.translation_stats or {})
             free_retry_count = int(previous.get("free_retry_count") or 0)
@@ -147,6 +160,8 @@ class JobStore:
                 job.temperature = temperature
             if translation_model is not None:
                 job.translation_model = translation_model
+            if translation_strategy is not None:
+                job.translation_strategy = translation_strategy
             job.status = JobStatus.pending
             job.message = f"{action_label}已排队（第 {stats['translation_attempt']} 次尝试）"
             job.error_code = None
@@ -156,6 +171,59 @@ class JobStore:
             job.metrics_summary = ""
             job.updated_at = started_at
             return job, "ok"
+
+    def begin_translation_confirmation(
+        self,
+        job_id: str,
+        *,
+        translation_strategy: str,
+        bilingual: bool,
+        glossary: dict[str, str],
+        translation_preflight: dict[str, Any],
+    ) -> Optional[Job]:
+        """Atomically claim and persist a user-confirmed preflight."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.awaiting_confirmation:
+                return None
+            job.status = JobStatus.confirming
+            job.message = "正在创建支付订单..."
+            job.translation_strategy = translation_strategy
+            job.bilingual = bool(bilingual)
+            job.glossary = dict(glossary)
+            stats = dict(job.translation_stats or {})
+            stats["translation_preflight"] = dict(translation_preflight)
+            job.translation_stats = stats
+            job.updated_at = datetime.now(timezone.utc)
+            return job
+
+    def finish_translation_confirmation(
+        self,
+        job_id: str,
+        *,
+        status: JobStatus,
+        message: str,
+        expected_amount: str,
+    ) -> Optional[Job]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.confirming:
+                return None
+            job.status = status
+            job.message = message
+            job.expected_amount = expected_amount
+            job.updated_at = datetime.now(timezone.utc)
+            return job
+
+    def rollback_translation_confirmation(self, job_id: str, message: str) -> Optional[Job]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.confirming:
+                return None
+            job.status = JobStatus.awaiting_confirmation
+            job.message = message
+            job.updated_at = datetime.now(timezone.utc)
+            return job
 
     def list_chunks(self, job_id: str, chapter_id: Optional[str] = None) -> list:
         """返回该任务（可选某章）的 chunk 列表，按 chapter_id、sequence 排序。"""

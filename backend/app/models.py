@@ -19,6 +19,8 @@ class User:
 
 
 class JobStatus(str, Enum):
+    awaiting_confirmation = "awaiting_confirm"
+    confirming = "confirming"
     pending_payment = "pending_payment"
     pending = "pending"
     running = "running"
@@ -49,6 +51,7 @@ class ErrorCode(str, Enum):
     """所有已定义的错误码，集中管理避免魔法字符串。"""
     CONVERT_FAILED = "CONVERT_FAILED"
     TRANSLATION_FAILED = "TRANSLATION_FAILED"
+    TRANSLATION_PROVIDER_UNAVAILABLE = "TRANSLATION_PROVIDER_UNAVAILABLE"
     PARTIAL_TRANSLATION = "PARTIAL_TRANSLATION"
     EPUB_VALIDATION_FAILED = "EPUB_VALIDATION_FAILED"
 
@@ -149,6 +152,7 @@ class Job:
     creator_ip: str = ""
     creator_session: str = ""
     user_id: Optional[str] = None  # 登录用户 ID，匿名任务为 None
+    is_test_order: bool = False  # Set only by a server-verified administrator test request.
     expected_amount: str = ""  # 下单时的应付金额（元），webhook 校验依据
     batch_id: str = ""  # 批量转换批次；空字符串表示普通单文件任务
     batch_index: int = 0
@@ -160,9 +164,10 @@ class Job:
     device: DeviceProfile = DeviceProfile.generic
     output_path: Optional[str] = None
     temperature: Optional[float] = None
-    translation_model: str = "deepseek-v4-flash"
+    translation_model: str = "deepseek-flash"
     translation_quality: str = "standard"  # standard | high | literary
     cache_policy: str = "reuse"            # reuse | verified | fresh
+    translation_strategy: str = "auto"     # auto | five versioned strategy assets
     traditional_variant: str = "auto"  # auto | tw | hk，仅简体输出时生效
     lexicon_domains: list = field(default_factory=lambda: ["general", "tech", "movie"])
     enable_proper_noun: bool = True

@@ -19,6 +19,8 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
+from urllib.parse import urlsplit
+from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
 
 logger = logging.getLogger("epub_factory.glossary")
 
@@ -299,7 +301,8 @@ async def translate_glossary(
 
     api_key = os.environ.get("OPENAI_API_KEY", "")
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    model = (os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL")
+             or os.environ.get("OPENAI_MODEL", "deepseek-flash"))
     if not api_key or api_key == "dummy":
         logger.warning("OPENAI_API_KEY 未配置，跳过术语 LLM 翻译")
         return {}
@@ -352,6 +355,8 @@ async def translate_glossary(
                     extra={"batch": batch_idx, "in": len(batch), "out": len(translations) if isinstance(translations, dict) else 0},
                 )
             except Exception as e:
+                if is_balance_error(e):
+                    raise ProviderAccountUnavailable(urlsplit(base_url).hostname or "primary") from e
                 logger.warning(f"glossary llm batch {batch_idx} failed: {e}")
                 continue
     finally:

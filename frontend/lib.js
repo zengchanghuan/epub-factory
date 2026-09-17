@@ -49,9 +49,9 @@ function buildFormFields(config) {
     fields.cache_policy = config.cachePolicy || (
       premiumQuality ? "verified" : "reuse"
     );
-    fields.translation_model = config.translationModel || (
-      premiumQuality ? "deepseek-v4-pro" : "deepseek-v4-flash"
-    );
+    fields.translation_model = config.translationModel || "deepseek-flash";
+    fields.translation_strategy = config.translationStrategy || "auto";
+    fields.profile_confirmation = String(config.profileConfirmation !== false);
     fields.temperature = String(
       config.temperature ?? (premiumQuality ? 0.2 : 0.3)
     );
@@ -82,6 +82,7 @@ function mapStatusText(status) {
 
 /** API v2 状态 → 前端展示文案 */
 const V2_STATUS_TEXT = {
+  awaiting_confirmation: "待确认画像",
   pending_payment: "待支付",
   queued: "排队中",
   preprocessing: "预处理中",
@@ -100,6 +101,7 @@ const V2_STATUS_TEXT = {
 function mapV2StatusText(v2Status, enableTranslation = false) {
   if (enableTranslation) {
     const translationMap = {
+      awaiting_confirmation: "待确认画像",
       queued: "排队中",
       preprocessing: "预处理中",
       mapping: "分析章节",
@@ -146,6 +148,17 @@ function formatJobMeta(job) {
       literary: "文学",
     }[job.translation_quality] || "标准";
     parts.push(qualityLabel);
+    const resolvedStrategy = job.translation_stats?.translation_strategy_resolved;
+    const strategy = resolvedStrategy || job.translation_strategy || "auto";
+    const strategyLabel = {
+      auto: "自动策略",
+      neutral_faithful: "中性忠实",
+      literary_narrative: "文学叙事",
+      academic_rigorous: "学术严谨",
+      mirror_fidelity: "镜像忠实",
+      practical_technical: "实用技术",
+    }[strategy] || strategy;
+    parts.push(strategyLabel);
     if (job.bilingual) parts.push("双语并排");
     return parts.join(" · ");
   }
@@ -239,6 +252,7 @@ function isSafeMode(summaryText) {
 const ERROR_CODE_HINTS = {
   CONVERT_FAILED: "引擎转换失败，可能是文件格式不兼容",
   TRANSLATION_FAILED: "AI 翻译未成功写入任何译文，请检查模型服务连接或稍后重试",
+  TRANSLATION_PROVIDER_UNAVAILABLE: "模型服务暂不可用，成功译文缓存已保留，恢复服务后可继续翻译",
   PARTIAL_TRANSLATION: "部分段落翻译失败，结果不可下载，可直接免费重新翻译",
   EPUB_VALIDATION_FAILED: "EPUB 校验未通过，结果不可交付，请重试或联系支持",
   UPLOAD_TOO_LARGE: "文件超过大小限制",

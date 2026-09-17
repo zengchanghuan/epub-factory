@@ -26,16 +26,28 @@ from typing import Any, Callable
 
 from bs4 import BeautifulSoup
 
-from app.cancellation import CancelCheck, raise_if_cancelled
+from app.cancellation import CancelCheck, raise_if_cancelled, JobCancelled
 from app.converter import converter
 from app.domain.book_reduce_service import make_get_chapter_content, reduce_and_package, set_chapter_output
+from app.domain.book_profile_service import profile_book
 from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
 from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.translation_attempt import attempt_id_from_stats
 from app.domain.manifest_service import build_manifest
 from app.domain.translation_quality_audit import audit_translation_chunk
+from app.domain.translation_residual_policy import confirmed_preserved_terms
+from app.infra.llm_errors import ProviderAccountUnavailable
+from app.domain.translation_consistency_audit import audit_book_consistency
+from app.domain.term_highlight_service import highlight_confirmed_terms
 from app.domain.translation_qa_service import attach_translation_qa_report
+from app.domain.translation_strategy import (
+    TRANSLATION_STRATEGY_LABELS,
+    build_readonly_chapter_summary,
+    resolve_translation_strategy,
+    strategy_allows_literary_polish,
+    strategy_recommends_bilingual,
+)
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.engine.compiler import EPUBCHECK_JAR
 from app.engine.glossary_extractor import verify_and_fix
@@ -120,6 +132,49 @@ def _extract_texts_from_manifest(manifest: dict) -> list[str]:
     return texts
 
 
+def _build_glossary_catalog(
+    *,
+    glossary_result: Any,
+    merged_glossary: dict[str, str],
+    character_glossary: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Persist an auditable whole-book terminology table without raw book dumps."""
+    candidates = {
+        str(candidate.term): candidate
+        for candidate in getattr(glossary_result, "candidates", []) or []
+    }
+    user_terms = set((getattr(glossary_result, "user_glossary", {}) or {}).keys())
+    global_terms = set((getattr(glossary_result, "global_glossary", {}) or {}).keys())
+    auto_terms = set((getattr(glossary_result, "auto_glossary", {}) or {}).keys())
+    rows: list[dict[str, Any]] = []
+    for source, translated in sorted(merged_glossary.items(), key=lambda item: item[0].casefold()):
+        candidate = candidates.get(source)
+        if source in user_terms:
+            origin, status = "user", "confirmed"
+        elif source in global_terms:
+            origin, status = "global", "curated"
+        elif source in auto_terms:
+            origin, status = "auto", "generated"
+        elif source in character_glossary:
+            origin, status = "book_profiler", "generated"
+        else:
+            origin, status = "unknown", "generated"
+        rows.append({
+            "source": source,
+            "translation": translated,
+            "kinds": sorted(getattr(candidate, "kinds", set()) or []),
+            "occurrences": int(getattr(candidate, "count", 0) or 0),
+            "confidence": round(float(getattr(candidate, "confidence", 0) or 0), 3),
+            "contexts": [
+                str(context)[:240]
+                for context in (getattr(candidate, "contexts", []) or [])[:2]
+            ],
+            "origin": origin,
+            "status": status,
+        })
+    return rows
+
+
 def _load_content_by_file(epub_path: str) -> dict[str, bytes]:
     unpacker = EpubUnpacker(epub_path)
     book = unpacker.load_book()
@@ -157,6 +212,8 @@ async def _translate_book_title_async(
     model: str | None = None,
     quality_mode: str = "standard",
     cache_policy: str = "reuse",
+    translation_strategy: str = "neutral_faithful",
+    book_profile: dict[str, Any] | None = None,
 ) -> str:
     title = (title or "").strip()
     if not title or not any(ch.isalpha() for ch in title):
@@ -169,6 +226,8 @@ async def _translate_book_title_async(
         model=model,
         quality_mode=quality_mode,
         cache_policy=cache_policy,
+        translation_strategy=translation_strategy,
+        book_profile=book_profile,
     )
     result = await translator.translate_single_chunk_async(f"<p>{html.escape(title)}</p>")
     if result.error:
@@ -354,9 +413,15 @@ async def _translate_manifest_async(
     content_by_file: dict[str, bytes],
     glossary: dict[str, str],
     original_book_title: str = "",
+    book_profile: dict[str, Any] | None = None,
+    translation_strategy: str = "neutral_faithful",
+    translation_strategy_source: str = "fallback",
+    chapter_strategy_overrides: dict[str, str] | None = None,
+    enable_term_highlights: bool = False,
     progress_callback: ProgressCallback,
     cancel_check: CancelCheck | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    chapter_strategy_overrides = dict(chapter_strategy_overrides or {})
     quality_mode = getattr(job, "translation_quality", "standard") or "standard"
     cache_policy = getattr(job, "cache_policy", "reuse") or "reuse"
     translator = SemanticsTranslator(
@@ -368,6 +433,9 @@ async def _translate_manifest_async(
         allow_cross_glossary_cache=int((job.translation_stats or {}).get("translation_attempt") or 1) > 1,
         quality_mode=quality_mode,
         cache_policy=cache_policy,
+        translation_strategy=translation_strategy,
+        book_profile=book_profile,
+        preserved_terms=confirmed_preserved_terms(getattr(job, "glossary", {})),
     )
     translator.cancel_check = cancel_check
     expected_attempt_id = attempt_id_from_stats(job.translation_stats)
@@ -376,7 +444,17 @@ async def _translate_manifest_async(
         ch for ch in manifest.get("chapters", [])
         if ch.get("chapter_kind") == ChapterKind.body.value and (ch.get("chunks") or [])
     ]
-    if quality_mode == "literary":
+    literary_polish_enabled = (
+        quality_mode == "literary"
+        and (
+            strategy_allows_literary_polish(translation_strategy)
+            or any(
+                strategy_allows_literary_polish(value)
+                for value in chapter_strategy_overrides.values()
+            )
+        )
+    )
+    if literary_polish_enabled:
         all_texts = _extract_texts_from_manifest(manifest)
         sample_texts: list[str] = []
         if all_texts:
@@ -415,6 +493,17 @@ async def _translate_manifest_async(
         "audit_flags_count": {},
         "audit_examples": [],
     }
+    book_consistency_audit: dict[str, Any] = {
+        "consistency_checks": 0,
+        "consistency_violations": 0,
+        "consistency_terms_affected": 0,
+        "consistency_chapters_affected": 0,
+        "consistency_violation_terms": {},
+        "consistency_violation_chapters": {},
+        "consistency_examples": [],
+        "delivery_gate": False,
+    }
+    term_highlight_count = 0
     rescue_stats = {
         "failed_chunk_rescue_enabled": os.environ.get("EPUB_FAILED_CHUNK_RESCUE", "1").lower()
         not in {"0", "false", "no", "off"},
@@ -497,6 +586,7 @@ async def _translate_manifest_async(
             translated_html=translated_html,
             glossary=glossary if status != ChunkStatus.skipped else {},
             error_like_checker=translator._looks_like_error_response,
+            preserved_terms=translator.preserved_terms,
         ).to_dict()
         quality["chapter_id"] = chapter["chapter_id"]
         quality["file_path"] = chapter["file_path"]
@@ -530,10 +620,14 @@ async def _translate_manifest_async(
         )
 
     def _rewrite_chapter_output(chapter: dict, chunk_results: list[ChunkResult]) -> None:
+        nonlocal term_highlight_count
         original = content_by_file.get(chapter["file_path"])
         raise_if_cancelled(cancel_check)
         if original is not None:
             reduced = apply_chunk_results(original, chunk_results, job.bilingual)
+            if enable_term_highlights:
+                reduced, highlighted = highlight_confirmed_terms(reduced, glossary)
+                term_highlight_count += highlighted
             set_chapter_output(job.id, chapter["file_path"], reduced)
         else:
             emit_progress(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
@@ -589,7 +683,20 @@ async def _translate_manifest_async(
             "artifact_audit": {},
             "delivery_gate_failed": False,
             "literary_style_guide": translator.style_guide if quality_mode == "literary" else "",
+            "book_profile": book_profile or {},
+            "book_profile_status": (book_profile or {}).get("status") or "missing",
+            "character_profiles_total": len((book_profile or {}).get("characters") or []),
+            "translation_strategy_requested": getattr(job, "translation_strategy", "auto") or "auto",
+            "translation_strategy_resolved": translation_strategy,
+            "translation_strategy_source": translation_strategy_source,
+            "chapter_strategy_overrides": chapter_strategy_overrides,
+            "chapter_strategy_overrides_applied": len(chapter_strategy_overrides),
+            "term_highlights_enabled": bool(enable_term_highlights),
+            "term_highlight_count": term_highlight_count,
+            "bilingual_recommended": strategy_recommends_bilingual(translation_strategy),
+            "literary_polish_enabled": literary_polish_enabled,
             **audit_summary,
+            **book_consistency_audit,
             **rescue_stats,
         })
         if flat_results is not None:
@@ -639,6 +746,8 @@ async def _translate_manifest_async(
                 translation_stats=stats,
                 expected_attempt_id=attempt_id_from_stats(job.translation_stats) or None,
             )
+        except JobCancelled:
+            raise
         except Exception:
             logger.warning("failed to publish live translation stats", exc_info=True)
 
@@ -670,10 +779,15 @@ async def _translate_manifest_async(
 
     chapter_started_at_by_id: dict[str, datetime] = {}
     chapter_contexts_by_id: dict[str, list[str]] = {}
+    chapter_summaries_by_id = {
+        chapter["chapter_id"]: build_readonly_chapter_summary(
+            chapter.get("file_path", ""),
+            [spec.get("html") or "" for spec in chapter.get("chunks") or []],
+        )
+        for chapter in body_chapters
+    }
 
     def _build_chapter_contexts(chapter: dict, specs: list[dict]) -> list[str]:
-        if quality_mode not in {"high", "literary"}:
-            return [""] * len(specs)
         visible = [
             re.sub(
                 r"\s+",
@@ -683,15 +797,18 @@ async def _translate_manifest_async(
             for spec in specs
         ]
         contexts: list[str] = []
+        neighbor_chars = 500 if quality_mode in {"high", "literary"} else 320
         for index in range(len(specs)):
             parts = []
             if original_book_title:
                 parts.append(f"书名：{original_book_title[:200]}")
-            parts.append(f"章节文件：{chapter.get('file_path', '')}")
+            summary = chapter_summaries_by_id.get(chapter["chapter_id"], "")
+            if summary:
+                parts.append(summary)
             if index > 0 and visible[index - 1]:
-                parts.append(f"上一段：{visible[index - 1][:500]}")
+                parts.append(f"上一段：{visible[index - 1][:neighbor_chars]}")
             if index + 1 < len(visible) and visible[index + 1]:
-                parts.append(f"下一段：{visible[index + 1][:500]}")
+                parts.append(f"下一段：{visible[index + 1][:neighbor_chars]}")
             contexts.append("\n".join(parts))
         return contexts
 
@@ -699,6 +816,10 @@ async def _translate_manifest_async(
         async with chapter_sem:
             raise_if_cancelled(cancel_check)
             started = _now()
+            chapter_strategy = chapter_strategy_overrides.get(
+                chapter["chapter_id"],
+                translation_strategy,
+            )
             chapter_started_at_by_id[chapter["chapter_id"]] = started
             specs = chapter.get("chunks") or []
             _upsert_chapter(JobChapter(
@@ -710,7 +831,13 @@ async def _translate_manifest_async(
                 chunk_total=len(specs),
                 started_at=started,
             ), expected_attempt_id=expected_attempt_id)
-            emit_progress(f"快速翻译 {chapter['file_path']}（{len(specs)} 段）")
+            strategy_suffix = (
+                f"，章节策略：{TRANSLATION_STRATEGY_LABELS.get(chapter_strategy, chapter_strategy)}"
+                if chapter["chapter_id"] in chapter_strategy_overrides else ""
+            )
+            emit_progress(
+                f"快速翻译 {chapter['file_path']}（{len(specs)} 段{strategy_suffix}）"
+            )
             raise_if_cancelled(cancel_check)
             chapter_contexts = _build_chapter_contexts(chapter, specs)
             chapter_contexts_by_id[chapter["chapter_id"]] = chapter_contexts
@@ -720,6 +847,7 @@ async def _translate_manifest_async(
                 progress_label=f"快速翻译 {chapter['file_path']}",
                 translation_strategies=[c.get("translation_strategy") or "html" for c in specs],
                 contexts=chapter_contexts,
+                book_translation_strategy=chapter_strategy,
             )
             if quality_mode == "high":
                 emit_progress(f"高质量语义校对 {chapter['file_path']}（{len(specs)} 段）")
@@ -728,21 +856,30 @@ async def _translate_manifest_async(
                     translated,
                     contexts=chapter_contexts,
                     progress_label=f"语义校对 {chapter['file_path']}",
+                    book_translation_strategy=chapter_strategy,
                 )
             elif quality_mode == "literary":
-                emit_progress(f"文学模式章节编辑 {chapter['file_path']}（{len(specs)} 段）")
-                translated = await translator.polish_literary_chapter_async(
-                    [c["html"] for c in specs],
-                    translated,
-                    contexts=chapter_contexts,
-                    progress_label=f"章节文学编辑 {chapter['file_path']}",
-                )
+                if strategy_allows_literary_polish(chapter_strategy):
+                    emit_progress(f"文学模式章节编辑 {chapter['file_path']}（{len(specs)} 段）")
+                    translated = await translator.polish_literary_chapter_async(
+                        [c["html"] for c in specs],
+                        translated,
+                        contexts=chapter_contexts,
+                        progress_label=f"章节文学编辑 {chapter['file_path']}",
+                        book_translation_strategy=chapter_strategy,
+                    )
+                else:
+                    emit_progress(
+                        f"{TRANSLATION_STRATEGY_LABELS.get(chapter_strategy, chapter_strategy)}"
+                        f"已关闭强文学润色：{chapter['file_path']}"
+                    )
                 emit_progress(f"文学译文语义回查 {chapter['file_path']}（{len(specs)} 段）")
                 translated = await translator.verify_literary_chapter_async(
                     [c["html"] for c in specs],
                     translated,
                     contexts=chapter_contexts,
                     progress_label=f"文学语义回查 {chapter['file_path']}",
+                    book_translation_strategy=chapter_strategy,
                 )
             raise_if_cancelled(cancel_check)
             chunk_results: list[ChunkResult] = []
@@ -870,6 +1007,10 @@ async def _translate_manifest_async(
                             if position < len(chapter_contexts_by_id.get(chapter["chapter_id"], []))
                             else ""
                         )],
+                        book_translation_strategy=chapter_strategy_overrides.get(
+                            chapter["chapter_id"],
+                            translation_strategy,
+                        ),
                     )
                     res = translated[0]
                     new_cr, status, _warned, _failed_quality = _build_chunk_result(chapter, spec, res)
@@ -929,7 +1070,20 @@ async def _translate_manifest_async(
         )
 
     raise_if_cancelled(cancel_check)
-    chapter_results = await asyncio.gather(*(run_chapter(ch) for ch in body_chapters))
+    chapter_tasks = [asyncio.create_task(run_chapter(ch)) for ch in body_chapters]
+    try:
+        chapter_results = await asyncio.gather(*chapter_tasks)
+    except BaseException as exc:
+        for task in chapter_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*chapter_tasks, return_exceptions=True)
+        if isinstance(exc, ProviderAccountUnavailable):
+            stats = _build_translation_stats(live=False)
+            stats.update(provider_blocked=True, provider_error=exc.reason,
+                         blocked_provider=exc.provider, last_error=str(exc), deliverable=False)
+            _publish_translation_stats(stats, message=str(exc), force=True)
+        raise
     raise_if_cancelled(cancel_check)
     chapter_results_by_id = {
         ch["chapter_id"]: results
@@ -937,6 +1091,11 @@ async def _translate_manifest_async(
     }
     await rescue_failed_chunks_async(chapter_results_by_id)
     raise_if_cancelled(cancel_check)
+    book_consistency_audit.update(audit_book_consistency(
+        chapter_results=chapter_results_by_id,
+        glossary=glossary,
+        characters=(book_profile or {}).get("characters") or [],
+    ))
     flat_results = [cr for chapter in chapter_results for cr in chapter]
     stats = _build_translation_stats(live=False, flat_results=flat_results)
     _publish_translation_stats(stats, message="快速章节翻译完成", force=True)
@@ -1003,6 +1162,89 @@ def run_fast_translation_job(
         raise_if_cancelled(cancel_check)
 
         t = time.monotonic()
+        stage_callback("profiling", "分析全书文体并选择翻译策略", None)
+        preflight = (
+            (job.translation_stats or {}).get("translation_preflight")
+            if isinstance(job.translation_stats, dict) else None
+        )
+        confirmed_preflight = (
+            preflight
+            if isinstance(preflight, dict) and preflight.get("confirmed") else None
+        )
+        requested_strategy = getattr(job, "translation_strategy", "auto") or "auto"
+        if confirmed_preflight:
+            book_profile = dict(confirmed_preflight.get("profile") or {})
+            book_profile["characters"] = [
+                dict(item)
+                for item in confirmed_preflight.get("characters") or []
+                if isinstance(item, dict)
+            ]
+            resolved_strategy = str(
+                confirmed_preflight.get("resolved_strategy")
+                or requested_strategy
+                or "neutral_faithful"
+            )
+            strategy_source = "user_confirmed"
+        else:
+            book_profile = profile_book(
+                epub_path=str(preprocessed),
+                manifest=manifest,
+                book_title=original_book_title,
+                model=getattr(job, "translation_model", None) or None,
+                target_lang=job.target_lang,
+            )
+            resolved_strategy, strategy_source = resolve_translation_strategy(
+                requested_strategy,
+                book_profile,
+            )
+        timings.append(("BookProfile", (time.monotonic() - t) * 1000))
+        strategy_label = TRANSLATION_STRATEGY_LABELS.get(resolved_strategy, resolved_strategy)
+        profile_label = str(book_profile.get("genre") or "unknown")
+        confidence = float(book_profile.get("confidence") or 0)
+        if book_profile.get("status") == "ok":
+            profile_message = (
+                f"图书画像完成：{profile_label}，采用{strategy_label}策略"
+                f"（置信度 {confidence:.0%}）"
+            )
+        else:
+            profile_message = (
+                f"图书探针回退：{profile_label}，采用{strategy_label}策略；"
+                "翻译任务继续执行"
+            )
+        stage_callback("profiling", profile_message, int(timings[-1][1]))
+        _emit_progress(progress_callback, profile_message)
+        _log_stage(
+            "profiling",
+            timings[-1][1],
+            profile_status=book_profile.get("status"),
+            genre=profile_label,
+            confidence=confidence,
+            strategy_requested=requested_strategy,
+            strategy_resolved=resolved_strategy,
+            strategy_source=strategy_source,
+        )
+        update_status = getattr(job_store, "update_status", None)
+        if update_status:
+            update_status(
+                job.id,
+                JobStatus.running,
+                profile_message,
+                translation_stats={
+                    "book_profile": book_profile,
+                    "book_profile_status": book_profile.get("status"),
+                    "translation_strategy_requested": requested_strategy,
+                    "translation_strategy_resolved": resolved_strategy,
+                    "translation_strategy_source": strategy_source,
+                    "bilingual_recommended": strategy_recommends_bilingual(resolved_strategy),
+                    "translation_context_version": int(
+                        (confirmed_preflight or {}).get("version") or 0
+                    ),
+                },
+                expected_attempt_id=attempt_id_from_stats(job.translation_stats) or None,
+            )
+        raise_if_cancelled(cancel_check)
+
+        t = time.monotonic()
         stage_callback("glossary", "构建全书术语表", None)
         texts = _extract_texts_from_manifest(manifest)
         glossary_result = build_consistent_glossary(
@@ -1012,7 +1254,21 @@ def run_fast_translation_job(
             min_count=2,
             max_terms=160,
         )
-        glossary = glossary_result.glossary
+        character_glossary = {
+            str(character.get("source_name") or "").strip(): str(character.get("translated_name") or "").strip()
+            for character in book_profile.get("characters") or []
+            if isinstance(character, dict)
+            and str(character.get("source_name") or "").strip()
+            and str(character.get("translated_name") or "").strip()
+        }
+        # Existing global/user glossary remains authoritative when both sources
+        # contain the same name.
+        glossary = {**character_glossary, **glossary_result.glossary}
+        glossary_catalog = _build_glossary_catalog(
+            glossary_result=glossary_result,
+            merged_glossary=glossary,
+            character_glossary=character_glossary,
+        )
         timings.append(("Glossary", (time.monotonic() - t) * 1000))
         _log_stage("glossary", timings[-1][1], **glossary_result.stats)
         stage_callback(
@@ -1020,7 +1276,8 @@ def run_fast_translation_job(
             (
                 f"术语表就绪：全局 {len(glossary_result.global_glossary)} 条，"
                 f"自动 {len(glossary_result.auto_glossary)} 条，"
-                f"用户 {len(getattr(job, 'glossary', {}) or {})} 条"
+                f"用户 {len(getattr(job, 'glossary', {}) or {})} 条，"
+                f"角色 {len(character_glossary)} 条"
             ),
             int(timings[-1][1]),
         )
@@ -1036,6 +1293,8 @@ def run_fast_translation_job(
             model=getattr(job, "translation_model", None) or None,
             quality_mode=getattr(job, "translation_quality", "standard") or "standard",
             cache_policy=getattr(job, "cache_policy", "reuse") or "reuse",
+            translation_strategy=resolved_strategy,
+            book_profile=book_profile,
         ))
         timings.append(("BookTitle", (time.monotonic() - t) * 1000))
         _log_stage(
@@ -1053,6 +1312,15 @@ def run_fast_translation_job(
             content_by_file=content_by_file,
             glossary=glossary,
             original_book_title=original_book_title,
+            book_profile=book_profile,
+            translation_strategy=resolved_strategy,
+            translation_strategy_source=strategy_source,
+            chapter_strategy_overrides=dict(
+                (confirmed_preflight or {}).get("chapter_strategy_overrides") or {}
+            ),
+            enable_term_highlights=bool(
+                (confirmed_preflight or {}).get("enable_term_highlights", False)
+            ),
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         ))
@@ -1062,8 +1330,22 @@ def run_fast_translation_job(
             "temperature": getattr(job, "temperature", None),
             "glossary_stats": glossary_result.stats,
             "glossary_terms_total": len(glossary),
+            "glossary_catalog": glossary_catalog,
+            "character_glossary_terms": len(character_glossary),
             "book_title_original": original_book_title,
             "book_title_translated": translated_book_title,
+            "book_profile": book_profile,
+            "book_profile_status": book_profile.get("status"),
+            "translation_strategy_requested": requested_strategy,
+            "translation_strategy_resolved": resolved_strategy,
+            "translation_strategy_source": strategy_source,
+            "translation_context_version": int(
+                (confirmed_preflight or {}).get("version") or 0
+            ),
+            "chapter_strategy_overrides": dict(
+                (confirmed_preflight or {}).get("chapter_strategy_overrides") or {}
+            ),
+            "bilingual_recommended": strategy_recommends_bilingual(resolved_strategy),
         })
         timings.append(("TranslateMap", (time.monotonic() - t) * 1000))
         _log_stage(

@@ -7,9 +7,13 @@
 
 from app.infra.celery_app import celery_app
 from app.job_runner import run_job
+from app.infra.execution_lease import ExecutionLeaseUnavailable, ExecutionLeaseLost, ExecutionLeaseBusy
 
 
-@celery_app.task(name="jobs.run_conversion")
+@celery_app.task(name="jobs.run_conversion",
+                 autoretry_for=(ExecutionLeaseUnavailable, ExecutionLeaseLost, ExecutionLeaseBusy),
+                 retry_backoff=60, retry_backoff_max=300, retry_jitter=False,
+                 retry_kwargs={"max_retries": 10})
 def run_conversion(job_id: str, expected_attempt_id: str | None = None) -> None:
     """在 Celery Worker 中执行整本转换。"""
-    run_job(job_id, expected_attempt_id=expected_attempt_id)
+    run_job(job_id, expected_attempt_id=expected_attempt_id, retry_if_busy=True)

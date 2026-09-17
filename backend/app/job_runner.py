@@ -24,6 +24,9 @@ from .domain.translation_attempt import attempt_id_from_stats, initial_translati
 from .error_reporter import report_error
 from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
 from .storage import job_store
+from .infra.execution_lease import execution_lease, ExecutionLeaseLost, ExecutionLeaseBusy
+from .infra.llm_errors import ProviderAccountUnavailable
+from .domain.translation_residual_policy import confirmed_preserved_terms
 
 logger = logging.getLogger("epub_factory")
 
@@ -112,6 +115,7 @@ def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
     audit = audit_translated_epub_output(
         output_path, target_lang=getattr(job, "target_lang", "zh-CN"),
         bilingual=bool(getattr(job, "bilingual", False)),
+        preserved_terms=confirmed_preserved_terms(getattr(job, "glossary", {})),
     )
     stats = dict(getattr(result, "translation_stats", {}) or {})
     stats["artifact_audit"] = audit
@@ -168,14 +172,35 @@ def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditio
         return stem
 
 
-def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
+def run_job(job_id: str, expected_attempt_id: str | None = None, *, retry_if_busy: bool = False) -> None:
+    """Ignore stale/terminal deliveries and admit one executor per attempt."""
+    job = job_store.get(job_id)
+    if not job:
+        return
+    if job.status not in {JobStatus.pending, JobStatus.running}:
+        return
+    current_attempt = attempt_id_from_stats(job.translation_stats)
+    if expected_attempt_id and current_attempt and expected_attempt_id != current_attempt:
+        return
+    identity = expected_attempt_id or attempt_id_from_stats(job.translation_stats) or "conversion"
+    with execution_lease(job_id, identity) as lease:
+        if lease is None:
+            logger.info("duplicate job delivery ignored", extra={"job_id": job_id})
+            if retry_if_busy:
+                raise ExecutionLeaseBusy("同一次翻译已被执行器占用，延后核验，不重复执行")
+            return
+        # Re-read after acquiring: a prior executor may have finished meanwhile.
+        _run_job_locked(job_id, expected_attempt_id, lease)
+
+
+def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None:
     """从 store 加载 job 并执行整本转换，更新状态与输出路径。"""
     job = job_store.get(job_id)
     if not job:
         logger.warning("run_job: job not found", extra={"job_id": job_id})
         return
-    if job.status == JobStatus.cancelled:
-        logger.info("run_job: job already cancelled", extra={"job_id": job_id})
+    if job.status not in {JobStatus.pending, JobStatus.running}:
+        logger.info("run_job: job not executable", extra={"job_id": job_id})
         return
     job = job_store.get(job_id) or job
     now_utc = datetime.now(timezone.utc)
@@ -205,6 +230,7 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
             )
 
     def update_job_status(status: JobStatus, message: str = "", **kwargs):
+        lease.assert_owned()
         return job_store.update_status(
             job.id,
             status,
@@ -231,7 +257,7 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
         suffix = _build_output_suffix(job)
         default_output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
         if attempt_id:
-            output_path = OUTPUT_DIR / f".{job.id}-{attempt_id}.epub"
+            output_path = OUTPUT_DIR / f".{job.id}-{attempt_id}-{lease.owner}.epub"
             attempt_scoped_output = True
         else:
             output_path = default_output_path
@@ -246,6 +272,7 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
             *,
             level: str = "info",
         ) -> None:
+            lease.assert_owned()
             if not getattr(job_store, "add_stage", None):
                 return
             now = datetime.now(timezone.utc)
@@ -265,6 +292,7 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
             job_store.add_stage(stage)
 
         def is_cancelled() -> bool:
+            lease.assert_owned()
             current = job_store.get(job.id)
             if not current:
                 return True
@@ -290,6 +318,7 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
                 record_stage("progress", msg)
 
         def on_stage(stage_name: str, message: str, elapsed_ms: Optional[int] = None) -> None:
+            check_cancelled()
             level = "error" if "fail" in stage_name or "failed" in stage_name else "info"
             record_stage(stage_name, message, elapsed_ms, level=level)
 
@@ -421,6 +450,12 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
             source_filename=job.source_filename,
         )
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
+    except ExecutionLeaseLost:
+        if attempt_scoped_output and output_path:
+            output_path.unlink(missing_ok=True)
+        logger.error("execution lease lost; old executor stopped", extra={"job_id": job.id})
+        # Never overwrite a new owner's status or artifact after losing ownership.
+        raise
     except JobCancelled as exc:
         current = job_store.get(job.id)
         if attempt_id and current and attempt_id_from_stats(current.translation_stats) != attempt_id:
@@ -470,6 +505,14 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
         if attempt_scoped_output and output_path:
             output_path.unlink(missing_ok=True)
         error_code = ErrorCode.CONVERT_FAILED
+        failure_stats = None
+        if isinstance(exc, ProviderAccountUnavailable):
+            error_code = ErrorCode.TRANSLATION_PROVIDER_UNAVAILABLE
+            failure_stats = dict(getattr(current, "translation_stats", {}) or job.translation_stats or {})
+            failure_stats.update(provider_blocked=True, provider_error=exc.reason,
+                                 blocked_provider=exc.provider, last_error=message,
+                                 live=False, deliverable=False)
+            failure_stats = attach_translation_qa_report(failure_stats, error_code=error_code.value)
         if isinstance(exc, SoftTimeLimitExceeded) and job.enable_translation:
             message = "翻译任务达到运行时限，已完成的译文缓存已保留。请重启翻译并使用复用缓存，继续处理剩余内容。"
             error_code = ErrorCode.TRANSLATION_FAILED
@@ -489,7 +532,8 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
                     **({"attempt_id": attempt_id} if attempt_id else {}),
                 },
             ))
-        update_job_status(JobStatus.failed, message, error_code=error_code)
+        update_job_status(JobStatus.failed, message, error_code=error_code,
+                          **({"translation_stats": failure_stats} if failure_stats is not None else {}))
         report_error(
             error_code=error_code,
             message=message,

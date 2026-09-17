@@ -47,6 +47,11 @@ def build_celery_app() -> Celery:
     book_hard_limit = int(os.environ.get("EPUB_BOOK_TIME_LIMIT", str(book_soft_limit + 300)))
     if book_soft_limit <= 0 or book_hard_limit <= book_soft_limit:
         raise ValueError("EPUB_BOOK_TIME_LIMIT must exceed a positive EPUB_BOOK_SOFT_TIME_LIMIT")
+    visibility_timeout = int(os.environ.get(
+        "CELERY_VISIBILITY_TIMEOUT", str(max(10800, book_hard_limit + 1800)),
+    ))
+    if visibility_timeout <= max(book_hard_limit, task_time_limit):
+        raise ValueError("CELERY_VISIBILITY_TIMEOUT must exceed all task hard time limits")
 
     app.conf.update(
         task_serializer="json",
@@ -56,6 +61,9 @@ def build_celery_app() -> Celery:
         enable_utc=True,
         task_track_started=True,
         task_acks_late=True,
+        broker_transport_options={"visibility_timeout": visibility_timeout},
+        result_backend_transport_options={"visibility_timeout": visibility_timeout},
+        visibility_timeout=visibility_timeout,
         worker_prefetch_multiplier=1,
         worker_concurrency=worker_concurrency,
         task_time_limit=task_time_limit,

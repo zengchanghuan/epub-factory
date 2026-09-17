@@ -27,6 +27,16 @@ D_SUITE = [
     "test_d13_regression.py",
     "test_d14_fast_translation_runner.py",
     "test_d15_translation_quality_audit.py",
+    "test_d16_translation_qa_service.py",
+    "test_d18_paid_translation_regression.py",
+    "test_d18_book_profile_strategy.py",
+    "test_d19_llm_token_bucket.py",
+    "test_d20_translation_confirmation.py",
+    "test_d21_real_order_recovery.py",
+    "test_d19_order_admin.py",
+    "test_d20_checkout_webhook.py",
+    "test_d22_release_continuity.py",
+    "test_d23_flash_alias.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

@@ -167,3 +167,22 @@ def verify_alipay_notification(params: dict) -> bool:
     except Exception as e:
         logger.error(f"Alipay signature verification failed: {e}")
         return False
+
+
+def query_verified_trade(out_trade_no: str) -> Optional[dict]:
+    """Accept only a successful SDK-verified response for this exact order."""
+    if not _alipay_client:
+        return None
+    try:
+        model = AlipayTradeQueryModel()
+        model.out_trade_no = out_trade_no
+        result = _alipay_client.execute(AlipayTradeQueryRequest(biz_model=model))
+        payload = json.loads(result)
+        data = payload.get("alipay_trade_query_response", payload)
+        if data.get("code") != "10000" or data.get("out_trade_no") != out_trade_no:
+            return None
+        return {key: data.get(key) for key in
+                ("out_trade_no", "trade_status", "total_amount", "trade_no")}
+    except Exception:
+        logger.warning("Verified admin payment query unavailable", extra={"job_id": out_trade_no})
+        return None

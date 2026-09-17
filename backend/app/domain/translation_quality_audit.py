@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from bs4 import BeautifulSoup, Tag
+from app.domain.translation_residual_policy import residual_category
 
 
 BLOCK_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
@@ -35,6 +36,10 @@ class TranslationQualityAudit:
     html_tag_mismatch: bool = False
     error_like_response: bool = False
     likely_untranslated: bool = False
+    critical_markers_missing: list[str] = field(default_factory=list)
+    source_sentence_count: int = 0
+    translated_sentence_count: int = 0
+    sentence_alignment_ratio: float = 1.0
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +53,10 @@ class TranslationQualityAudit:
             "html_tag_mismatch": self.html_tag_mismatch,
             "error_like_response": self.error_like_response,
             "likely_untranslated": self.likely_untranslated,
+            "critical_markers_missing": self.critical_markers_missing,
+            "source_sentence_count": self.source_sentence_count,
+            "translated_sentence_count": self.translated_sentence_count,
+            "sentence_alignment_ratio": self.sentence_alignment_ratio,
         }
 
 
@@ -105,45 +114,45 @@ def _cjk_char_count(text: str) -> int:
     return len(re.findall(r"[\u3400-\u9fff]", text or ""))
 
 
-def _likely_untranslated_english(source_text: str, translated_text: str) -> bool:
+def _likely_untranslated_english(source_text: str, translated_text: str, preserved_terms=()) -> bool:
     """保守识别英文源段落在中文译文中大量原样残留的情况。"""
-    source_words = _latin_words(source_text)
-    if not translated_text:
-        return False
-
-    normalize = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()
-    if (
-        normalize(source_text) == normalize(translated_text)
-        and len(source_words) >= 2
-        and _latin_char_count(source_text) >= 12
-    ):
-        return True
-    if len(source_words) < 6:
-        return False
-
-    translated_words = _latin_words(translated_text)
-    translated_latin = _latin_char_count(translated_text)
-    translated_cjk = _cjk_char_count(translated_text)
-
-    if (
-        len(translated_words) >= max(6, int(len(source_words) * 0.7))
-        and translated_cjk < max(6, int(translated_latin * 0.15))
-    ):
-        return True
-
-    if (
-        translated_cjk > 0
-        and len(translated_words) >= 12
-        and translated_latin > max(120, translated_cjk * 2.5)
-    ):
-        return True
-
-    return False
+    return bool(residual_category(translated_text, source_text=source_text,
+                                  preserved_terms=preserved_terms))
 
 
 def _set_risk(current: str, new: str) -> str:
     order = {"ok": 0, "warn": 1, "fail": 2}
     return new if order[new] > order[current] else current
+
+
+_ENGLISH_TO_CHINESE_MARKERS = (
+    (
+        "negation",
+        re.compile(r"\b(?:not|never|no|none|neither|nor|without|cannot|can't|didn't|doesn't|isn't|wasn't|won't)\b", re.I),
+        re.compile(r"(?:不|未|无|非|没|莫|否|绝不|从未|不能|无法|并非|并不)"),
+    ),
+    (
+        "causal",
+        re.compile(r"\b(?:because|therefore|thus|consequently|hence|due to|as a result)\b", re.I),
+        re.compile(r"(?:因为|由于|缘于|因此|所以|故而|故|从而|于是|结果)"),
+    ),
+    (
+        "contrast",
+        re.compile(r"\b(?:however|nevertheless|nonetheless|although|though|despite|but|whereas|yet)\b", re.I),
+        re.compile(r"(?:但是|但|然而|不过|却|尽管|虽然|仍然|反之|而)"),
+    ),
+)
+
+
+def _missing_critical_markers(source_text: str, translated_text: str) -> list[str]:
+    """Conservative English→Chinese relation check used only as a review signal."""
+    if _cjk_char_count(translated_text) < 3:
+        return []
+    missing: list[str] = []
+    for label, source_pattern, translated_pattern in _ENGLISH_TO_CHINESE_MARKERS:
+        if source_pattern.search(source_text) and not translated_pattern.search(translated_text):
+            missing.append(label)
+    return missing
 
 
 def _term_spans(term: str, text: str) -> list[tuple[int, int]]:
@@ -161,6 +170,15 @@ def _term_spans(term: str, text: str) -> list[tuple[int, int]]:
         spans.append((index, index + len(term)))
         start = index + max(1, len(term))
     return spans
+
+
+def _sentence_count(text: str) -> int:
+    parts = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?。！？；;])\s*", text or "")
+        if item.strip()
+    ]
+    return len(parts) if parts else (1 if str(text or "").strip() else 0)
 
 
 def _relevant_glossary_terms(
@@ -192,6 +210,7 @@ def audit_translation_chunk(
     translated_html: str,
     glossary: dict[str, str] | None = None,
     error_like_checker: Callable[[str], bool] | None = None,
+    preserved_terms=(),
 ) -> TranslationQualityAudit:
     """对单个 chunk 做规则型可信度审计。"""
     source_text = _text(original_html)
@@ -205,12 +224,18 @@ def audit_translation_chunk(
         translated_text=translated_text,
         length_ratio=length_ratio,
     )
+    audit.source_sentence_count = _sentence_count(source_text)
+    audit.translated_sentence_count = _sentence_count(translated_text)
+    audit.sentence_alignment_ratio = round(
+        audit.translated_sentence_count / max(1, audit.source_sentence_count),
+        3,
+    )
 
     if source_text and not translated_text:
         audit.flags.append("empty_translation")
         audit.risk_level = _set_risk(audit.risk_level, "fail")
 
-    if _likely_untranslated_english(source_text, translated_text):
+    if _likely_untranslated_english(source_text, translated_text, preserved_terms):
         audit.likely_untranslated = True
         audit.flags.append("likely_untranslated")
         audit.risk_level = _set_risk(audit.risk_level, "fail")
@@ -225,6 +250,17 @@ def audit_translation_chunk(
         audit.flags.append("suspiciously_short_translation")
         audit.risk_level = _set_risk(audit.risk_level, "warn")
 
+    if (
+        source_len >= 80
+        and audit.source_sentence_count >= 2
+        and (
+            audit.sentence_alignment_ratio < 0.35
+            or audit.sentence_alignment_ratio > 2.8
+        )
+    ):
+        audit.flags.append("sentence_alignment_suspicious")
+        audit.risk_level = _set_risk(audit.risk_level, "warn")
+
     src_numbers = Counter(_numbers(source_text))
     if src_numbers:
         translated_numbers = Counter(_numbers(translated_text))
@@ -233,6 +269,12 @@ def audit_translation_chunk(
             audit.numbers_missing = missing
             audit.flags.append("numbers_missing")
             audit.risk_level = _set_risk(audit.risk_level, "warn")
+
+    missing_markers = _missing_critical_markers(source_text, translated_text)
+    if missing_markers:
+        audit.critical_markers_missing = missing_markers
+        audit.flags.append("critical_markers_missing")
+        audit.risk_level = _set_risk(audit.risk_level, "warn")
 
     glossary = glossary or {}
     missing_terms: list[str] = []

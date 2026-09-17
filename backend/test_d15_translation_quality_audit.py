@@ -129,6 +129,26 @@ def test_audit_likely_untranslated_english_is_fail():
     assert "likely_untranslated" in audit.flags
 
 
+def test_audit_flags_missing_negation_and_causal_markers():
+    audit = audit_translation_chunk(
+        original_html="<p>It was not accepted because the evidence was incomplete.</p>",
+        translated_html="<p>证据残缺，这项意见获得了接受。</p>",
+        glossary={},
+    )
+    assert audit.risk_level == "warn"
+    assert "critical_markers_missing" in audit.flags
+    assert set(audit.critical_markers_missing) == {"negation", "causal"}
+
+
+def test_audit_accepts_preserved_negation_and_causal_markers():
+    audit = audit_translation_chunk(
+        original_html="<p>It was not accepted because the evidence was incomplete.</p>",
+        translated_html="<p>因为证据不完整，这项意见未被接受。</p>",
+        glossary={},
+    )
+    assert "critical_markers_missing" not in audit.flags
+
+
 def _run():
     cases = [
         test_audit_ok_translation,
@@ -141,6 +161,8 @@ def _run():
         test_audit_error_like_response_is_fail,
         test_audit_glossary_terms_missing,
         test_audit_likely_untranslated_english_is_fail,
+        test_audit_flags_missing_negation_and_causal_markers,
+        test_audit_accepts_preserved_negation_and_causal_markers,
     ]
     passed = 0
     for fn in cases:

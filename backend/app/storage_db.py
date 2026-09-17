@@ -43,6 +43,14 @@ class Base(DeclarativeBase):
     pass
 
 
+class OrderEventRecord(Base):
+    __tablename__ = "order_funnel_events"
+    order_no = Column(String(100), primary_key=True)
+    event = Column(String(32), primary_key=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
+    source = Column(String(40), nullable=False)
+
+
 class UserRecord(Base):
     __tablename__ = "users"
 
@@ -69,6 +77,7 @@ class JobRecord(Base):
     token_expires_at = Column(DateTime(timezone=True), nullable=True)
     creator_ip = Column(String(64), nullable=True)
     creator_session = Column(String(128), nullable=True)
+    is_test_order = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     expected_amount = Column(String(16), nullable=True)
     batch_id = Column(String(32), nullable=True, index=True)
     batch_index = Column(String(16), nullable=True, default="0")
@@ -90,6 +99,7 @@ class JobRecord(Base):
     translation_model = Column(String(64), nullable=True)
     translation_quality = Column(String(16), nullable=True)
     cache_policy = Column(String(16), nullable=True)
+    translation_strategy = Column(String(32), nullable=True)
     traditional_variant = Column(String(16), nullable=True)  # auto | tw | hk
     lexicon_domains = Column(Text, nullable=True)             # JSON 数组，如 ["general","tech"]
     enable_proper_noun = Column(Boolean, nullable=False, default=True)
@@ -213,6 +223,8 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_quality VARCHAR(16)")
     if "cache_policy" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN cache_policy VARCHAR(16)")
+    if "translation_strategy" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN translation_strategy VARCHAR(32)")
     if "traditional_variant" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN traditional_variant VARCHAR(16)")
     if "access_token" not in columns:
@@ -221,6 +233,8 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN creator_ip VARCHAR(64)")
     if "creator_session" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN creator_session VARCHAR(128)")
+    if "is_test_order" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN is_test_order BOOLEAN NOT NULL DEFAULT FALSE")
     if "expected_amount" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN expected_amount VARCHAR(16)")
     if "batch_id" not in columns:
@@ -307,6 +321,7 @@ def _record_to_job(r: JobRecord) -> Job:
         token_expires_at=getattr(r, "token_expires_at", None),
         creator_ip=getattr(r, "creator_ip", None) or "",
         creator_session=getattr(r, "creator_session", None) or "",
+        is_test_order=bool(getattr(r, "is_test_order", False)),
         expected_amount=getattr(r, "expected_amount", None) or "",
         batch_id=getattr(r, "batch_id", None) or "",
         batch_index=int(getattr(r, "batch_index", None) or 0),
@@ -319,9 +334,10 @@ def _record_to_job(r: JobRecord) -> Job:
         glossary=glossary,
         device=DeviceProfile(r.device),
         temperature=getattr(r, "temperature", None),
-        translation_model=getattr(r, "translation_model", None) or "deepseek-v4-flash",
+        translation_model=getattr(r, "translation_model", None) or "deepseek-flash",
         translation_quality=getattr(r, "translation_quality", None) or "standard",
         cache_policy=getattr(r, "cache_policy", None) or "reuse",
+        translation_strategy=getattr(r, "translation_strategy", None) or "auto",
         traditional_variant=getattr(r, "traditional_variant", None) or "auto",
         lexicon_domains=lexicon_domains,
         enable_proper_noun=bool(getattr(r, "enable_proper_noun", True)),
@@ -550,6 +566,7 @@ def _job_to_record(job: Job) -> JobRecord:
         token_expires_at=getattr(job, "token_expires_at", None),
         creator_ip=getattr(job, "creator_ip", "") or "",
         creator_session=getattr(job, "creator_session", "") or "",
+        is_test_order=bool(getattr(job, "is_test_order", False)),
         expected_amount=getattr(job, "expected_amount", "") or "",
         batch_id=getattr(job, "batch_id", "") or None,
         batch_index=str(getattr(job, "batch_index", 0) or 0),
@@ -568,9 +585,10 @@ def _job_to_record(job: Job) -> JobRecord:
         translation_stats_json=json.dumps(job.translation_stats or {}),
         metrics_summary=job.metrics_summary or "",
         temperature=getattr(job, "temperature", None),
-        translation_model=getattr(job, "translation_model", None) or "deepseek-v4-flash",
+        translation_model=getattr(job, "translation_model", None) or "deepseek-flash",
         translation_quality=getattr(job, "translation_quality", None) or "standard",
         cache_policy=getattr(job, "cache_policy", None) or "reuse",
+        translation_strategy=getattr(job, "translation_strategy", None) or "auto",
         traditional_variant=getattr(job, "traditional_variant", None) or "auto",
         lexicon_domains=json.dumps(getattr(job, "lexicon_domains", ["general", "tech", "movie"])),
         enable_proper_noun=bool(getattr(job, "enable_proper_noun", True)),
@@ -909,10 +927,13 @@ class PersistentJobStore:
         action_label: str,
         max_free_retries: int,
         started_at: datetime,
+        expected_updated_at: datetime | None = None,
+        failed_only: bool = False,
         translation_quality: str | None = None,
         cache_policy: str | None = None,
         temperature: float | None = None,
         translation_model: str | None = None,
+        translation_strategy: str | None = None,
     ) -> tuple[Optional[Job], str]:
         """Atomically claim a terminal job and replace all per-attempt state."""
         import json
@@ -923,12 +944,21 @@ class PersistentJobStore:
             JobStatus.failed.value,
             JobStatus.cancelled.value,
         ]
+        if failed_only:
+            terminal_statuses = [JobStatus.failed.value]
         with self._Session() as session:
             record = session.get(JobRecord, job_id)
             if not record:
                 return None, "missing"
             if record.status not in terminal_statuses:
                 return _record_to_job(record), "active"
+            if expected_updated_at is not None:
+                expected_utc = (expected_updated_at.astimezone(timezone.utc) if expected_updated_at.tzinfo
+                                else expected_updated_at.replace(tzinfo=timezone.utc))
+                record_utc = (record.updated_at.astimezone(timezone.utc) if record.updated_at.tzinfo
+                              else record.updated_at.replace(tzinfo=timezone.utc))
+                if record_utc != expected_utc:
+                    return _record_to_job(record), "active"
             try:
                 previous = json.loads(record.translation_stats_json or "{}")
                 if not isinstance(previous, dict):
@@ -951,6 +981,7 @@ class PersistentJobStore:
                 update(JobRecord)
                 .where(JobRecord.id == job_id)
                 .where(JobRecord.status.in_(terminal_statuses))
+                .where(JobRecord.updated_at == record.updated_at)
                 .values(
                     status=JobStatus.pending.value,
                     message=f"{action_label}已排队（第 {stats['translation_attempt']} 次尝试）",
@@ -962,7 +993,8 @@ class PersistentJobStore:
                     translation_quality=translation_quality or record.translation_quality or "standard",
                     cache_policy=cache_policy or record.cache_policy or "reuse",
                     temperature=temperature if temperature is not None else record.temperature,
-                    translation_model=translation_model or record.translation_model or "deepseek-v4-flash",
+                    translation_model=translation_model or record.translation_model or "deepseek-flash",
+                    translation_strategy=translation_strategy or record.translation_strategy or "auto",
                     updated_at=started_at,
                 )
             )
@@ -975,6 +1007,96 @@ class PersistentJobStore:
             session.commit()
             refreshed = session.get(JobRecord, job_id)
             return (_record_to_job(refreshed) if refreshed else None), "ok"
+
+    def begin_translation_confirmation(
+        self,
+        job_id: str,
+        *,
+        translation_strategy: str,
+        bilingual: bool,
+        glossary: dict[str, str],
+        translation_preflight: dict,
+    ) -> Optional[Job]:
+        """Atomically claim an awaiting-confirmation job and save user edits."""
+        import json
+        from sqlalchemy import update
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job_id)
+                .where(JobRecord.status == JobStatus.awaiting_confirmation.value)
+                .values(
+                    status=JobStatus.confirming.value,
+                    message="正在创建支付订单...",
+                    translation_strategy=translation_strategy,
+                    bilingual=bool(bilingual),
+                    glossary_json=json.dumps(glossary, ensure_ascii=False),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            if (result.rowcount or 0) != 1:
+                session.rollback()
+                return None
+            record = session.get(JobRecord, job_id)
+            try:
+                stats = json.loads(record.translation_stats_json or "{}")
+                if not isinstance(stats, dict):
+                    stats = {}
+            except Exception:
+                stats = {}
+            stats["translation_preflight"] = dict(translation_preflight)
+            record.translation_stats_json = json.dumps(stats, ensure_ascii=False)
+            session.commit()
+            session.refresh(record)
+            return _record_to_job(record)
+
+    def finish_translation_confirmation(
+        self,
+        job_id: str,
+        *,
+        status: JobStatus,
+        message: str,
+        expected_amount: str,
+    ) -> Optional[Job]:
+        from sqlalchemy import update
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job_id)
+                .where(JobRecord.status == JobStatus.confirming.value)
+                .values(
+                    status=status.value,
+                    message=message,
+                    expected_amount=expected_amount,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            if (result.rowcount or 0) != 1:
+                session.rollback()
+                return None
+            session.commit()
+            record = session.get(JobRecord, job_id)
+            return _record_to_job(record) if record else None
+
+    def rollback_translation_confirmation(self, job_id: str, message: str) -> Optional[Job]:
+        from sqlalchemy import update
+        with self._Session() as session:
+            result = session.execute(
+                update(JobRecord)
+                .where(JobRecord.id == job_id)
+                .where(JobRecord.status == JobStatus.confirming.value)
+                .values(
+                    status=JobStatus.awaiting_confirmation.value,
+                    message=message,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            if (result.rowcount or 0) != 1:
+                session.rollback()
+                return None
+            session.commit()
+            record = session.get(JobRecord, job_id)
+            return _record_to_job(record) if record else None
 
     def list_chunks(self, job_id: str, chapter_id: Optional[str] = None) -> list[JobChunk]:
         with self._Session() as session:

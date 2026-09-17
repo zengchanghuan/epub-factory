@@ -24,7 +24,9 @@ logger = logging.getLogger("epub_factory.llm_guard")
 # ── 默认白名单（fixepub 实际使用的便宜模型）────────────────────────────────
 _DEFAULT_ALLOWLIST = {
     "deepseek-chat",
+    "deepseek-flash",
     "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
     "deepseek-v4-pro",
     "deepseek-reasoner",
     "deepseek-coder",
@@ -62,6 +64,10 @@ def _load_allowlist() -> set[str]:
         return set(_DEFAULT_ALLOWLIST)
     parsed = {x.strip() for x in raw.split(",") if x.strip()}
     allowlist = parsed or set(_DEFAULT_ALLOWLIST)
+    # These are documented aliases of the same Flash endpoint, not broader models.
+    flash_aliases = {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
+    if allowlist & flash_aliases:
+        allowlist |= flash_aliases
     return allowlist | _EXPLICITLY_ALLOWED_PRO_MODELS
 
 
@@ -102,7 +108,7 @@ def assert_model_allowed(model: str, *, context: str = "") -> None:
         msg = (
             f"[llm_guard] BLOCKED model '{model}' (context={context!r}); "
             f"this model is too expensive for fixepub and must not be used. "
-            f"Allowed: deepseek-v4-flash / deepseek-v4-pro / deepseek-chat / gpt-4o-mini."
+            f"Allowed: deepseek-flash / deepseek-v4-pro / deepseek-chat / gpt-4o-mini."
         )
         logger.error(msg)
         raise ModelNotAllowedError(msg)

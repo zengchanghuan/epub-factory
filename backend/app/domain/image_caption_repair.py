@@ -250,7 +250,7 @@ def main() -> None:
     parser.add_argument("source")
     parser.add_argument("output")
     parser.add_argument("--target-lang", default="zh-CN")
-    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--model", default="deepseek-flash")
     parser.add_argument(
         "--translations-json",
         help="apply a local source_text/translated_text mapping instead of calling a model API",

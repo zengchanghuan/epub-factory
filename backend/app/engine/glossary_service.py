@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+from app.infra.llm_errors import ProviderAccountUnavailable
 
 from .glossary_extractor import (
     GlossaryCandidate,
@@ -147,15 +149,19 @@ async def build_consistent_glossary_async(
     global_glossary = load_global_glossary(target_lang)
     auto_glossary: dict[str, str] = {}
 
-    try:
-        auto_glossary = await translate_glossary(
-            candidates,
-            target_lang=target_lang,
-            max_terms_per_call=80,
-        )
-    except Exception as exc:
-        logger.warning("auto glossary translation skipped: %s", exc)
-        auto_glossary = {}
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if api_key and api_key != "dummy":
+        try:
+            auto_glossary = await translate_glossary(
+                candidates,
+                target_lang=target_lang,
+                max_terms_per_call=80,
+            )
+        except ProviderAccountUnavailable:
+            raise
+        except Exception as exc:
+            logger.warning("auto glossary translation skipped: %s", exc)
+            auto_glossary = {}
 
     merged = merge_glossaries(global_glossary, auto_glossary)
     merged = merge_glossaries(user_glossary, merged)

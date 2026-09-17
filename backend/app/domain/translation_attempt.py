@@ -107,6 +107,13 @@ def restarted_translation_stats(
         "cost_usd": 0,
         "live": False,
     }
+    # Preserve available cost evidence while resetting per-attempt counters.
+    history = list(old.get("cost_history") or [])
+    history.append({key: old.get(key) for key in (
+        "attempt_id", "translation_attempt", "model", "prompt_tokens",
+        "completion_tokens", "total_tokens", "cost_usd",
+    )})
+    stats["cost_history"] = history
     restart_summary = f"{action_label}已排队"
     stats["qa_report"] = {
         "status": "retrying",

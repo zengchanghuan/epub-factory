@@ -121,13 +121,52 @@ class TestApiV2Skeleton(unittest.TestCase):
                 os.environ["SKIP_PAYMENT_CHECK"] = old_skip
         self.assertEqual(res.status_code, 200, res.text)
         data = res.json()
-        self.assertEqual(data.get("translation_model"), "deepseek-v4-flash")
+        self.assertEqual(data.get("translation_model"), "deepseek-flash")
         self.assertEqual(data.get("translation_quality"), "standard")
         self.assertEqual(data.get("cache_policy"), "reuse")
         self.assertEqual(data.get("temperature"), 0.3)
 
-    def test_v2_create_high_quality_defaults_to_pro_verified_cache_and_low_temperature(self):
-        """高质量模式默认 Pro、验证缓存和低温度。"""
+    def test_v2_create_translation_accepts_strategy_override(self):
+        """人工策略覆盖应写入 API 响应和持久化任务。"""
+        old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
+        os.environ["SKIP_PAYMENT_CHECK"] = "1"
+        try:
+            res = self.client.post(
+                "/api/v2/jobs",
+                files={"file": ("strategy.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+                data={
+                    "output_mode": "simplified",
+                    "enable_translation": "true",
+                    "translation_strategy": "mirror_fidelity",
+                },
+            )
+        finally:
+            if old_skip is None:
+                os.environ.pop("SKIP_PAYMENT_CHECK", None)
+            else:
+                os.environ["SKIP_PAYMENT_CHECK"] = old_skip
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(data["translation_strategy"], "mirror_fidelity")
+        persisted = job_store.get(data["job_id"])
+        self.assertEqual(persisted.translation_strategy, "mirror_fidelity")
+
+    def test_v2_create_translation_rejects_unknown_strategy(self):
+        """策略必须来自后端固定矩阵，不能由客户端自由注入 Prompt。"""
+        res = self.client.post(
+            "/api/v2/jobs",
+            files={"file": ("bad_strategy.epub", MINIMAL_EPUB_BYTES, "application/epub+zip")},
+            data={
+                "output_mode": "simplified",
+                "enable_translation": "true",
+                "translation_strategy": "freeform_prompt",
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("translation_strategy", res.text)
+
+    def test_v2_create_high_quality_defaults_to_flash_verified_cache_and_low_temperature(self):
+        """高质量模式优先 Flash，保留验证缓存和低温度。"""
         old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
         os.environ["SKIP_PAYMENT_CHECK"] = "1"
         try:
@@ -147,7 +186,7 @@ class TestApiV2Skeleton(unittest.TestCase):
                 os.environ["SKIP_PAYMENT_CHECK"] = old_skip
         self.assertEqual(res.status_code, 200, res.text)
         data = res.json()
-        self.assertEqual(data["translation_model"], "deepseek-v4-pro")
+        self.assertEqual(data["translation_model"], "deepseek-flash")
         self.assertEqual(data["translation_quality"], "high")
         self.assertEqual(data["cache_policy"], "verified")
         self.assertEqual(data["temperature"], 0.2)
@@ -156,8 +195,8 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(persisted.cache_policy, "verified")
         self.assertEqual(persisted.temperature, 0.2)
 
-    def test_v2_create_literary_defaults_to_pro_verified_cache_and_low_temperature(self):
-        """文学模式使用 Pro、验证缓存和低温度，并持久化质量档位。"""
+    def test_v2_create_literary_defaults_to_flash_verified_cache_and_low_temperature(self):
+        """文学模式优先 Flash，保留验证缓存和低温度，并持久化质量档位。"""
         old_skip = os.environ.get("SKIP_PAYMENT_CHECK")
         os.environ["SKIP_PAYMENT_CHECK"] = "1"
         try:
@@ -177,7 +216,7 @@ class TestApiV2Skeleton(unittest.TestCase):
                 os.environ["SKIP_PAYMENT_CHECK"] = old_skip
         self.assertEqual(res.status_code, 200, res.text)
         data = res.json()
-        self.assertEqual(data["translation_model"], "deepseek-v4-pro")
+        self.assertEqual(data["translation_model"], "deepseek-flash")
         self.assertEqual(data["translation_quality"], "literary")
         self.assertEqual(data["cache_policy"], "verified")
         self.assertEqual(data["temperature"], 0.2)
