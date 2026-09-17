@@ -570,10 +570,10 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(data["translation_stats"]["free_retry_count"], 1)
         self.assertEqual(data["translation_stats"]["translation_attempt"], 2)
         self.assertEqual(data["qa_report"]["status"], "retrying")
-        self.assertEqual(data["translation_quality"], "high")
-        self.assertEqual(data["cache_policy"], "fresh")
-        self.assertEqual(data["translation_model"], "deepseek-v4-pro")
-        self.assertEqual(data["temperature"], 0.2)
+        self.assertEqual(data["translation_quality"], job.translation_quality)
+        self.assertEqual(data["cache_policy"], "reuse")
+        self.assertEqual(data["translation_model"], job.translation_model)
+        self.assertEqual(data["temperature"], job.temperature)
         enqueue.assert_called_once()
 
     def test_v2_retry_translation_accepts_failed_delivery_gate_job(self):

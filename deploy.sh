@@ -1,127 +1,68 @@
-#!/bin/bash
-# EPUB Factory - Production Deployment Script
-# Deploys the Tencent Cloud production service through the `fixepub` SSH host.
-
-set -e
-
-# Configuration
-PROJECT_NAME="epub-factory"
-ZIP_FILE="epub-factory.zip"
-KEY_FILE="fix_epub.pem"
-REMOTE_HOST="fixepub" # This should be configured in your ~/.ssh/config
-REMOTE_ZIP_PATH="/tmp/${PROJECT_NAME}-deploy-$(date +%Y%m%d%H%M%S)-$$.zip"
-
-echo "📦 Packaging project..."
-rm -f "$ZIP_FILE"
-# Exclude git metadata, virtual environments, and temporary files
-zip -rq "$ZIP_FILE" . \
-    -x "*.git*" \
-    -x "*__pycache__*" \
-    -x "*.venv*" \
-    -x "*.env" \
-    -x "*.pem" \
-    -x "*.key" \
-    -x "*.crt" \
-    -x "*.p12" \
-    -x "*.pfx" \
-    -x "*secret*" \
-    -x "*Secret*" \
-    -x "*.csv" \
-    -x "*.log" \
-    -x "*.DS_Store" \
-    -x "*.pdf" \
-    -x "*.mobi" \
-    -x "*.azw3" \
-    -x "$ZIP_FILE" \
-    -x "$KEY_FILE" \
-    -x "AWS_访问证书/*" \
-    -x "backend/visits.jsonl" \
-    -x "backend/feedback.jsonl" \
-    -x "backend/uploads/*" \
-    -x "backend/outputs/*" \
-    -x "backend/reduce_work/*" \
-    -x "backend/reduce_work/**" \
-    -x "backend/failed_chunks/*" \
-    -x "backend/failed_chunks/**" \
-    -x "backend/failed_chunks_remote/*" \
-    -x "backend/failed_chunks_remote/**" \
-    -x "backend/*.db*" \
-    -x "./*.db" \
-    -x "./*.db-*" \
-    -x "*.sqlite" \
-    -x "*.sqlite3" \
-    -x "./*.sqlite*" \
-    -x "./*.epub" \
-    -x "*.epub" \
-    -x "test_测试用例书/*" \
-    -x "test_测试用例书/**" \
-    -x "tools/epubcheck.zip" \
-    -x ".cursor/*"
-
-echo "🔎 Validating local deployment archive..."
-unzip -tq "$ZIP_FILE" >/dev/null
-
-echo "🚀 Uploading to server ($REMOTE_HOST:$REMOTE_ZIP_PATH)..."
-scp -i "$KEY_FILE" "$ZIP_FILE" "$REMOTE_HOST:$REMOTE_ZIP_PATH"
-
-echo "🛠  Deploying on server..."
-ssh -i "$KEY_FILE" "$REMOTE_HOST" << EOF
-  set -e
-  echo "--- Validating uploaded archive ---"
-  unzip -tq "$REMOTE_ZIP_PATH" >/dev/null
-
-  echo "--- Extracting files ---"
-  mkdir -p "$PROJECT_NAME"
-  unzip -o "$REMOTE_ZIP_PATH" -d "$PROJECT_NAME"
-  
-  echo "--- Updating dependencies ---"
-  # Install calibre for ebook-convert (mobi/azw3 to epub) if not present
-  if ! command -v ebook-convert &> /dev/null; then
-    echo "Installing calibre for format conversion..."
-    sudo apt-get update && sudo apt-get install -y calibre
+#!/usr/bin/env bash
+# Run from any directory using SSH public-key authentication only.
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+HOST=${DEPLOY_HOST:-ubuntu@81.71.22.79}
+PORT=${DEPLOY_PORT:-22}
+REMOTE_DIR=${DEPLOY_REMOTE_DIR:-/home/ubuntu/epub-factory}
+PYTHON=${PYTHON:-python3}
+PACKAGE="$ROOT/epub-factory-deploy.zip"
+MODE=${1:-deploy}
+case "$MODE" in
+  --help|-h)
+    cat <<'HELP'
+Usage: bash deploy.sh [--package-only | --check | --help]
+  default         Package, upload, back up server code, deploy and verify services.
+  --package-only  Build epub-factory-deploy.zip without connecting to the server.
+  --check         Check SSH, server prerequisites and active jobs; do not deploy.
+Environment:
+  DEPLOY_HOST        ubuntu@81.71.22.79 (or an SSH config alias)
+  DEPLOY_PORT        22
+  DEPLOY_REMOTE_DIR  /home/ubuntu/epub-factory
+  DEPLOY_KEY         SSH key path (default: ~/.ssh/id_ed25519_fixepub).
+  DEPLOY_PUBLIC_URL  https://fixepub.com (public health check after deployment)
+  PYTHON             Local Python 3 executable
+See docs/DEPLOY.md for browser-terminal deployment and rollback instructions.
+HELP
+    exit 0 ;;
+  deploy|--package-only|--check) ;;
+  *) echo "Unknown option: $MODE" >&2; exit 2 ;;
+esac
+[[ "$PORT" =~ ^[0-9]+$ ]] || { echo 'Invalid DEPLOY_PORT' >&2; exit 2; }
+[[ "$HOST" != -* && "$HOST" != *[[:space:]]* ]] || { echo 'Invalid DEPLOY_HOST' >&2; exit 2; }
+[[ "$REMOTE_DIR" =~ ^/[a-zA-Z0-9_./-]+$ && "$REMOTE_DIR" != / ]] || { echo 'Invalid DEPLOY_REMOTE_DIR' >&2; exit 2; }
+if [[ "$MODE" != --check ]]; then
+  "$PYTHON" "$ROOT/scripts/deploy-package.py" "$ROOT" "$PACKAGE"
+  if [[ "$MODE" == --package-only ]]; then
+    echo "Package ready: $PACKAGE"
+    echo 'See docs/DEPLOY.md for deployment through the Tencent Cloud terminal.'
+    exit 0
   fi
-
-  # EPUBCheck 需要 Java；缺失时所有新成品都会被保守判定为校验失败。
-  if ! command -v java &> /dev/null; then
-    echo "Installing Java runtime for EPUBCheck..."
-    sudo apt-get update && sudo apt-get install -y default-jre-headless
-  fi
-  
-  cd "$PROJECT_NAME/backend"
-  if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-  fi
-  .venv/bin/pip install -r requirements.txt
-  
-  echo "--- Restarting services ---"
-  # Restart uvicorn service (epub-factory.service)
-  if systemctl list-unit-files | grep -q epub-factory.service; then
-    sudo systemctl restart epub-factory
-    echo "Restarted epub-factory service."
-  else
-    echo "Warning: epub-factory.service not found. Starting manually in background (fallback)..."
-    # Fallback if service not set up: kill existing and start new
-    pkill -f uvicorn || true
-    nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > ../deploy.log 2>&1 &
-  fi
-  
-  # Restart celery worker if it exists
-  if systemctl list-unit-files | grep -q epub-factory-worker.service; then
-    sudo systemctl restart epub-factory-worker
-    echo "Restarted epub-factory-worker service."
-  fi
-
-  # Restart celery beat scheduler if it exists
-  if systemctl list-unit-files | grep -q epub-factory-beat.service; then
-    sudo systemctl restart epub-factory-beat
-    echo "Restarted epub-factory-beat service."
-  fi
-  
-  echo "--- Deployment on server completed! ---"
-  rm -f "$REMOTE_ZIP_PATH"
-EOF
-
-echo "🧹 Cleaning up local temporary files..."
-rm "$ZIP_FILE"
-
-echo "✨ Deployment successful!"
+fi
+command -v ssh >/dev/null
+command -v scp >/dev/null
+WORK=$(mktemp -d /tmp/epub-deploy.XXXXXX)
+SSH_OPTS=(-p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ControlMaster=auto -o ControlPersist=120 -o "ControlPath=$WORK/ssh")
+KEY=${DEPLOY_KEY:-$HOME/.ssh/id_ed25519_fixepub}
+if [[ -n "$KEY" ]]; then
+  [[ -r "$KEY" ]] || { rm -rf "$WORK"; echo "Missing deployment key. Run: bash $ROOT/scripts/setup-deploy-ssh.sh" >&2; exit 2; }
+  SSH_OPTS+=(-i "$KEY" -o IdentitiesOnly=yes)
+fi
+cleanup() {
+  ssh "${SSH_OPTS[@]}" -O exit "$HOST" >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+# Fail promptly if the key or verified server host key is unavailable.
+ssh "${SSH_OPTS[@]}" "$HOST" "bash -s -- --check '$REMOTE_DIR'" < "$ROOT/scripts/deploy-server.sh"
+[[ "$MODE" != --check ]] || exit 0
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)-$$
+REMOTE_PACKAGE="/tmp/epub-factory-$STAMP.zip"
+SCP_OPTS=(-P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o "ControlPath=$WORK/ssh")
+[[ -z "$KEY" ]] || SCP_OPTS+=(-i "$KEY")
+scp "${SCP_OPTS[@]}" "$PACKAGE" "$HOST:$REMOTE_PACKAGE"
+ssh "${SSH_OPTS[@]}" "$HOST" "bash -s -- '$REMOTE_PACKAGE' '$REMOTE_DIR'" < "$ROOT/scripts/deploy-server.sh"
+PUBLIC_URL=${DEPLOY_PUBLIC_URL:-https://fixepub.com}
+curl --fail --silent --show-error --max-time 20 "${PUBLIC_URL%/}/api/healthz" | "$PYTHON" -c 'import json,sys; result=json.load(sys.stdin); assert result.get("status") == "ok", result; print("Public API health: ok")'
+echo
+echo "Deployment verified: $PUBLIC_URL"

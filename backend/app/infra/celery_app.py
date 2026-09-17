@@ -41,6 +41,12 @@ def build_celery_app() -> Celery:
     worker_concurrency = int(os.environ.get("CELERY_WORKER_CONCURRENCY", "1"))
     task_time_limit = int(os.environ.get("CELERY_TASK_TIME_LIMIT", "1800"))
     task_soft_time_limit = int(os.environ.get("CELERY_TASK_SOFT_TIME_LIMIT", "1500"))
+    # Whole-book work includes preprocessing, thousands of chunks and packaging.
+    # Keep the shorter defaults for housekeeping tasks, not for an entire book.
+    book_soft_limit = int(os.environ.get("EPUB_BOOK_SOFT_TIME_LIMIT", "7200"))
+    book_hard_limit = int(os.environ.get("EPUB_BOOK_TIME_LIMIT", str(book_soft_limit + 300)))
+    if book_soft_limit <= 0 or book_hard_limit <= book_soft_limit:
+        raise ValueError("EPUB_BOOK_TIME_LIMIT must exceed a positive EPUB_BOOK_SOFT_TIME_LIMIT")
 
     app.conf.update(
         task_serializer="json",
@@ -54,6 +60,12 @@ def build_celery_app() -> Celery:
         worker_concurrency=worker_concurrency,
         task_time_limit=task_time_limit,
         task_soft_time_limit=task_soft_time_limit,
+        task_annotations={
+            "jobs.run_conversion": {
+                "soft_time_limit": book_soft_limit,
+                "time_limit": book_hard_limit,
+            },
+        },
         beat_schedule={
             "reconcile-payments-daily": {
                 "task": "jobs.reconcile_payments",

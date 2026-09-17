@@ -10,6 +10,46 @@ from bs4 import BeautifulSoup, Tag
 # 与 chunk_extractor 一致，仅用于定位
 BLOCK_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"]
 
+BILINGUAL_STYLE = """
+/* EPUB Factory: bilingual reading layout */
+body {
+  font-size: 1em;
+  line-height: 1.75;
+  font-family: Georgia, "Noto Serif CJK SC", "Songti SC", serif;
+}
+.epub-original, .epub-translated {
+  display: block;
+  text-indent: 0;
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.epub-original {
+  font-size: 0.9em;
+  line-height: 1.65;
+  margin: 0.9em 0 0.35em;
+}
+.epub-translated {
+  font-size: 1em;
+  line-height: 1.8;
+  margin: 0 0 1.2em;
+}
+.epub-original + br { display: none; }
+h1 .epub-original, h2 .epub-original, h3 .epub-original,
+h4 .epub-original, h5 .epub-original, h6 .epub-original {
+  font-size: 0.72em;
+  margin-top: 0.6em;
+  text-align: inherit;
+}
+h1 .epub-translated, h2 .epub-translated, h3 .epub-translated,
+h4 .epub-translated, h5 .epub-translated, h6 .epub-translated {
+  line-height: 1.4;
+  margin-bottom: 0.8em;
+  text-align: inherit;
+}
+"""
+
 
 class ChunkResultLike(Protocol):
     """任意具有 locator、translated_html、sequence、chunk_id 的对象（如 ChunkResult）。"""
@@ -97,6 +137,12 @@ def apply_chunk_results(
                 
                 translated_span = soup.new_tag("span", attrs={"class": "epub-translated"})
                 translated_span.extend(translated_contents)
+                # Inline note/page anchors exist in both model output and source.
+                # Keep their original targets, without emitting duplicate XML IDs.
+                original_ids = {tag["id"] for tag in original_span.find_all(id=True)}
+                for tag in translated_span.find_all(id=True):
+                    if tag["id"] in original_ids:
+                        del tag["id"]
                 
                 node.clear()
                 node.append(original_span)

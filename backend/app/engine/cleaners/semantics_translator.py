@@ -7,14 +7,35 @@ import random
 import re
 import os
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, Tag, NavigableString
 from openai import AsyncOpenAI
+from billiard.exceptions import SoftTimeLimitExceeded
 import httpx
-from app.cancellation import raise_if_cancelled
+from app.cancellation import JobCancelled, raise_if_cancelled
 from app.engine.chunk_extractor import should_skip_image_note_block
 from app.engine.glossary_extractor import select_relevant_glossary
 from ..translation_cache import TranslationCache
+
+
+# Per-coroutine budget: concurrent chunks must not share mutable retry counts.
+_request_budget: ContextVar[dict | None] = ContextVar("translation_request_budget", default=None)
+
+
+async def _within_request_budget(limit, operation):
+    budget = {"remaining": max(0, limit), "used": 0}
+    token = _request_budget.set(budget)
+    try:
+        result = await operation()
+        if budget["used"] and isinstance(result, tuple) and isinstance(result[1], dict):
+            result[1]["attempts"] = budget["used"]
+        return result
+    except Exception as exc:
+        exc.translation_request_attempts = budget["used"]
+        raise
+    finally:
+        _request_budget.reset(token)
 
 
 # 定价：每百万 token 美元（来源：DeepSeek / OpenAI 公开价格，可随官网更新）
@@ -310,19 +331,12 @@ class SemanticsTranslator:
         from app.infra.llm_guard import assert_models_allowed
         assert_models_allowed([self.model, *self.model_fallbacks, self.quality_fallback_model], context="translator")
         self.base_url_fallbacks = self._parse_csv_env("OPENAI_BASE_URL_FALLBACKS")
-        self.tokenhub_base_url = os.environ.get("TOKENHUB_BASE_URL", "").strip().rstrip("/")
         self.provider_base_urls: list[str] = []
         self._route_provider_by_base_url: dict[str, str] = {}
         self._route_api_key_by_base_url: dict[str, str] = {}
         self._register_llm_provider("primary", self.base_url, self.api_key)
         for index, fallback_base_url in enumerate(self.base_url_fallbacks, start=1):
             self._register_llm_provider(f"fallback_{index}", fallback_base_url, self.api_key)
-        if self.tokenhub_base_url:
-            self._register_llm_provider(
-                "tokenhub",
-                self.tokenhub_base_url,
-                os.environ.get("TOKENHUB_API_KEY", "").strip() or self.api_key,
-            )
         env_concurrency = int(os.environ.get("OPENAI_CONCURRENCY", concurrency))
         concurrency_cap = int(os.environ.get(
             "EPUB_TRANSLATION_CONCURRENCY_CAP",
@@ -1221,7 +1235,9 @@ class SemanticsTranslator:
         provider = self._provider_for_base_url(base_url)
         started_call = time.monotonic()
         
-        for attempt in range(1, max_attempts + 1):
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
             self._raise_if_cancelled()
             base_url, model = routes[(attempt - 1) % len(routes)]
             provider = self._provider_for_base_url(base_url)
@@ -1240,11 +1256,26 @@ class SemanticsTranslator:
                 if os.environ.get("OPENAI_DISABLE_JSON_RESPONSE_FORMAT", "").lower() not in ("1", "true", "yes"):
                     kwargs["response_format"] = {"type": "json_object"}
                 try:
+                    budget = _request_budget.get()
+                    if budget is not None:
+                        if budget["remaining"] <= 0:
+                            raise RuntimeError("chunk retry budget exhausted")
+                        budget["remaining"] -= 1
+                        budget["used"] += 1
+                    self.stats.api_calls += 1
                     response = await self._get_client(base_url).chat.completions.create(**kwargs)
+                except (JobCancelled, SoftTimeLimitExceeded):
+                    raise
                 except Exception as response_exc:
                     if "response_format" not in str(response_exc).lower():
                         raise
                     kwargs.pop("response_format", None)
+                    if budget is not None:
+                        if budget["remaining"] <= 0:
+                            raise RuntimeError("chunk retry budget exhausted")
+                        budget["remaining"] -= 1
+                        budget["used"] += 1
+                    self.stats.api_calls += 1
                     response = await self._get_client(base_url).chat.completions.create(**kwargs)
                 raw = (response.choices[0].message.content or "").strip()
                 try:
@@ -1295,8 +1326,14 @@ class SemanticsTranslator:
                     await asyncio.sleep(min(2 ** (attempt - 1), 5) + random.uniform(0, 1))
                     continue
 
+            except (JobCancelled, SoftTimeLimitExceeded):
+                raise
             except Exception as exc:
                 last_error = exc
+                exc.translation_request_attempts = attempt
+                budget = _request_budget.get()
+                if budget is not None and budget["remaining"] <= 0:
+                    raise
                 self.stats.last_error = str(exc)
                 self._record_route_failure(route)
                 self.semaphore.record_failure()
@@ -1345,7 +1382,6 @@ class SemanticsTranslator:
             self.stats.prompt_tokens += prompt_tokens
             self.stats.completion_tokens += completion_tokens
             self.stats.total_tokens += getattr(usage, "total_tokens", None) or (prompt_tokens + completion_tokens)
-        self.stats.api_calls += 1
         latency_ms = int((time.monotonic() - started_call) * 1000)
         self.stats.api_latency_ms_total += latency_ms
         self.stats.api_latency_ms_max = max(self.stats.api_latency_ms_max, latency_ms)
@@ -1462,6 +1498,8 @@ class SemanticsTranslator:
                 latency_ms, None,
                 retry_count=max(0, int(meta.get("attempts") or 1) - 1),
             )
+        except (JobCancelled, SoftTimeLimitExceeded):
+            raise
         except Exception as e:
             self.stats.failed_chunks += 1
             self.stats.last_error = str(e)
@@ -1641,17 +1679,23 @@ class SemanticsTranslator:
                         if preferred_model:
                             self.stats.quality_fallback_attempts += 1
                             self._emit_progress(f"单段补译升级模型：{preferred_model}")
-                            translations_map, meta = await self._call_llm_json_batch(
-                                retry_payload,
-                                preferred_model=preferred_model,
+                            translations_map, meta = await _within_request_budget(
+                                self.chunk_retry_budget - retry_count,
+                                lambda: self._call_llm_json_batch(retry_payload, preferred_model=preferred_model),
                             )
                         else:
-                            translations_map, meta = await self._call_llm_json_batch(retry_payload)
+                            translations_map, meta = await _within_request_budget(
+                                self.chunk_retry_budget - retry_count,
+                                lambda: self._call_llm_json_batch(retry_payload),
+                            )
                     last_meta = meta
                     retry_count += max(1, int(meta.get("attempts") or 1))
                     translated = translations_map.get(0, "")
                     last_latency_ms = int((time.monotonic() - t0) * 1000)
+                except (JobCancelled, SoftTimeLimitExceeded):
+                    raise
                 except Exception as exc:
+                    retry_count += max(1, int(getattr(exc, "translation_request_attempts", 1)))
                     reason_detail = f"{reason}; retry failed: {exc}"
                     if self._is_auth_error(exc) or quality_attempt >= self.quality_retries:
                         break
@@ -1696,10 +1740,11 @@ class SemanticsTranslator:
                 segment_meta: dict | None = None
                 try:
                     preferred_model = self._quality_retry_preferred_model(self.quality_retries)
-                    translated, segment_meta, segment_latency_ms = await self._translate_text_segments_rescue(
-                        original_inner,
-                        reason_detail,
-                        preferred_model=preferred_model,
+                    translated, segment_meta, segment_latency_ms = await _within_request_budget(
+                        self.chunk_retry_budget - retry_count,
+                        lambda: self._translate_text_segments_rescue(
+                            original_inner, reason_detail, preferred_model=preferred_model,
+                        ),
                     )
                     retry_count += max(1, int(segment_meta.get("attempts") or 1))
                     self._cache_set(original_inner, translated, chunk_contexts[idx])
@@ -1717,7 +1762,10 @@ class SemanticsTranslator:
                     )
                     self.stats.chunk_rescue_successes += 1
                     return True
+                except (JobCancelled, SoftTimeLimitExceeded):
+                    raise
                 except Exception as exc:
+                    retry_count += max(1, int(getattr(exc, "translation_request_attempts", 1)))
                     reason_detail = f"{reason_detail}; text segment rescue failed: {exc}"
                     if segment_meta:
                         last_meta = segment_meta
@@ -1791,11 +1839,12 @@ class SemanticsTranslator:
                 if quality_attempt > 0 or prior_retry_count > 0:
                     self.stats.retry_attempts += 1
                 try:
-                    translated, meta, latency_ms = await self._translate_text_segments_rescue(
-                        original_inner,
-                        "脚注专项文本节点翻译",
-                        preferred_model=preferred_model,
-                        count_as_rescue=False,
+                    translated, meta, latency_ms = await _within_request_budget(
+                        self.chunk_retry_budget - retry_count,
+                        lambda: self._translate_text_segments_rescue(
+                            original_inner, "脚注专项文本节点翻译",
+                            preferred_model=preferred_model, count_as_rescue=False,
+                        ),
                     )
                     retry_count = min(
                         self.chunk_retry_budget,
@@ -1817,9 +1866,11 @@ class SemanticsTranslator:
                     )
                     report_batch_progress(1)
                     return
+                except (JobCancelled, SoftTimeLimitExceeded):
+                    raise
                 except Exception as exc:
                     last_error = exc
-                    retry_count += 1
+                    retry_count += max(1, int(getattr(exc, "translation_request_attempts", 1)))
                     if retry_count >= self.chunk_retry_budget:
                         self.stats.retry_budget_exhausted_chunks += 1
                         budget_exhausted = True
@@ -1845,6 +1896,18 @@ class SemanticsTranslator:
 
         async def run_batch(batch: list[tuple[int, str]]) -> None:
             self._raise_if_cancelled()
+            resumed = [(idx, html) for idx, html in batch if int(prior_retries[idx] or 0) > 0]
+            if resumed:
+                # The rescue queue is a continuation of the same chunk, not a
+                # fresh initial batch with a new provider-retry allowance.
+                for idx, html in resumed:
+                    await retry_one(idx, html, "previous chunk attempt failed",
+                                    prior_retry_count=int(prior_retries[idx]))
+                    report_batch_progress(1)
+                fresh = [(idx, html) for idx, html in batch if int(prior_retries[idx] or 0) <= 0]
+                if fresh:
+                    await run_batch(fresh)
+                return
             payload = []
             for local_id, (idx, html) in enumerate(batch):
                 item = {"id": local_id, "html": html}
@@ -1879,6 +1942,8 @@ class SemanticsTranslator:
                         )
                     else:
                         translations_map, meta = await self._call_llm_json_batch(payload)
+            except (JobCancelled, SoftTimeLimitExceeded):
+                raise
             except Exception as exc:
                 # 整批 API/网络/JSON 失败时，先拆小重试，避免一个坏 chunk 连累整批。
                 self.stats.last_error = str(exc)
@@ -1898,7 +1963,10 @@ class SemanticsTranslator:
                         idx,
                         original_inner,
                         f"single chunk call failed: {exc}",
-                        prior_retry_count=max(int(prior_retries[idx] or 0), self.max_retries),
+                        prior_retry_count=max(
+                            int(prior_retries[idx] or 0),
+                            int(getattr(exc, "translation_request_attempts", self.max_retries)),
+                        ),
                     )
                     report_batch_progress(1)
                 return
@@ -2070,6 +2138,8 @@ class SemanticsTranslator:
                         preferred_model=self.quality_fallback_model or self.model,
                         system_prompt=review_prompt,
                     )
+            except (JobCancelled, SoftTimeLimitExceeded):
+                raise
             except Exception as exc:
                 self.stats.semantic_review_rejected += len(batch)
                 self._emit_progress(
@@ -2145,6 +2215,8 @@ class SemanticsTranslator:
                     preferred_model=self.quality_fallback_model or self.model,
                     system_prompt=prompt,
                 )
+        except (JobCancelled, SoftTimeLimitExceeded):
+            raise
         except Exception as exc:
             self._emit_progress(f"文学风格档案生成失败，使用保守默认档案：{self._short_error(exc)}")
             return (
@@ -2239,6 +2311,8 @@ class SemanticsTranslator:
                         preferred_model=self.quality_fallback_model or self.model,
                         system_prompt=prompt,
                     )
+            except (JobCancelled, SoftTimeLimitExceeded):
+                raise
             except Exception as exc:
                 self.stats.literary_polish_rejected += len(batch)
                 self._emit_progress(f"章节文学编辑失败，已保留忠实初译：{self._short_error(exc)}")
@@ -2325,6 +2399,8 @@ class SemanticsTranslator:
                         preferred_model=self.quality_fallback_model or self.model,
                         system_prompt=prompt,
                     )
+            except (JobCancelled, SoftTimeLimitExceeded):
+                raise
             except Exception as exc:
                 self.stats.literary_verification_rejected += len(batch)
                 self._emit_progress(f"文学译文语义回查失败，已保留安全编辑稿：{self._short_error(exc)}")
@@ -2438,6 +2514,8 @@ class SemanticsTranslator:
                         translated_list = await self._translate_batch(htmls)
                         for idx, t in zip(indices, translated_list):
                             uncached_results[idx] = t
+                    except (JobCancelled, SoftTimeLimitExceeded):
+                        raise
                     except Exception as e:
                         self._emit_progress(
                             f"批量翻译失败，已回写原文：{self._short_error(e)}"

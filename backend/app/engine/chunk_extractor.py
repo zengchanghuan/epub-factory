@@ -97,7 +97,11 @@ def should_skip_reference_note_block(block: Tag) -> bool:
         return True
     signals = REFERENCE_NOTE_RE.findall(text)
     has_url_or_identifier = bool(re.search(r"https?://|www\.|doi\s*:|isbn\s*:", text, re.I))
-    sentence_count = len(re.findall(r"[.!?](?:\s|$)", text))
+    # Author initials and "et al." are citation abbreviations, not explanatory
+    # sentences (e.g. J. A. Anguera et al., ... (2013), doi:10.1038/...).
+    sentence_text = re.sub(r"\b[A-Z]\.\s*", "", text)
+    sentence_text = re.sub(r"\bet\s+al\.", "et al", sentence_text, flags=re.I)
+    sentence_count = len(re.findall(r"[.!?](?:\s|$)", sentence_text))
     return (
         (has_url_or_identifier and len(text) <= 300 and sentence_count <= 1)
         or (len(signals) >= 2 and sentence_count <= 1)

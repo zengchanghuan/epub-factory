@@ -1,0 +1,40 @@
+.qq-support {
+  box-sizing: border-box;
+  margin: 24px auto;
+  padding: 20px;
+  max-width: 960px;
+  border: 1px solid #94a3b866;
+  border-radius: 14px;
+  color: var(--text, #1e293b);
+  background: var(--card, #f8fafc);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.qq-support h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.5; }
+.qq-support p { margin: 8px 0; font-size: 14px; line-height: 1.75; }
+.qq-support-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; }
+.qq-support .qq-support-open, .qq-support .qq-support-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 10px 16px;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  text-decoration: none;
+}
+.qq-support .qq-support-open { background: #2563eb; color: #fff; }
+.qq-support .qq-support-copy { background: transparent; color: inherit; }
+.qq-support a:focus-visible, .qq-support button:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }
+.qq-support .qq-support-hint { font-size: 13px; }
+.qq-support .qq-support-status:empty { display: none; }
+@media (max-width: 480px) {
+  .qq-support { padding: 16px; }
+  .qq-support-actions { gap: 10px; }
+}

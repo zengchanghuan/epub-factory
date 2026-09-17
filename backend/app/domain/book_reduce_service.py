@@ -3,12 +3,15 @@
 """
 
 import ebooklib
+from ebooklib import epub
+import posixpath
 from pathlib import Path
 from typing import Callable, Optional
 
 from bs4 import BeautifulSoup
 
 from app.domain.manifest_service import build_manifest
+from app.domain.chapter_reduce_service import BILINGUAL_STYLE
 from app.engine.unpacker import EpubUnpacker
 from app.engine.toc_rebuilder import TocRebuilder
 from app.engine.packager import EpubPackager
@@ -122,6 +125,7 @@ def reduce_and_package(
         if content is not None:
             file_path_to_content[fp] = content
 
+    bilingual_documents = []
     for item in book.get_items():
         if item is None:
             continue
@@ -132,9 +136,32 @@ def reduce_and_package(
             continue
         if name in file_path_to_content:
             item.set_content(file_path_to_content[name])
+            if BeautifulSoup(file_path_to_content[name], "html.parser").select_one(".epub-translated"):
+                bilingual_documents.append(item)
             continue
         if book_title and "titlepage" in Path(name).name.lower():
             item.set_content(_sync_document_title_text(item.get_content(), original_book_title or "", book_title))
+
+    if bilingual_documents:
+        css_name = "css/epub-factory-bilingual.css"
+        existing_names = {item.get_name() for item in book.get_items()}
+        while css_name in existing_names:
+            css_name = css_name.replace(".css", "-new.css")
+        stylesheet = epub.EpubItem(
+            uid="epub-factory-bilingual-layout", file_name=css_name,
+            media_type="text/css", content=BILINGUAL_STYLE.encode("utf-8"),
+        )
+        existing_ids = {item.get_id() for item in book.get_items()}
+        while stylesheet.id in existing_ids:
+            stylesheet.id += "-new"
+        book.add_item(stylesheet)
+        for item in bilingual_documents:
+            if not item.title:
+                document = BeautifulSoup(item.get_content(), "html.parser")
+                heading = document.find("title") or document.find(["h1", "h2"])
+                item.title = (heading.get_text(" ", strip=True) if heading else "") or book_title or book.title or "Chapter"
+            item.add_link(href=posixpath.relpath(css_name, posixpath.dirname(item.get_name()) or "."),
+                          rel="stylesheet", type="text/css")
 
     rebuilder = TocRebuilder()
     book = rebuilder.rebuild(

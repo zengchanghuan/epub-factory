@@ -122,6 +122,7 @@ def audit_translated_epub_output(
     output_path: str | Path | None,
     *,
     target_lang: str | None = "zh-CN",
+    bilingual: bool = False,
     sample_limit: int = 12,
 ) -> dict[str, Any]:
     """Scan final EPUB text for obvious untranslated body blocks before delivery."""
@@ -162,6 +163,24 @@ def audit_translated_epub_output(
                 if _is_non_body_document(name, soup):
                     report["non_body_files_skipped"] += 1
                     continue
+                if bilingual:
+                    # Only our paired source/translation markup is exempt. Unmarked
+                    # English and English inside the translation still need auditing.
+                    originals = [node for node in soup.select(".epub-original")
+                                 if node.find_parent(class_="epub-original") is None]
+                    for original in originals:
+                        translated = original.find_next_sibling(class_="epub-translated")
+                        if translated is None or not _text_from_tag(translated).strip():
+                            report["residual_blocks"] += 1
+                            categories = report["residual_categories"]
+                            categories["missing_bilingual_translation"] = categories.get("missing_bilingual_translation", 0) + 1
+                            if len(report["samples"]) < sample_limit:
+                                report["samples"].append({
+                                    "file": name,
+                                    "category": "missing_bilingual_translation",
+                                    "snippet": _text_from_tag(original)[:180],
+                                })
+                        original.decompose()
                 for block in soup.find_all(BLOCK_TAGS):
                     if not isinstance(block, Tag) or block.find(BLOCK_TAGS):
                         continue

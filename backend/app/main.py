@@ -1082,6 +1082,7 @@ def process_job(job: Job, expected_attempt_id: str | None = None) -> None:
 
 
 @app.get("/healthz")
+@app.get("/api/healthz", include_in_schema=False)
 def healthz() -> dict:
     return {"status": "ok"}
 
@@ -2471,10 +2472,10 @@ def retry_translation_v2(job_id: str, request: Request, background_tasks: Backgr
         job,
         background_tasks,
         action_label="免费重译",
-        translation_quality="high",
-        cache_policy="fresh",
-        translation_model="deepseek-v4-pro",
-        temperature=0.2,
+        translation_quality=job.translation_quality,
+        cache_policy="reuse",
+        translation_model=job.translation_model,
+        temperature=job.temperature,
     )
 
 

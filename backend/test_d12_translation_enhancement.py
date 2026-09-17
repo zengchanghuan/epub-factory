@@ -200,8 +200,8 @@ def test_candidate_routes_with_fallbacks():
         _restore_env(old_values)
 
 
-def test_candidate_routes_with_tokenhub_provider():
-    """配置 TOKENHUB_BASE_URL 后，同一 DeepSeek 模型可切到 TokenHub 备用通道。"""
+def test_candidate_routes_ignore_retired_tokenhub_provider():
+    """旧 TokenHub 配置残留时也不注册该通道或使用其密钥。"""
     old_values = {key: os.environ.get(key) for key in (
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
@@ -223,14 +223,12 @@ def test_candidate_routes_with_tokenhub_provider():
         t = SemanticsTranslator(target_lang="zh-CN")
         routes = t._candidate_routes()
 
-        assert routes[:2] == [
+        assert routes == [
             ("https://api.deepseek.com/v1", "deepseek-v4-pro"),
-            ("https://tokenhub.example.com/v1", "deepseek-v4-pro"),
+            ("https://api.deepseek.com/v1", "deepseek-v4-flash"),
         ]
-        assert ("https://api.deepseek.com/v1", "deepseek-v4-flash") in routes
-        assert ("https://tokenhub.example.com/v1", "deepseek-v4-flash") in routes
-        assert t._provider_for_base_url("https://tokenhub.example.com/v1") == "tokenhub"
-        assert t._api_key_for_base_url("https://tokenhub.example.com/v1") == "tokenhub-key"
+        assert t.provider_base_urls == ["https://api.deepseek.com/v1"]
+        assert "tokenhub-key" not in t._route_api_key_by_base_url.values()
         assert t._api_key_for_base_url("https://api.deepseek.com/v1") == "primary-key"
     finally:
         _restore_env(old_values)
@@ -1203,7 +1201,7 @@ def _run():
         test_high_quality_semantic_review_accepts_safe_fix_and_rejects_bad_html,
         test_candidate_routes_default,
         test_candidate_routes_with_fallbacks,
-        test_candidate_routes_with_tokenhub_provider,
+        test_candidate_routes_ignore_retired_tokenhub_provider,
         test_translation_stability_caps_env_concurrency_and_batch_size,
         test_translate_many_chunks_uses_one_json_batch,
         test_translate_many_chunks_error_like_only_fails_that_chunk,

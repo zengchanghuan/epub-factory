@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from billiard.exceptions import SoftTimeLimitExceeded
+
 from .cancellation import JobCancelled, raise_if_cancelled
 from .converter import converter
 from .domain.notification_service import notify_job_completed
@@ -103,7 +105,14 @@ def _finalize_attempt_output(job, result, working_path: Path, default_path: Path
 def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
     if not getattr(job, "enable_translation", False):
         return
-    audit = audit_translated_epub_output(output_path, target_lang=getattr(job, "target_lang", "zh-CN"))
+    # A previous stage already failed; do not replace its useful error with a
+    # secondary "missing output" error or hide EPUBCheck failures.
+    if not result.validation_passed:
+        return
+    audit = audit_translated_epub_output(
+        output_path, target_lang=getattr(job, "target_lang", "zh-CN"),
+        bilingual=bool(getattr(job, "bilingual", False)),
+    )
     stats = dict(getattr(result, "translation_stats", {}) or {})
     stats["artifact_audit"] = audit
     result.translation_stats = stats
@@ -461,6 +470,9 @@ def run_job(job_id: str, expected_attempt_id: str | None = None) -> None:
         if attempt_scoped_output and output_path:
             output_path.unlink(missing_ok=True)
         error_code = ErrorCode.CONVERT_FAILED
+        if isinstance(exc, SoftTimeLimitExceeded) and job.enable_translation:
+            message = "翻译任务达到运行时限，已完成的译文缓存已保留。请重启翻译并使用复用缓存，继续处理剩余内容。"
+            error_code = ErrorCode.TRANSLATION_FAILED
         if "AI 翻译失败" in message or "翻译流程未完成" in message:
             error_code = ErrorCode.TRANSLATION_FAILED
         if getattr(job_store, "add_stage", None):
