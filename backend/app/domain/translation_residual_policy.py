@@ -6,6 +6,10 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from urllib.parse import urlsplit
+from app.domain.translation_titles import COMMON_ZH_TITLES
+
+_SHORT_RESPONSES = {'yes', 'no', 'exactly', 'yes, exactly', 'absolutely', 'certainly',
+                    'correct', 'of course', 'not exactly', 'no, not yet', "that's right"}
 
 
 def normalize_text(text: str) -> str:
@@ -43,7 +47,14 @@ def residual_category(text: str, *, source_text: str | None = None,
     words = [word for word in re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text)
              if any("LATIN" in unicodedata.name(ch, "") for ch in word)]
     cjk = len(re.findall(r"[\u3400-\u9fff]", text))
-    if title_like and len(words) >= 2 and latin >= 12 and cjk == 0:
+    response = normalized.rstrip('.!?。！？').strip()
+    # A bounded set of ordinary answers, not arbitrary names/acronyms. "NO"
+    # can be a formula; "No." is a sentence. Explicit preservation stays first.
+    acronym = len(response) <= 3 and text.rstrip('.!?').isupper()
+    if cjk == 0 and response in _SHORT_RESPONSES and not acronym:
+        return 'short_english_response'
+    if title_like and cjk == 0 and (normalized in COMMON_ZH_TITLES
+                                    or (len(words) >= 2 and latin >= 8)):
         return "short_english_title"
     if source_text and normalized == normalize_text(source_text) and len(words) >= 2 and latin >= 12 and cjk == 0:
         return "unchanged_source"

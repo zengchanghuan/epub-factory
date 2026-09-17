@@ -15,11 +15,13 @@ from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 from app.domain.translation_residual_policy import residual_category
+from app.domain.epub_navigation_audit import audit_epub_navigation
 
 from app.engine.chunk_extractor import (
     BLOCK_TAGS,
     should_skip_image_note_block,
     should_skip_reference_note_block,
+    NON_TEXT_TAGS,
 )
 
 
@@ -35,7 +37,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20260917-references-delivery-v1"
+QA_RULES_VERSION = "20260917-duplicate-media-review-v5"
 
 
 def max_free_retries() -> int:
@@ -57,6 +59,9 @@ def _text_from_tag(tag: Tag) -> str:
     if not tag:
         return ""
     clone = BeautifulSoup(str(tag), "html.parser")
+    for media in clone.find_all(list(NON_TEXT_TAGS)):
+        if media.parent is not None:
+            media.decompose()
     for br in clone.find_all("br"):
         br.replace_with(" ")
     text = clone.get_text("", strip=False)
@@ -147,6 +152,7 @@ def audit_translated_epub_output(
 
     try:
         with zipfile.ZipFile(output_path) as zf:
+            report.update(audit_epub_navigation(zf, preserved_terms, sample_limit))
             names = sorted(
                 name for name in zf.namelist()
                 if name.lower().endswith((".html", ".xhtml"))
@@ -213,6 +219,8 @@ def audit_translated_epub_output(
     if int(report["residual_blocks"] or 0) > max_residual:
         report["status"] = "failed"
         report["max_residual_blocks"] = max_residual
+    if report.get("navigation_residual_labels") or report.get("navigation_broken_targets"):
+        report["status"] = "failed"
     return report
 
 
@@ -277,6 +285,14 @@ def build_translation_qa_report(
     if artifact_residual:
         _flag(report, "artifact_untranslated_blocks", f"成品 EPUB 仍有 {artifact_residual} 个正文段落疑似未翻译")
         report["score"] -= min(80, 25 + artifact_residual * 2)
+    navigation_residual = int(artifact_audit.get("navigation_residual_labels") or 0)
+    broken_targets = int(artifact_audit.get("navigation_broken_targets") or 0)
+    if navigation_residual:
+        _flag(report, "navigation_untranslated", f"目录仍有 {navigation_residual} 个标题疑似未翻译")
+        report["score"] -= min(30, navigation_residual * 3)
+    if broken_targets:
+        _flag(report, "navigation_broken", f"目录有 {broken_targets} 个失效链接或锚点")
+        report["score"] -= min(50, broken_targets * 5)
 
     if title_original and title_translated and title_original == title_translated:
         _flag(report, "title_untranslated", "书名元数据未翻译")

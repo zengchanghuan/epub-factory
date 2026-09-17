@@ -3,7 +3,7 @@
  * - F9-1 HTML 包含预览 Modal（#previewModal）
  * - F9-2 HTML 包含反馈表单（.feedback-bar）
  * - F9-3 HTML 包含反馈类型按钮（至少 3 种）
- * - F9-4 HTML 包含 epub.js 懒加载逻辑（loadEpubJs）
+ * - F9-4 使用本站安全章节预览，不再依赖第三方 epub.js
  * - F9-5 HTML 包含键盘翻页逻辑（ArrowLeft/ArrowRight）
  * - F9-6 HTML 包含反馈提交到 /api/v2/feedback 的请求
  * - F9-7 HTML 中结果操作区（#resultActions）包含预览和下载按钮
@@ -35,16 +35,18 @@ test("F9-3 反馈类型按钮至少 3 种", () => {
   assert.ok(matches && matches.length >= 3, `反馈类型按钮应 ≥3，实际 ${matches ? matches.length : 0}`);
 });
 
-test("F9-4 epub.js 懒加载逻辑", () => {
-  assert.ok(html.includes("loadEpubJs"), "应包含 loadEpubJs 函数");
-  assert.ok(html.includes("epubjs"), "应引用 epub.js CDN");
-  assert.ok(html.includes("ePub("), "应使用 ePub() 构造函数");
+test("F9-4 安全预览按需读取本站章节", () => {
+  assert.ok(html.includes("BookPreviewController"), "应使用安全预览控制器");
+  assert.ok(html.includes('/preview?chapter='), "应按需读取章节");
+  assert.ok(html.includes('sandbox=""'), "阅读框不可运行书稿脚本");
+  assert.ok(html.includes('cache: "no-store", signal'), "应取最新译本且可取消请求");
 });
 
 test("F9-5 键盘翻页支持", () => {
-  assert.ok(html.includes("ArrowLeft"), "应支持左箭头翻页");
-  assert.ok(html.includes("ArrowRight"), "应支持右箭头翻页");
-  assert.ok(html.includes("Escape"), "应支持 Esc 关闭");
+  const logic = fs.readFileSync(path.resolve(__dirname, '../book-preview.js'), 'utf8');
+  assert.ok(logic.includes("ArrowLeft"), "应支持左箭头切章");
+  assert.ok(logic.includes("ArrowRight"), "应支持右箭头切章");
+  assert.ok(logic.includes("Escape"), "应支持 Esc 关闭");
 });
 
 test("F9-6 反馈提交到正确 API 端点", () => {

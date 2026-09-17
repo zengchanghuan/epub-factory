@@ -15,6 +15,7 @@ from urllib.parse import unquote, urldefrag
 from bs4 import BeautifulSoup
 import ebooklib
 from ebooklib import epub
+from app.domain.translation_titles import COMMON_ZH_TITLES
 
 
 @dataclass
@@ -29,20 +30,7 @@ class TocRebuilder:
     """在 compiler pipeline 之外运行，直接操作 Book 对象"""
 
     TAG_LEVELS = {'h1': 1, 'h2': 2, 'h3': 3, 'h4': 4, 'h5': 5, 'h6': 6}
-    COMMON_ZH_TITLES = {
-        "cover": "封面",
-        "about the author": "作者简介",
-        "title page": "书名页",
-        "copyright page": "版权页",
-        "contents": "目录",
-        "acknowledgements": "致谢",
-        "acknowledgments": "致谢",
-        "introduction": "导言",
-        "notes": "注释",
-        "bibliographical notes": "参考书目说明",
-        "bibliographic notes": "参考书目说明",
-        "footnotes": "脚注",
-    }
+    COMMON_ZH_TITLES = COMMON_ZH_TITLES
 
     def rebuild(
         self,
@@ -51,6 +39,7 @@ class TocRebuilder:
         original_book_title: str | None = None,
         translated_book_title: str | None = None,
         target_lang: str | None = None,
+        glossary: dict[str, str] | None = None,
     ) -> epub.EpubBook:
         if self._has_existing_toc(book):
             preserved = self._count_toc_entries(book.toc)
@@ -59,6 +48,7 @@ class TocRebuilder:
                 original_book_title=original_book_title,
                 translated_book_title=translated_book_title,
                 target_lang=target_lang,
+                glossary=glossary,
             )
             self.stats = {
                 "toc_generated": 0,
@@ -142,7 +132,7 @@ class TocRebuilder:
             file_name, _ = self._normalize_href(file_name)
             soup = BeautifulSoup(item.get_content(), "html.parser")
             for heading in soup.find_all(list(self.TAG_LEVELS)):
-                text = re.sub(r"\s+", " ", heading.get_text(" ", strip=True)).strip()
+                text = re.sub(r"\s+", " ", heading.get_text("", strip=False)).strip()
                 if not self._is_meaningful_heading(text):
                     continue
                 if re.search(r"[\u3400-\u9fff]", text):
@@ -165,6 +155,7 @@ class TocRebuilder:
         target_is_chinese: bool,
         original_book_title: str | None,
         translated_book_title: str | None,
+        glossary: dict[str, str],
     ) -> str:
         normalized_title = self._normalize_title(title)
         file_name, fragment = self._normalize_href(href)
@@ -177,6 +168,9 @@ class TocRebuilder:
             return translated_book_title.strip()
 
         if target_is_chinese:
+            approved = glossary.get(normalized_title)
+            if approved:
+                return approved
             common = self.COMMON_ZH_TITLES.get(normalized_title)
             if common:
                 return common
@@ -202,8 +196,14 @@ class TocRebuilder:
         original_book_title: str | None,
         translated_book_title: str | None,
         target_lang: str | None,
+        glossary: dict[str, str] | None = None,
     ) -> int:
         exact_headings, first_headings, cjk_found = self._document_title_maps(book)
+        approved_titles = {
+            self._normalize_title(source): target.strip()
+            for source, target in (glossary or {}).items()
+            if isinstance(target, str) and re.search(r"[\u3400-\u9fff]", target)
+        }
         if target_lang:
             target_is_chinese = target_lang.lower().startswith("zh")
         else:
@@ -238,7 +238,15 @@ class TocRebuilder:
                     target_is_chinese=target_is_chinese,
                     original_book_title=original_book_title,
                     translated_book_title=translated_book_title,
+                    glossary=approved_titles,
                 )
+                if target_is_chinese:
+                    # Use only confirmed glossary translations for a remaining
+                    # surname/token in a mixed-language heading. Longest first.
+                    for source, target in sorted(approved_titles.items(), key=lambda term: -len(term[0])):
+                        if re.search(r'[a-z]', source):
+                            new_title = re.sub(r'\b' + re.escape(source) + r'\b', lambda match: target,
+                                               new_title, flags=re.I)
                 if new_title and new_title != old_title:
                     node.title = new_title
                     changed += 1

@@ -7,19 +7,30 @@ const assert = require("assert");
 let passed = 0;
 let failed = 0;
 const failures = [];
+const tests = [];
 
 global.test = function (name, fn) {
-  try {
-    fn();
-    console.log(`  ✅ ${name}`);
-    passed++;
-  } catch (e) {
-    console.log(`  ❌ ${name}`);
-    console.log(`     → ${e.message}`);
-    failures.push({ name, error: e.message });
-    failed++;
-  }
+  tests.push({ name, fn });
 };
+
+async function run() {
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      console.log(`  ✅ ${name}`);
+      passed++;
+    } catch (e) {
+      console.log(`  ❌ ${name}`);
+      console.log(`     → ${e.message}`);
+      failures.push({ name, error: e.message });
+      failed++;
+    }
+  }
+  console.log(`\n${"─".repeat(52)}`);
+  console.log(`📊 Results: ${passed} passed, ${failed} failed`);
+  console.log(`${"─".repeat(52)}`);
+  process.exit(failed > 0 ? 1 : 0);
+}
 
 global.assert = assert;
 
@@ -32,7 +43,4 @@ if (!file) {
 const path = require("path");
 require(path.resolve(__dirname, file));
 
-console.log(`\n${"─".repeat(52)}`);
-console.log(`📊 Results: ${passed} passed, ${failed} failed`);
-console.log(`${"─".repeat(52)}`);
-process.exit(failed > 0 ? 1 : 0);
+run().catch(error => { console.error(error); process.exit(1); });

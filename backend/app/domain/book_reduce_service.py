@@ -90,6 +90,7 @@ def reduce_and_package(
     book_title: str | None = None,
     original_book_title: str | None = None,
     target_lang: str | None = None,
+    glossary: dict[str, str] | None = None,
 ) -> bool:
     """
     加载 EPUB，用回调提供的章节内容覆盖对应文档，再 TOC 重建并打包。
@@ -169,6 +170,7 @@ def reduce_and_package(
         original_book_title=original_book_title,
         translated_book_title=book_title,
         target_lang=target_lang,
+        glossary=glossary,
     )
     packager = EpubPackager(book, output_epub_path)
     return packager.save()

@@ -38,6 +38,10 @@ D_SUITE = [
     "test_d22_release_continuity.py",
     "test_d23_flash_alias.py",
     "test_d24_delivery_policy.py",
+    "test_d25_navigation_numeric.py",
+    "test_d26_preview_feedback.py",
+    "test_d27_targeted_book_repair.py",
+    "test_d28_media_text_translation.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

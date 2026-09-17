@@ -10,10 +10,12 @@ import os
 from dataclasses import dataclass
 from typing import Any, List
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Tag, NavigableString, Comment
 
 
 BLOCK_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"]
+MEDIA_TAGS = {"img", "svg", "image"}
+NON_TEXT_TAGS = MEDIA_TAGS | {"script", "style"}
 IMAGE_ANNOTATION_CLASS_RE = re.compile(
     r"(figcaption|caption|figure|photo|picture|image|diagram|illustration|illus|legend|credit)",
     re.I,
@@ -53,17 +55,33 @@ def _attr_text(tag: Tag) -> str:
 
 
 def should_skip_image_note_block(block: Tag) -> bool:
-    """Whether a block contains image media that should not be sent to the LLM."""
+    """Only media-only blocks are exempt; an image bullet must not hide prose."""
     if not _enabled("EPUB_SKIP_IMAGE_NOTE_CHUNKS", "1"):
         return False
-    return bool(block.find(["img", "svg", "image"]))
+    return bool(block.find(list(MEDIA_TAGS))) and not visible_text_outside_media(block).strip()
+
+
+def is_external_text_node(node: NavigableString) -> bool:
+    """Never send scripts, comments or any media subtree to a text translator."""
+    return (
+        isinstance(node, NavigableString) and not isinstance(node, Comment)
+        and not any(getattr(parent, "name", "") in NON_TEXT_TAGS for parent in node.parents)
+    )
+
+
+def visible_text_outside_media(block: Tag, separator: str = "") -> str:
+    return separator.join(str(node) for node in block.find_all(string=True) if is_external_text_node(node))
+
+
+def media_subtrees(html: str) -> list[str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    return [str(tag) for tag in soup.find_all(list(MEDIA_TAGS))
+            if not tag.find_parent(list(MEDIA_TAGS))]
 
 
 def is_image_caption_block(block: Tag) -> bool:
     """Return True for a textual image caption/legend that should be translated."""
-    if block.find(["img", "svg", "image"]):
-        return False
-    text = re.sub(r"\s+", " ", block.get_text(" ", strip=True) or "").strip()
+    text = re.sub(r"\s+", " ", visible_text_outside_media(block, " ")).strip()
     if not text:
         return False
 
@@ -115,7 +133,9 @@ def _xpath_segment(tag: Tag, parent: Tag | None) -> str:
     same_siblings = [c for c in parent.children if isinstance(c, Tag) and c.name == tag.name]
     if len(same_siblings) <= 1:
         return f"{tag.name}[1]"
-    idx = same_siblings.index(tag) + 1
+    # Tag equality compares markup, not identity: duplicate paragraphs must not
+    # all resolve to the first sibling with the same content.
+    idx = next(i for i, sibling in enumerate(same_siblings, 1) if sibling is tag)
     return f"{tag.name}[{idx}]"
 
 
@@ -167,20 +187,25 @@ def extract_chunks_with_stats(html_content: bytes, chapter_id: str) -> tuple[Lis
         if not _is_leaf_block(block):
             continue
         html = str(block)
-        raw_text = block.get_text()
-        if not raw_text.strip():
+        # Retain the old sequence numbering even for SVG-internal text. Locators
+        # and existing cache/chunk identifiers must not shift after this fix.
+        if not block.get_text().strip():
             continue
         seq += 1
         if should_skip_image_note_block(block):
             stats["image_note_chunks_skipped"] += 1
+            continue
+        raw_text = visible_text_outside_media(block)
+        if not raw_text.strip():
             continue
         if is_image_caption_block(block):
             stats["image_caption_chunks"] += 1
         if should_skip_reference_note_block(block):
             stats["reference_note_chunks_skipped"] += 1
             continue
-        strategy = "text_nodes" if is_structured_note_block(block) else "html"
-        if strategy == "text_nodes":
+        structured_note = is_structured_note_block(block)
+        strategy = "text_nodes" if structured_note or block.find(list(MEDIA_TAGS)) else "html"
+        if structured_note:
             stats["structured_note_chunks"] += 1
         locator = _build_locator(block, soup)
         chunk_id = f"{chapter_id}_{seq:04d}"

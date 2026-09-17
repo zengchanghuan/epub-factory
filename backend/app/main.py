@@ -7,6 +7,7 @@ import shutil
 import uuid
 import html as html_lib
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -37,6 +38,8 @@ from .domain.translation_qa_service import build_translation_qa_report, max_free
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
 from .domain.translation_strategy import TRANSLATION_STRATEGY_CHOICES
 from .domain.translation_preflight_service import build_translation_preflight
+from .domain.book_preview_service import build_book_preview
+from .domain.feedback_service import FEEDBACK_TYPES, feedback_limiter, persist_feedback
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -2256,6 +2259,28 @@ def download_result_v2(
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
+@app.get("/api/v2/jobs/{job_id}/preview")
+def preview_book_v2(job_id: str, request: Request, chapter: int = 0):
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(status_code=403, detail="无权访问该任务")
+    if not _job_can_download(job):
+        raise HTTPException(status_code=400, detail=_download_unavailable_detail(job))
+    output = Path(job.output_path or "")
+    if output.suffix.lower() != '.epub':
+        raise HTTPException(status_code=415, detail="此结果不支持 EPUB 预览，请下载查看")
+    if not output.is_file():
+        raise HTTPException(status_code=404, detail="结果文件不存在")
+    try:
+        return build_book_preview(output, chapter)
+    except IndexError:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    except (ValueError, KeyError, zipfile.BadZipFile, OSError, ET.ParseError, RuntimeError):
+        raise HTTPException(status_code=422, detail="无法预览此 EPUB，请下载阅读")
+
+
 def _v2_job_stats(job_id: str) -> dict:
     """从 store 的 chapters/chunks 聚合 stats，若无则返回占位。"""
     job = job_store.get(job_id)
@@ -3462,16 +3487,33 @@ async def submit_feedback(request: Request):
     from datetime import datetime, timezone
 
     try:
-        body = await request.json()
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 16384:
+                raise HTTPException(status_code=413, detail="反馈内容过大")
+        body = _json.loads(raw)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=400, detail="请求体须为 JSON")
 
-    job_id = str(body.get("job_id") or "").strip()[:32]
-    feedback_type = str(body.get("type") or "other").strip()[:32]
-    message = str(body.get("message") or "").strip()[:2000]
+    if not isinstance(body, dict) or not all(isinstance(body.get(k, ''), str) for k in ('job_id', 'type', 'message')):
+        raise HTTPException(status_code=400, detail="反馈字段格式不正确")
+    job_id = body.get("job_id", "").strip()
+    feedback_type = body.get("type", "other").strip()
+    message = body.get("message", "").strip()
 
-    if not message:
-        raise HTTPException(status_code=400, detail="反馈内容不能为空")
+    if not message or len(message) > 2000 or len(job_id) > 32 or feedback_type not in FEEDBACK_TYPES:
+        raise HTTPException(status_code=400, detail="反馈内容须为 1–2000 字且类型有效")
+    if job_id == 'general_suggestion' and feedback_type == 'suggestion':
+        pass  # Existing public feature-suggestion flow remains available.
+    else:
+        job = job_store.get(job_id)
+        if not job or not _authorize_job_access(request, job):
+            raise HTTPException(status_code=403, detail="无权反馈该任务")
+    if not feedback_limiter.allow(get_real_ip(request)):
+        raise HTTPException(status_code=429, detail="反馈过于频繁，请稍后再试")
 
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -3487,10 +3529,10 @@ async def submit_feedback(request: Request):
     # 持久化到 JSONL 文件
     feedback_file = BASE_DIR / "feedback.jsonl"
     try:
-        with feedback_file.open("a", encoding="utf-8") as f:
-            f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        await asyncio.to_thread(persist_feedback, feedback_file, entry)
     except Exception as e:
         logger.warning(f"feedback write error: {e}")
+        raise HTTPException(status_code=503, detail="反馈暂未保存，请稍后重试")
 
     return {"ok": True, "message": "感谢您的反馈！"}
 

@@ -55,6 +55,8 @@ backend.log
 epub-factory.zip
 
 # Local test fixtures
+# Reviewed book text and repair provenance are private local artifacts.
+/artifacts/translated-books/*.json
 test.pdf
 test[0-9]*.pdf
 test_*/

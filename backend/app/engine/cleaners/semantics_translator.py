@@ -15,7 +15,9 @@ from openai import AsyncOpenAI
 from billiard.exceptions import SoftTimeLimitExceeded
 import httpx
 from app.cancellation import JobCancelled, raise_if_cancelled
-from app.engine.chunk_extractor import should_skip_image_note_block
+from app.engine.chunk_extractor import (
+    MEDIA_TAGS, should_skip_image_note_block, is_external_text_node, visible_text_outside_media, media_subtrees,
+)
 from app.engine.glossary_extractor import select_relevant_glossary
 from app.domain.translation_strategy import (
     TRANSLATION_STRATEGY_VERSION,
@@ -902,7 +904,7 @@ class SemanticsTranslator:
 
     @staticmethod
     def _visible_text(html: str) -> str:
-        return BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True)
+        return visible_text_outside_media(BeautifulSoup(html or "", "html.parser"), " ").strip()
 
     @staticmethod
     def _latin_words(text: str) -> list[str]:
@@ -945,7 +947,8 @@ class SemanticsTranslator:
         }
 
     def _preserves_inline_tags(self, source_html: str, translated_html: str) -> bool:
-        return self._inline_tag_counter(source_html) == self._inline_tag_counter(translated_html)
+        return (self._inline_tag_counter(source_html) == self._inline_tag_counter(translated_html)
+                and media_subtrees(source_html) == media_subtrees(translated_html))
 
     @staticmethod
     def _has_dropcap_span(html: str) -> bool:
@@ -1145,7 +1148,7 @@ class SemanticsTranslator:
         soup = BeautifulSoup(html or "", "html.parser")
         block_tag = soup.find()
         if block_tag and block_tag.name in BLOCK_TAGS:
-            return "".join(str(c) for c in block_tag.contents).strip()
+            return block_tag.decode_contents().strip()
         return (html or "").strip()
 
     @staticmethod
@@ -1206,6 +1209,8 @@ class SemanticsTranslator:
         *,
         preferred_model: str | None = None,
         count_as_rescue: bool = True,
+        system_prompt: str | None = None,
+        context: str = "",
     ) -> tuple[str, dict, int]:
         """Translate only natural-language text nodes while preserving all HTML tags in place."""
         if not self._text_segment_rescue_enabled():
@@ -1214,10 +1219,7 @@ class SemanticsTranslator:
         soup = BeautifulSoup(original_inner or "", "html.parser")
         segments: list[tuple[int, NavigableString, str]] = []
         for node in list(soup.find_all(string=True)):
-            if not isinstance(node, NavigableString):
-                continue
-            parent_name = getattr(getattr(node, "parent", None), "name", "")
-            if parent_name in {"script", "style"}:
+            if not is_external_text_node(node):
                 continue
             text = str(node)
             if self._should_translate_text_node(text):
@@ -1238,15 +1240,18 @@ class SemanticsTranslator:
             }
             for segment_id, _node, text in segments
         ]
+        if context:
+            for item in payload:
+                item['context'] = context
 
         t0 = time.monotonic()
         async with self.semaphore:
             if preferred_model:
                 self.stats.quality_fallback_attempts += 1
                 self._emit_progress(f"文本片段补译升级模型：{preferred_model}")
+            prompt_kwargs = {'system_prompt': system_prompt} if system_prompt is not None else {}
             translations_map, meta = await self._call_llm_json_batch(
-                payload,
-                preferred_model=preferred_model,
+                payload, preferred_model=preferred_model, **prompt_kwargs,
             )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -1269,7 +1274,7 @@ class SemanticsTranslator:
                 self._preserve_text_node_whitespace(source_text, translated_text)
             ))
 
-        translated_inner = "".join(str(item) for item in soup.contents)
+        translated_inner = soup.decode_contents()
         invalid_reason = self._invalid_translation_reason(original_inner, translated_inner)
         if invalid_reason:
             raise ValueError(f"text segment rescue invalid: {invalid_reason}")
@@ -1588,7 +1593,9 @@ class SemanticsTranslator:
     async def translate_single_chunk_async(self, html: str) -> "SingleChunkResult":
         """单 chunk 调用（在 V2 Worker 中使用）"""
         soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text() if html else ""
+        if soup.find(list(MEDIA_TAGS)) or soup.find(re.compile(r'^h[1-6]$')):
+            return (await self.translate_many_chunks_async([html]))[0]
+        text = visible_text_outside_media(soup) if html else ""
         if not self._should_translate(text):
             return SingleChunkResult(html, True, None, None, 0, 0, 0, None)
             
@@ -1726,7 +1733,7 @@ class SemanticsTranslator:
         for i, html in enumerate(html_chunks):
             self._raise_if_cancelled()
             soup = BeautifulSoup(html or "", "html.parser")
-            text = soup.get_text() if html else ""
+            text = visible_text_outside_media(soup) if html else ""
             if not self._should_translate(text):
                 results[i] = SingleChunkResult(html, True, None, None, 0, 0, 0, None)
                 continue
@@ -1739,11 +1746,12 @@ class SemanticsTranslator:
                 chunk_contexts[i],
                 allow_compatible=not strategy_is_override,
             )
-            strategy = strategies[i] or "html"
+            # Safe even for legacy/API callers that omitted manifest metadata.
+            strategy = "text_nodes" if soup.find(list(MEDIA_TAGS)) else (strategies[i] or "html")
             if cached:
                 if (
                     not self._looks_like_error_response(cached)
-                    and not self._looks_untranslated(inner_html, cached)
+                    and not self._looks_untranslated(html, cached)
                     and self._preserves_inline_tags(inner_html, cached)
                 ):
                     self.stats.cached_chunks += 1
@@ -1897,7 +1905,7 @@ class SemanticsTranslator:
                 translated, repaired = self._repair_inline_tags_if_safe(original_inner, translated)
                 if repaired:
                     self._emit_progress("HTML 标签结构已自动修复，跳过额外补译")
-                invalid_reason = self._invalid_translation_reason(original_inner, translated)
+                invalid_reason = self._invalid_translation_reason(html_chunks[idx], translated)
                 if invalid_reason:
                     reason_detail = f"{reason}; {invalid_reason}"
                     if quality_attempt < self.quality_retries:
@@ -1933,9 +1941,14 @@ class SemanticsTranslator:
                         self.chunk_retry_budget - retry_count,
                         lambda: self._translate_text_segments_rescue(
                             original_inner, reason_detail, preferred_model=preferred_model,
+                            system_prompt=chapter_system_prompt if strategy_is_override else None,
+                            context=chunk_contexts[idx],
                         ),
                     )
                     retry_count += max(1, int(segment_meta.get("attempts") or 1))
+                    invalid_reason = self._invalid_translation_reason(html_chunks[idx], translated)
+                    if invalid_reason:
+                        raise ValueError(invalid_reason)
                     self._cache_set(original_inner, translated, chunk_contexts[idx])
                     self.stats.translated_chunks += 1
                     results[idx] = SingleChunkResult(
@@ -1974,8 +1987,7 @@ class SemanticsTranslator:
             prior_retry_count = max(0, int(prior_retries[idx] or 0))
             note_soup = BeautifulSoup(original_inner or "", "html.parser")
             has_translatable_text_node = any(
-                isinstance(node, NavigableString)
-                and getattr(getattr(node, "parent", None), "name", "") not in {"script", "style"}
+                is_external_text_node(node)
                 and self._should_translate_text_node(str(node))
                 for node in note_soup.find_all(string=True)
             )
@@ -2033,6 +2045,8 @@ class SemanticsTranslator:
                         lambda: self._translate_text_segments_rescue(
                             original_inner, "脚注专项文本节点翻译",
                             preferred_model=preferred_model, count_as_rescue=False,
+                            system_prompt=chapter_system_prompt if strategy_is_override else None,
+                            context=chunk_contexts[idx],
                         ),
                     )
                     retry_count = min(
@@ -2170,7 +2184,7 @@ class SemanticsTranslator:
                         prior_retry_count=initial_retry_count,
                     )
                     continue
-                if not translated or self._looks_untranslated(original_inner, translated):
+                if not translated or self._looks_untranslated(html_chunks[idx], translated):
                     await retry_one(
                         idx,
                         original_inner,
@@ -2669,8 +2683,8 @@ class SemanticsTranslator:
                 if should_skip_image_note_block(block):
                     continue
                 # 不取整个 block，而是抽取其 inner_html
-                inner_html = "".join(str(c) for c in block.contents).strip()
-                if not self._should_translate(inner_html):
+                inner_html = block.decode_contents().strip()
+                if not self._should_translate(self._visible_text(inner_html)):
                     continue
                 translatable_blocks.append(block)
                 inner_htmls.append(inner_html)
@@ -2679,7 +2693,15 @@ class SemanticsTranslator:
                 total_blocks = len(translatable_blocks)
                 cached_results: dict[int, str] = {}
                 uncached: list[tuple[int, str]] = []
+                if any(block.find(list(MEDIA_TAGS)) for block in translatable_blocks):
+                    # Use the validated text-node path for image bullets/captions,
+                    # rather than leaking media markup into the legacy batch API.
+                    detailed = await self.translate_many_chunks_async(inner_htmls)
+                    cached_results = {i: result.translated_html or inner_htmls[i]
+                                      for i, result in enumerate(detailed)}
                 for i, h_inner in enumerate(inner_htmls):
+                    if i in cached_results:
+                        continue
                     c = self._cache_get(h_inner)
                     if c:
                         cached_results[i] = c
@@ -2748,12 +2770,12 @@ class SemanticsTranslator:
                             'html.parser'
                         )
                         block.clear()
-                        for child in new_content.contents:
+                        for child in list(new_content.contents):
                             block.append(child)
                     else:
                         new_content = BeautifulSoup(translated_inner, 'html.parser')
                         block.clear()
-                        for child in new_content.contents:
+                        for child in list(new_content.contents):
                             block.append(child)
 
             return str(soup).encode('utf-8')

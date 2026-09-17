@@ -1697,6 +1697,7 @@
       </div>
 
       <div id="resultActions" style="gap:10px; flex-wrap:wrap; margin-top:16px;">
+        <button type="button" class="diagnostics-btn" id="previewBtn" hidden>在线预览 / 反馈</button>
         <a class="download-btn" id="downloadBtn" href="#">
           ↓ 下载处理结果
         </a>
@@ -1825,7 +1826,8 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-  <script src="lib.js?v=20260917-flash-alias"></script>
+  <script src="lib.js?v=20260917-review-preview"></script>
+  <script src="book-preview.js?v=20260917-review-preview"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
 
@@ -2620,6 +2622,7 @@
               <div class="tasks-actions">
                 <span class="tasks-status ${statusClass}">${statusText}</span>
                 <button type="button" class="tasks-view-btn" data-job-id="${j.job_id}">${actionText}</button>
+                ${j.status === "completed" ? `<button type="button" class="tasks-preview-btn" data-job-id="${escapeHtml(j.job_id)}">预览 / 反馈</button>` : ""}
               </div>
             </li>`;
           }).join("");
@@ -2633,6 +2636,8 @@
 
     // 任务列表点击委托：避免列表重渲染后按钮失去绑定
     $("tasksList").addEventListener("click", (e) => {
+      const preview = e.target.closest(".tasks-preview-btn");
+      if (preview) { openBookPreview(preview.getAttribute("data-job-id")); return; }
       const btn = e.target.closest(".tasks-view-btn");
       if (!btn) return;
       const jobId = btn.getAttribute("data-job-id");
@@ -2709,7 +2714,7 @@
 
           if ((status === "completed" || status === "partial_completed") && data.download_url) {
             const url = withJobToken(`${API}${data.download_url}`, `batch:${batchId}`);
-            showResultActions(batchId, url);
+            showResultActions(batchId, url, { batch: true });
             if (status === "partial_completed") {
               errorMsg.textContent = `有 ${counts.failed || 0} 个文件处理失败，ZIP 中包含其余成功结果；失败项可在任务中心查看。`;
               errorMsg.style.display = "block";
@@ -3748,11 +3753,85 @@
     submitBtn.addEventListener("click", submitJob);
     $("confirmPreflightBtn").addEventListener("click", confirmTranslationPreflight);
 
-    // ─── 结果操作区（下载）────────────────────────────────────────────────────
-    function showResultActions(jobId, downloadUrl) {
+    // ─── 结果操作区（下载 / 安全预览）─────────────────────────────────────────
+    function showResultActions(jobId, downloadUrl, options = {}) {
       downloadBtn.href = downloadUrl;
+      $("previewBtn").hidden = !!options.batch;
+      $("previewBtn").dataset.jobId = options.batch ? "" : jobId;
       $("resultActions").classList.add("visible");
     }
+
+    const previewModal = $("previewModal");
+    const previewController = new BookPreviewController({
+      async fetchChapter(jobId, chapter, signal) {
+        const res = await fetch(`${API}/api/v2/jobs/${encodeURIComponent(jobId)}/preview?chapter=${chapter}`, {
+          headers: { ...clientHeaders(), ...authHeaders(jobId) }, cache: "no-store", signal,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "无法预览，请下载阅读");
+        return data;
+      },
+      render(data) {
+        $("epub-viewer").srcdoc = data ? data.html : "";
+        if (!data) { $("previewChapters").replaceChildren(); return; }
+        $("previewChapters").replaceChildren(...data.chapters.map(ch => new Option(ch.title, ch.index)));
+        $("previewChapters").value = data.chapter_index;
+        $("previewPosition").textContent = `${data.chapter_index + 1} / ${data.total_chapters} 节`;
+        $("previewPrevious").disabled = data.chapter_index <= 0;
+        $("previewNext").disabled = data.chapter_index >= data.total_chapters - 1;
+        $("previewNotice").textContent = data.images_omitted ? "部分图片请下载后查看。" : "预览按章节阅读；最终排版以下载的 EPUB 为准。";
+      },
+      state(busy) { $("previewLoading").hidden = !busy; },
+      error(message) { $("previewNotice").textContent = message; },
+    });
+    function closeBookPreview() { previewController.close(); if (previewModal.open) previewModal.close(); }
+    function openBookPreview(jobId) {
+      if (!jobId) return;
+      $("feedbackText").value = ""; $("feedbackState").textContent = "";
+      $("previewNotice").textContent = "正在读取译本…";
+      if (!previewModal.open) previewModal.showModal();
+      previewController.open(jobId);
+    }
+    $("previewBtn").addEventListener("click", () => openBookPreview($("previewBtn").dataset.jobId));
+    $("previewClose").addEventListener("click", closeBookPreview);
+    previewModal.addEventListener("cancel", event => { event.preventDefault(); closeBookPreview(); });
+    previewModal.addEventListener("close", () => previewController.close());
+    $("previewPrevious").addEventListener("click", () => previewController.go(-1));
+    $("previewNext").addEventListener("click", () => previewController.go(1));
+    $("previewChapters").addEventListener("change", event => previewController.load(Number(event.target.value)));
+    previewModal.addEventListener("keydown", event => {
+      const action = previewKeyAction(event.key, event.target.tagName);
+      if (!action) return;
+      event.preventDefault();
+      if (action === "close") closeBookPreview();
+      else previewController.go(action === "previous" ? -1 : 1);
+    });
+    let feedbackType = "translation";
+    document.querySelectorAll(".fb-type").forEach(button => button.addEventListener("click", () => {
+      feedbackType = button.dataset.type;
+      document.querySelectorAll(".fb-type").forEach(other => other.setAttribute("aria-pressed", String(other === button)));
+    }));
+    $("submitFeedback").addEventListener("click", async () => {
+      const jobId = previewController.jobId;
+      const generation = previewController.generation;
+      const message = $("feedbackText").value.trim();
+      if (!jobId || !message) return;
+      const button = $("submitFeedback"); button.disabled = true;
+      $("feedbackState").textContent = "保存中…";
+      try {
+        const label = $("previewChapters").selectedOptions[0]?.textContent || "";
+        const res = await fetch(API + "/api/v2/feedback", {
+          method: "POST", headers: { "Content-Type": "application/json", ...clientHeaders(), ...authHeaders(jobId) },
+          body: JSON.stringify({ job_id: jobId, type: feedbackType,
+            message: `章节 ${previewController.index + 1}：${label.slice(0, 150)}\n${message}` }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "反馈暂未保存");
+        if (feedbackStillCurrent(previewController, jobId, generation)) { $("feedbackState").textContent = "已保存，谢谢反馈"; $("feedbackText").value = ""; }
+      } catch (err) {
+        if (feedbackStillCurrent(previewController, jobId, generation)) $("feedbackState").textContent = err.message;
+      } finally { button.disabled = false; }
+    });
 
     // ─── 功能建议 ────────────────────────────────────────────────────────────
     $("suggestBtn").addEventListener("click", () => {
@@ -3780,6 +3859,7 @@
           body: JSON.stringify({ job_id: "general_suggestion", type: "suggestion", message: msg }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "建议暂未保存");
         msgEl.style.color = "var(--success)";
         msgEl.textContent = "感谢您的建议！";
         $("suggestText").value = "";
@@ -3801,6 +3881,26 @@
     // 已移除，改为支付宝支付逻辑
   });
 </script>
+
+  <dialog id="previewModal" aria-label="译本预览与反馈" style="width:min(960px,94vw);height:90vh;border:1px solid #ddd;border-radius:12px;padding:16px;">
+    <div class="preview-topbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button type="button" id="previewPrevious">上一节</button>
+      <select id="previewChapters" aria-label="选择章节" style="max-width:45vw;"></select>
+      <button type="button" id="previewNext">下一节</button><span id="previewPosition"></span>
+      <button type="button" id="previewClose" style="margin-left:auto;">关闭</button>
+    </div>
+    <p id="previewLoading" hidden role="status">正在读取章节…</p>
+    <p id="previewNotice" role="status" style="font-size:12px;color:#666;"></p>
+    <iframe id="epub-viewer" title="安全 EPUB 章节预览" sandbox="" referrerpolicy="no-referrer" style="width:100%;height:calc(100% - 220px);border:1px solid #eee;"></iframe>
+    <div class="feedback-bar">
+      <p style="margin:8px 0;">反馈当前章节的问题：</p>
+      <button type="button" class="fb-type" data-type="translation" aria-pressed="true">翻译</button>
+      <button type="button" class="fb-type" data-type="directory" aria-pressed="false">目录</button>
+      <button type="button" class="fb-type" data-type="layout" aria-pressed="false">排版</button>
+      <textarea id="feedbackText" maxlength="1800" aria-label="问题描述" placeholder="请描述具体问题，可粘贴相关原文与译文" style="display:block;width:100%;height:52px;margin:8px 0;box-sizing:border-box;"></textarea>
+      <button type="button" id="submitFeedback">提交反馈</button><span id="feedbackState" role="status"></span>
+    </div>
+  </dialog>
 
   <!-- ─── 功能建议 Modal ──────────────────────────────────────────────── -->
   <div id="suggestModal" class="preview-modal" style="display:none; justify-content:center; align-items:center; background:rgba(0,0,0,0.4); backdrop-filter:blur(4px);">

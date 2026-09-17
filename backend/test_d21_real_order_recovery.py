@@ -406,7 +406,7 @@ class TestDeliveryRecovery(unittest.TestCase):
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), SHA)
         manifest = build_manifest(str(path), 'offline-regression')
         self.assertFalse(manifest.get('error'))
-        self.assertEqual(sum(len(c['chunks']) for c in manifest['chapters'] if c['chapter_kind'] == 'body'), 2665)
+        self.assertEqual(sum(len(c['chunks']) for c in manifest['chapters'] if c['chapter_kind'] == 'body'), 2681)
         chapter = next(c for c in manifest['chapters'] if c['chapter_id'] == 'c179')
         title = next(c for c in chapter['chunks'] if c['chunk_id'] == 'c179_0002')
         self.assertEqual(title['text'], TITLE)
@@ -420,7 +420,7 @@ class TestDeliveryRecovery(unittest.TestCase):
         self.assertEqual(final_audit(CHINESE_TITLE)['status'], 'passed')
 
     @unittest.skipUnless(SNAPSHOTS, 'EPUB_REGRESSION_SNAPSHOTS not provided')
-    def test_real_saved_chapters_only_flag_the_known_name(self):
+    def test_real_saved_chapters_flag_both_unconfirmed_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'partial-diagnostic.epub'
             with zipfile.ZipFile(path, 'w') as archive:
@@ -429,8 +429,8 @@ class TestDeliveryRecovery(unittest.TestCase):
             audit = audit_translated_epub_output(path)
         self.assertEqual(audit['html_files'], 11)
         self.assertEqual(audit['checked_text_blocks'], 1548)
-        self.assertEqual(audit['residual_blocks'], 1)
-        self.assertEqual(audit['samples'][0]['snippet'], TITLE)
+        self.assertEqual(audit['residual_blocks'], 2)
+        self.assertEqual({sample['snippet'] for sample in audit['samples']}, {TITLE, 'KELVIN CHIU'})
 
 
 if __name__ == '__main__':

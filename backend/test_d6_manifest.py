@@ -189,15 +189,16 @@ def test_extract_chunks_can_include_image_note_blocks_when_disabled():
     assert stats["image_note_chunks_skipped"] == 0
 
 
-def test_extract_chunks_still_skips_blocks_containing_image_media():
+def test_extract_chunks_translates_text_beside_image_media():
     html = b"""<html><body>
     <p>Normal body paragraph.</p>
     <div class="figure"><img src="figure.jpg"/>Embedded image label.</div>
     </body></html>"""
     chunks, stats = extract_chunks_with_stats(html, "c1")
-    assert [c.text for c in chunks] == ["Normal body paragraph."]
-    assert stats["image_note_chunks_skipped"] == 1
-    assert stats["image_caption_chunks"] == 0
+    assert [c.text for c in chunks] == ["Normal body paragraph.", "Embedded image label."]
+    assert chunks[1].translation_strategy == "text_nodes"
+    assert stats["image_note_chunks_skipped"] == 0
+    assert stats["image_caption_chunks"] == 1
 
 
 def test_build_manifest_structure():
@@ -244,7 +245,7 @@ if __name__ == "__main__":
         test_extract_chunks_keeps_body_paragraph_with_footnote_reference,
         test_extract_chunks_keeps_reference_only_note_as_source,
         test_extract_chunks_can_include_image_note_blocks_when_disabled,
-        test_extract_chunks_still_skips_blocks_containing_image_media,
+        test_extract_chunks_translates_text_beside_image_media,
         test_build_manifest_structure,
         test_build_manifest_with_real_epub_if_present,
     ]
