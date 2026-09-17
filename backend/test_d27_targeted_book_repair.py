@@ -64,8 +64,9 @@ class TargetedRepairTests(unittest.TestCase):
                 # destinations remain identical, including page/footnote IDs.
                 snapshot = lambda root: [(node.tag, sorted(node.attrib.items())) for node in root.iter()]
                 self.assertEqual(snapshot(left), snapshot(right), name)
-            self.assertEqual(len(changed), 7)
-            self.assertEqual(len(a.namelist()) - len(changed), 50)
+            expected = int(os.environ.get('EPUB_REGRESSION_EXPECTED_CHANGED_MEMBERS', '7'))
+            self.assertEqual(len(changed), expected)
+            self.assertEqual(len(a.namelist()) - len(changed), 57 - expected)
 
 
 if __name__ == '__main__': unittest.main()

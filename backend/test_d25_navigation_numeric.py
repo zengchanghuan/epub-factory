@@ -79,6 +79,16 @@ class NavigationNumericTests(unittest.TestCase):
         self.assertNotIn('negation_scope_suspicious', audit_translation_chunk(original_html=original, translated_html=good).flags)
         self.assertNotIn('negation_scope_suspicious', audit_translation_chunk(original_html='<p>Avoid not using the strategy.</p>', translated_html=bad).flags)
 
+    def test_confirmed_name_is_case_insensitive_but_exact_and_book_scoped(self):
+        glossary = {'KELVIN CHIU': 'KELVIN CHIU'}
+        for target in ['Kelvin Chiu 是一位交易者。', 'KELVIN CHIU 是一位交易者。']:
+            self.assertNotIn('glossary_terms_missing', audit_translation_chunk(
+                original_html='<p>Kelvin Chiu is a trader.</p>', translated_html=f'<p>{target}</p>', glossary=glossary).flags)
+        self.assertIn('glossary_terms_missing', audit_translation_chunk(
+            original_html='<p>Kelvin Chiu is a trader.</p>', translated_html='<p>Kelvin Chiubert 是一位交易者。</p>', glossary=glossary).flags)
+        self.assertEqual(audit_translation_chunk(original_html='<h2>KELVIN CHIU</h2>',
+            translated_html='<h2>KELVIN CHIU</h2>').risk_level, 'fail')
+
     def test_toc_uses_exact_glossary_and_preserves_hierarchy_and_anchors(self):
         book = epub.EpubBook()
         section = epub.Link('one.xhtml#part', 'Dedication', 'part')

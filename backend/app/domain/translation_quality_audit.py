@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from bs4 import BeautifulSoup, Tag
-from app.domain.translation_residual_policy import residual_category
+from app.domain.translation_residual_policy import residual_category, normalize_text
 from app.domain.translation_numeric_audit import missing_numeric_facts
 from app.engine.chunk_extractor import NON_TEXT_TAGS, media_subtrees
 
@@ -296,7 +296,10 @@ def audit_translation_chunk(
     glossary = glossary or {}
     missing_terms: list[str] = []
     for src, dst in _relevant_glossary_terms(glossary, source_text):
-        if dst not in translated_text:
+        # A confirmed English name can retain title-case/body-case spelling.
+        # Still require the complete name, not a surname substring.
+        retained = (normalize_text(src) == normalize_text(dst) and bool(_term_spans(dst, translated_text)))
+        if not retained and dst not in translated_text:
             missing_terms.append(src)
     if missing_terms:
         audit.latin_terms_missing = missing_terms
