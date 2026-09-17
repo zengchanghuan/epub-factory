@@ -7,7 +7,7 @@ import subprocess
 import sys
 import zipfile
 
-ROOT_FILES = {'deploy.sh', 'Dockerfile', 'docker-compose.yml', 'README.md', 'index.html'}
+ROOT_FILES = {'deploy.sh', 'push.sh', 'Dockerfile', 'docker-compose.yml', 'README.md', 'index.html'}
 SOURCE_SUFFIXES = {'.py', '.html', '.css', '.js', '.json', '.md', '.txt', '.yml', '.yaml', '.toml', '.lock', '.sh'}
 
 

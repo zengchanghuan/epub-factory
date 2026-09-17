@@ -4,6 +4,8 @@
 
 ## 从本机部署
 
+已提交的 `main` 分支可以一键推送并部署：`bash push.sh`。脚本要求工作区干净且 origin 推送地址为 `git@github.com:zengchanghuan/epub-factory.git`；Git 推送成功后才执行免密部署。部署失败时推送仍已完成，解决原因后运行 `bash deploy.sh` 即可。普通 `git push` 仍只推送代码；此入口不是 GitHub Actions 自动部署，也不会等待远端 CI。
+
 ```bash
 # 首次安装部署公钥，需要在本机终端输入一次服务器密码。
 bash scripts/setup-deploy-ssh.sh
