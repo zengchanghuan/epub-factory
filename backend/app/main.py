@@ -44,8 +44,8 @@ from .domain.input_formats import validate_filename, is_pdf_header, PDF_DISABLED
 from .domain.epub_input_integrity import EpubInputError, validate_epub_resources
 
 
-def _validate_upload_format(upload: UploadFile) -> None:
-    """Reject before storing a file, creating an order, or requesting payment."""
+def _validate_upload_format(upload: UploadFile) -> list[str]:
+    """Reject unreadable input and disclose recoverable source issues before payment."""
     try:
         validate_filename(upload.filename)
     except ValueError as exc:
@@ -64,9 +64,10 @@ def _validate_upload_format(upload: UploadFile) -> None:
         if size > MAX_FILE_SIZE_BYTES:
             raise HTTPException(status_code=413, detail=f"文件过大，单文件最大支持 {MAX_FILE_SIZE_MB}MB。")
         try:
-            validate_epub_resources(upload.file)
+            return validate_epub_resources(upload.file)
         except EpubInputError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+    return []
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -856,6 +857,10 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     download_url = _attach_download_sig(job.id, download_url_path) if _job_can_download(job) else None
     public_translation_stats = dict(job.translation_stats or {})
     translation_preflight = public_translation_stats.pop("translation_preflight", None)
+    source_warnings = public_translation_stats.get("source_warnings") or (
+        translation_preflight.get("source_warnings", [])
+        if isinstance(translation_preflight, dict) else []
+    )
     expose_full_preflight = job.status in (
         JobStatus.awaiting_confirmation,
         JobStatus.confirming,
@@ -887,6 +892,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "download_url": download_url,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
         "translation_stats": public_translation_stats or None,
+        "source_warnings": source_warnings,
         "translation_timing": _job_translation_timing(job),
         "qa_report": _job_qa_report(job),
         "metrics_summary": job.metrics_summary or None,
@@ -1186,7 +1192,7 @@ async def create_job(
             detail="付费翻译已下线在 v1 接口，请改用 POST /api/v2/jobs（含支付下单与回调验签）",
         )
 
-    await asyncio.to_thread(_validate_upload_format, file)
+    source_warnings = await asyncio.to_thread(_validate_upload_format, file)
 
     glossary: dict = {}
     if glossary_json:
@@ -1225,7 +1231,10 @@ async def create_job(
         glossary=glossary,
         device=device,
         traditional_variant=traditional_variant.value,
-        translation_stats=initial_translation_stats() if enable_translation else {},
+        translation_stats={
+            **(initial_translation_stats() if enable_translation else {}),
+            **({"source_warnings": source_warnings} if source_warnings else {}),
+        },
     )
     job_store.add(job)
     if _use_celery():
@@ -1246,6 +1255,7 @@ async def create_job(
         "device": job.device,
         "traditional_variant": job.traditional_variant,
         "message": "任务已创建",
+        "source_warnings": source_warnings,
     }
 
 
@@ -1343,7 +1353,7 @@ async def create_job_v2(
     )
     _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
-    await asyncio.to_thread(_validate_upload_format, file)
+    source_warnings = await asyncio.to_thread(_validate_upload_format, file)
 
     # 免费配额已关闭，所有转换均走付费流程
     client_ip = get_real_ip(request)
@@ -1587,6 +1597,8 @@ async def create_job_v2(
             if enable_translation else {}
         ),
     )
+    if source_warnings:
+        job.translation_stats["source_warnings"] = source_warnings
     job_store.add(job)
 
     if job_status == JobStatus.pending:
@@ -1628,6 +1640,7 @@ async def create_job_v2(
         "estimated_chars": estimated_chars,
         "pricing": pricing_info or None,
         "translation_preflight": translation_preflight,
+        "source_warnings": source_warnings,
     }
 
 
@@ -1796,10 +1809,11 @@ def confirm_translation_profile_v2(
         )
     # Older unconfirmed uploads may predate the input gate. Check before the
     # confirmation CAS or payment call, preserving their state on rejection.
+    source_warnings = []
     if str(job.input_path).lower().endswith('.epub'):
         try:
             with Path(job.input_path).open('rb') as source:
-                validate_epub_resources(source)
+                source_warnings = validate_epub_resources(source)
         except EpubInputError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         except OSError:
@@ -1809,6 +1823,9 @@ def confirm_translation_profile_v2(
         existing=preflight,
         payload=payload,
     )
+    # Persist the trusted recheck result together with the confirmation CAS,
+    # including old uploads that predate the warning-aware input gate.
+    confirmed["source_warnings"] = source_warnings
     begin = getattr(job_store, "begin_translation_confirmation", None)
     if not callable(begin):
         raise HTTPException(status_code=500, detail="当前存储后端不支持画像确认")
@@ -1883,6 +1900,7 @@ def confirm_translation_profile_v2(
         "pay_url": pay_url,
         "amount": amount,
         "translation_preflight": confirmed,
+        "source_warnings": source_warnings,
     })
     return response
 
@@ -1943,6 +1961,7 @@ def _batch_payload(batch_id: str, jobs: Optional[list[Job]] = None) -> dict:
                 "source_filename": job.source_filename,
                 "status": _job_to_v2_status(job),
                 "message": job.message,
+                "source_warnings": (job.translation_stats or {}).get("source_warnings") or [],
                 "error_code": job.error_code,
                 "batch_index": getattr(job, "batch_index", 0),
                 "download_url": (
@@ -1996,8 +2015,9 @@ async def create_batch_v2(
     if enable_precision_polish:
         raise HTTPException(status_code=400, detail="批量模式暂不支持 AI 精校，请关闭精校后提交")
 
+    source_warnings_by_file = []
     for upload in files:
-        await asyncio.to_thread(_validate_upload_format, upload)
+        source_warnings_by_file.append(await asyncio.to_thread(_validate_upload_format, upload))
 
     batch_id = uuid.uuid4().hex[:12]
     access_token = uuid.uuid4().hex
@@ -2096,6 +2116,8 @@ async def create_batch_v2(
             traditional_variant=traditional_variant.value,
             status=job_status,
             message="等待批次支付" if job_status == JobStatus.pending_payment else "批次任务已排队",
+            translation_stats=({"source_warnings": source_warnings_by_file[index]}
+                               if source_warnings_by_file[index] else {}),
         ))
 
     if job_status == JobStatus.pending:

@@ -104,6 +104,7 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         "image_caption_chunks": 0,
         "reference_note_chunks_skipped": 0,
         "structured_note_chunks": 0,
+        "source_placeholder_documents_skipped": 0,
     }
     items = list(book.get_items())
     # 仅处理文档类型（9 = ITEM_DOCUMENT），不处理 CSS 等
@@ -138,6 +139,7 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         manifest_stats["image_caption_chunks"] += int(extraction_stats.get("image_caption_chunks") or 0)
         manifest_stats["reference_note_chunks_skipped"] += int(extraction_stats.get("reference_note_chunks_skipped") or 0)
         manifest_stats["structured_note_chunks"] += int(extraction_stats.get("structured_note_chunks") or 0)
+        manifest_stats["source_placeholder_documents_skipped"] += int(extraction_stats.get("source_placeholder_documents_skipped") or 0)
         kind = (ChapterKind.nav if isinstance(item, epub.EpubNav)
                 else classify_chapter_kind_from_chunks(file_name, chunk_list))
         chunks_payload = [
@@ -161,4 +163,5 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
             "chunks": chunks_payload,
         })
 
-    return {"job_id": job_id, "chapters": chapters, "stats": manifest_stats}
+    return {"job_id": job_id, "chapters": chapters, "stats": manifest_stats,
+            "source_warnings": list(getattr(unpacker, "source_warnings", []) or [])}

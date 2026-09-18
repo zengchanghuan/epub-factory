@@ -250,6 +250,11 @@ def _preserved_get_content(item, default=None):
         original = html.fromstring(item.content)
     generated = xml_tree(output)
     for attribute, value in original.attrib.items():
+        # HTML fallback exposes xmlns as an ordinary attribute. The generated
+        # XHTML root already owns its namespace; copying it emits duplicate
+        # declarations and makes an otherwise readable chapter invalid XML.
+        if attribute == 'xmlns' or attribute.startswith('xmlns:'):
+            continue
         # HTML fallback can expose unexpanded xml:/epub: attributes.
         if ':' in attribute and not attribute.startswith('{'):
             prefix, local = attribute.split(':', 1)
@@ -279,6 +284,8 @@ def _preserved_get_content(item, default=None):
             for child in source: target.append(deepcopy(child))
     if old_body and new_body:
         for attribute, value in old_body[0].attrib.items():
+            if attribute == 'xmlns' or attribute.startswith('xmlns:'):
+                continue
             if ':' in attribute and not attribute.startswith('{'):
                 prefix, local = attribute.split(':', 1)
                 ns = {'xml': 'http://www.w3.org/XML/1998/namespace', 'epub': EPUB_NS}.get(prefix)

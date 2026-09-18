@@ -55,6 +55,9 @@ jobs:
                 test_d31_input_integrity
                 test_d31_epub_validation
                 test_d31_reduce_index
+                test_d32_resource_repair
+                test_d32_source_warning_flow
+                test_d32_literal_code_preservation
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard

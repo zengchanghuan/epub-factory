@@ -1582,6 +1582,7 @@
           </div>
       </div>
 
+      <div id="sourceWarningsBeforePay" class="pricing-notice" role="status" style="display:none; margin-top:16px; white-space:pre-line;"></div>
       <div id="translationPreflightPanel" class="task-panel" style="display:none; margin-top:16px; border-color:#7c6fe8;">
         <div class="task-panel-title">AI 图书分析确认</div>
         <div class="pricing-notice" style="margin-bottom:12px;">
@@ -1668,6 +1669,7 @@
     <!-- Status Card -->
     <div class="card status-card" id="statusCard">
       <h2><span class="icon">⚡</span> <span id="statusCardTitle">转换进度</span></h2>
+      <div id="sourceWarningsResult" class="pricing-notice" role="status" style="display:none; margin-bottom:16px; white-space:pre-line;"></div>
 
       <div class="status-header">
         <span class="status-badge" id="statusBadge">等待中</span>
@@ -2014,7 +2016,21 @@
       return { characters, errors };
     }
 
+    function renderSourceWarnings(data = {}) {
+      const warnings = Array.isArray(data.jobs)
+        ? data.jobs.flatMap(job => (job.source_warnings || []).map(warning => `${job.source_filename || "书籍"}：${warning}`))
+        : (data.source_warnings || data.translation_stats?.source_warnings || []);
+      const messages = [...new Set(warnings.filter(warning => typeof warning === "string" && warning))];
+      const beforePayment = ["awaiting_confirmation", "confirming", "pending_payment"].includes(data.status);
+      for (const [id, visible] of [["sourceWarningsBeforePay", beforePayment], ["sourceWarningsResult", !beforePayment]]) {
+        const node = $(id);
+        node.textContent = messages.length ? `原书资源提示（其余内容将继续处理）\n${messages.join("\n")}` : "";
+        node.style.display = messages.length && visible ? "block" : "none";
+      }
+    }
+
     function showTranslationPayment(data) {
+      renderSourceWarnings(data);
       const amount = data.amount || "—";
       $("translationPriceDisplay").textContent = `¥${amount}`;
       $("translationCharDisplay").textContent = "图书画像与翻译设定已确认";
@@ -2658,6 +2674,7 @@
     }
 
     function openJobDetail(jobId) {
+      renderSourceWarnings();
       currentBatchId = null;
       currentJobId = jobId;
       currentJobStatus = "";
@@ -2686,6 +2703,7 @@
         .then(r => { if (!r.ok) throw new Error("批次查询失败"); return r.json(); })
         .then(data => {
           currentBatchId = batchId;
+          renderSourceWarnings(data);
           const counts = data.counts || {};
           const status = data.status || "running";
           const isDone = ["completed", "partial_completed", "failed"].includes(status);
@@ -2746,6 +2764,7 @@
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
           setTaskUiMode(!!data.enable_translation);
+          renderSourceWarnings(data);
           const s = data.status || "";
           const previousJobStatus = currentJobStatus;
           currentJobStatus = s;
@@ -3607,6 +3626,7 @@
     // ─── 核心提交逻辑（被免费按钮和 PayPal 共同调用） ─────────────────────────
     async function submitJob() {
       if (!selectedFiles.length) return;
+      renderSourceWarnings();
       const isBatchMode = selectedFiles.length > 1;
       const isTranslationMode = getTaskMode() === "translate";
 
@@ -3681,6 +3701,7 @@
         $("metaTraceId").textContent = data.trace_id || "-";
         $("metaFilename").textContent = isBatchMode ? `${data.file_count} 个文件` : (data.source_filename || "-");
 
+        renderSourceWarnings(data);
         if (data.status === "awaiting_confirmation") {
           setStatus("pending", "图书分析完成，请确认翻译设定");
           stopJobTimer();

@@ -8,6 +8,7 @@ from urllib.parse import quote, unquote, urldefrag, urlparse, urlsplit, urlunspl
 
 import ebooklib
 from ebooklib import epub
+from ebooklib.utils import get_pages
 from bs4 import BeautifulSoup
 from lxml import etree
 from .font_compat import repair_font_sources
@@ -215,21 +216,43 @@ class EpubPackager:
                 if isinstance(node, (tuple, list)): visit(node[1])
         visit(book.toc)
         visit(getattr(book, 'pages', []))
-        # A source may have no page-list at all. The writer still creates one
-        # from pagebreak markers, including corrected legacy epub-type hints.
-        for item in items.values():
-            if isinstance(item, epub.EpubNav) or item.get_id() in present: continue
-            raw = item.content or b''
+        # ebooklib's book.pages can omit a retained EPUB3 page-list. The
+        # original nav markup is still packaged, so include those actual
+        # local HTML targets as non-linear auxiliary entries as well.
+        for nav in items.values():
+            if not isinstance(nav, epub.EpubNav):
+                continue
+            raw = nav.content or b''
             if isinstance(raw, str): raw = raw.encode('utf-8')
-            if b'pagebreak' not in raw: continue
+            if not raw: continue
             try:
                 root = etree.fromstring(raw, etree.XMLParser(resolve_entities=False, no_network=True))
             except etree.XMLSyntaxError:
                 root = etree.fromstring(raw, etree.HTMLParser(no_network=True))
-            if root is not None and any('pagebreak' in (
-                    node.get('{http://www.idpf.org/2007/ops}type') or node.get('epub:type') or node.get('epub-type') or '').split()
-                    for node in root.iter() if isinstance(node.tag, str)):
+            if root is None: continue
+            for href in root.xpath('//*[local-name()="nav"]//*[local-name()="a"]/@href'):
+                link = urlsplit(href)
+                if link.path and not link.scheme and not link.netloc:
+                    target = posixpath.normpath(posixpath.join(posixpath.dirname(nav.get_name()), unquote(link.path)))
+                    include(items.get(target))
+        # A source may have no page-list at all. Mirror the actual writer:
+        # ebooklib 0.18 treats every epub:type + id as a page reference, not
+        # only pagebreak. Checking only the latter leaves valid chapter/index
+        # auxiliary targets outside the spine in the generated page-list.
+        for item in items.values():
+            if isinstance(item, epub.EpubNav) or item.get_id() in present: continue
+            if item.content and get_pages(item):
                 include(item)
+                continue
+            # Retain the legacy epub-type pagebreak compatibility path even
+            # for caller-created items that have not yet been normalized.
+            raw = item.content or b''
+            if isinstance(raw, str): raw = raw.encode('utf-8')
+            if b'epub-type' in raw:
+                root = etree.fromstring(raw, etree.HTMLParser(no_network=True))
+                if root is not None and any('pagebreak' in (node.get('epub-type') or '').split()
+                                            for node in root.iter() if isinstance(node.tag, str)):
+                    include(item)
         if added: print(f'🔧 [PackageFix] Added {added} non-linear navigation target(s)')
 
     @staticmethod

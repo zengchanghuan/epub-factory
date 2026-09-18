@@ -1,9 +1,10 @@
-"""Bounded, local-only resource checks before an EPUB can create a paid order.
+"""Bounded, local-only readability checks before an EPUB can create a paid order.
 
 This is not EPUBCheck: legacy metadata, optional fonts/page maps and repairable
 markup remain supported. Text is never returned, logged, or sent to a model.
 """
 import posixpath
+import io
 import re
 import zipfile
 from urllib.parse import unquote, urlsplit
@@ -12,6 +13,7 @@ from lxml import etree
 
 from app.engine.font_compat import FONT_FACE
 from app.engine.epub_compat import missing_font_is_optional, selected_package_path
+from app.engine.epub_resource_repair import build_resource_repair_plan, ResourceRepairError
 
 MAX_ENTRIES = 50_000
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
@@ -133,7 +135,7 @@ def _xml(raw):
     return root
 
 
-def _check(archive):
+def _checked_members(archive):
     entries = archive.infolist()
     if len(entries) > MAX_ENTRIES or sum(item.file_size for item in entries) > MAX_UNCOMPRESSED_BYTES:
         raise EpubInputError(TOO_LARGE)
@@ -145,6 +147,38 @@ def _check(archive):
             raise EpubInputError(INVALID)
         if not item.is_dir():
             members[name] = item
+    return members
+
+
+class _ResourceOverlay:
+    """Inspect a proposed repair without rewriting or extracting the user's ZIP."""
+    def __init__(self, archive, replacements):
+        self.archive, self.replacements = archive, replacements
+
+    def infolist(self):
+        result = [item for item in self.archive.infolist() if item.filename not in self.replacements]
+        for name, raw in self.replacements.items():
+            info = zipfile.ZipInfo(name)
+            info.file_size = len(raw)
+            result.append(info)
+        return result
+
+    def namelist(self):
+        return [item.filename for item in self.infolist()]
+
+    def read(self, name):
+        if isinstance(name, zipfile.ZipInfo):
+            name = name.filename
+        return self.replacements[name] if name in self.replacements else self.archive.read(name)
+
+    def open(self, name):
+        if isinstance(name, zipfile.ZipInfo):
+            name = name.filename
+        return io.BytesIO(self.replacements[name]) if name in self.replacements else self.archive.open(name)
+
+
+def _check(archive):
+    members = _checked_members(archive)
 
     def read(name, limit=MAX_DOCUMENT_BYTES):
         item = members.get(name)
@@ -255,14 +289,35 @@ def _check(archive):
 
 
 def validate_epub_resources(stream):
-    """Validate in place and restore the caller's stream offset on every exit."""
+    """Reject unreadable inputs; return repair warnings for usable partial books.
+
+    The unpacker applies the same plan to a temporary copy. A missing local
+    image, legacy filename mismatch or isolated missing page is not itself a
+    reason to reject the entire book. The original stream remains untouched.
+    """
     position = stream.tell()
     try:
         stream.seek(0)
         with zipfile.ZipFile(stream) as archive:
-            _check(archive)
+            members = _checked_members(archive)
+            for name in ('META-INF/container.xml',):
+                if name not in members:
+                    raise EpubInputError(INVALID)
+                if members[name].file_size > MAX_METADATA_BYTES:
+                    raise EpubInputError(TOO_LARGE)
+            package = selected_package_path(_xml(archive.read('META-INF/container.xml')))
+            if package not in members:
+                raise EpubInputError(INVALID)
+            if members[package].file_size > MAX_METADATA_BYTES:
+                raise EpubInputError(TOO_LARGE)
+            _xml(archive.read(package))
+            plan = build_resource_repair_plan(archive, package)
+            _check(_ResourceOverlay(archive, plan.replacements))
+            return list(plan.warnings)
     except EpubInputError:
         raise
+    except ResourceRepairError as exc:
+        raise EpubInputError(str(exc)) from None
     except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile, etree.LxmlError):
         raise EpubInputError(INVALID) from None
     finally:

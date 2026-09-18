@@ -1,4 +1,4 @@
-"""No-model pre-payment input gate: resource failures must have no side effects."""
+"""No-model input gate: unreadable books fail; repairable local issues continue."""
 import io
 import logging
 import os
@@ -56,16 +56,25 @@ def replace_member(data, name, transform):
 
 class ResourceTests(unittest.TestCase):
     def check(self, data):
-        integrity.validate_epub_resources(io.BytesIO(data))
+        return integrity.validate_epub_resources(io.BytesIO(data))
 
-    def test_missing_body_and_nav_are_rejected(self):
-        for name in ('OEBPS/body.xhtml', 'OEBPS/nav.xhtml'):
-            with self.subTest(name=name), self.assertRaisesRegex(integrity.EpubInputError, '正文或目录'):
-                self.check(fixture(missing=(name,)))
+    def test_no_readable_body_is_rejected_but_missing_nav_is_repairable(self):
+        with self.assertRaises(integrity.EpubInputError):
+            self.check(fixture(missing=('OEBPS/body.xhtml',)))
+        self.assertTrue(self.check(fixture(missing=('OEBPS/nav.xhtml',))))
 
-    def test_declared_missing_cover_is_rejected_even_without_img(self):
-        with self.assertRaisesRegex(integrity.EpubInputError, '图片'):
-            self.check(fixture(extra_items='<item id="cover" href="cover.jpg" media-type="image/jpeg"/>'))
+    def test_declared_missing_cover_is_a_warning(self):
+        warnings = self.check(fixture(extra_items='<item id="cover" href="cover.jpg" media-type="image/jpeg"/>'))
+        self.assertTrue(warnings)
+
+    def test_one_missing_chapter_does_not_block_other_existing_chapters(self):
+        data = fixture(extra_items='<item id="missing" href="missing.xhtml" media-type="application/xhtml+xml"/>')
+        data = replace_member(data, 'OEBPS/book.opf', lambda raw: raw.replace(
+            b'</spine>', b'<itemref idref="missing"/></spine>'))
+        source = io.BytesIO(data)
+        warnings = integrity.validate_epub_resources(source)
+        self.assertTrue(any('缺少部分章节' in warning for warning in warnings))
+        self.assertEqual(source.getvalue(), data)
 
     def test_referenced_images_and_css_images_are_checked(self):
         for body in ('<img src="lost.png"/>', '<svg><image xlink:href="lost.svg#image"/></svg>',
@@ -73,11 +82,10 @@ class ResourceTests(unittest.TestCase):
                      '<style>p { background: url("lost.png") }</style>',
                      '<picture><source srcset="lost.png 2x"/></picture>',
                      '<img srcset="data:image/png;base64,YQ== 1x, lost.png 2x"/>'):
-            with self.subTest(body=body), self.assertRaisesRegex(integrity.EpubInputError, '图片'):
-                self.check(fixture(body=body))
-        with self.assertRaisesRegex(integrity.EpubInputError, '图片'):
-            self.check(fixture(extra_items='<item id="css" href="style.css" media-type="text/css"/>',
-                               extras={'OEBPS/style.css': b'p { background:url(lost.png) }'}))
+            with self.subTest(body=body):
+                self.assertTrue(self.check(fixture(body=body)))
+        self.assertTrue(self.check(fixture(extra_items='<item id="css" href="style.css" media-type="text/css"/>',
+                               extras={'OEBPS/style.css': b'p { background:url(lost.png) }'})))
 
     def test_relative_legacy_type_and_numeric_ids_remain_supported(self):
         self.check(fixture(outside=True, body_type='text/html', numeric_id=True))
@@ -91,11 +99,12 @@ class ResourceTests(unittest.TestCase):
                            '<item id="css" href="style.css" media-type="text/css"/>',
                            extras={'OEBPS/style.css': b'@font-face { font-family: test; src: url(missing.otf) } p {font-family:test,serif}'}))
 
-    def test_missing_css_smil_and_unknown_declared_resources_are_rejected(self):
-        for kind, filename in (('text/css', 'style.css'), ('application/smil+xml', 'audio.smil'),
+    def test_missing_css_is_repairable_but_unsupported_dependencies_still_fail(self):
+        self.assertTrue(self.check(fixture(extra_items='<item id="css" href="style.css" media-type="text/css"/>')))
+        for kind, filename in (('application/smil+xml', 'audio.smil'),
                                ('application/octet-stream', 'unknown.bin')):
             data = fixture(extra_items=f'<item id="required" href="{filename}" media-type="{kind}"/>')
-            with self.subTest(kind=kind), self.assertRaisesRegex(integrity.EpubInputError, '必需资源'):
+            with self.subTest(kind=kind), self.assertRaisesRegex(integrity.EpubInputError, '无法安全恢复'):
                 self.check(data)
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / 'source.epub'; path.write_bytes(data)
@@ -111,7 +120,7 @@ class ResourceTests(unittest.TestCase):
         ]
         for transform in variants:
             data = replace_member(base, 'OEBPS/book.opf', transform)
-            with self.subTest(transform=transform), self.assertRaisesRegex(integrity.EpubInputError, '必需资源'):
+            with self.subTest(transform=transform), self.assertRaisesRegex(integrity.EpubInputError, '无法安全恢复'):
                 self.check(data)
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / 'source.epub'; path.write_bytes(data)
@@ -192,7 +201,7 @@ class ResourceTests(unittest.TestCase):
                     self.check(data)
                     self.assertIsNotNone(EpubUnpacker(source).load_book())
                 else:
-                    with self.assertRaisesRegex(integrity.EpubInputError, '正文或目录'):
+                    with self.assertRaisesRegex(integrity.EpubInputError, '可读取的正文'):
                         self.check(data)
                     self.assertIsNone(EpubUnpacker(source).load_book())
 
@@ -201,22 +210,20 @@ class ResourceTests(unittest.TestCase):
         with self.assertRaises(integrity.EpubInputError):
             self.check(data)
 
-    def test_missing_stylesheet_links_and_all_import_syntax_are_checked(self):
-        with self.assertRaisesRegex(integrity.EpubInputError, '必需资源'):
-            self.check(fixture(body='<link rel="stylesheet" href="lost.css"/>'))
+    def test_missing_stylesheet_links_and_imports_are_repaired(self):
+        self.assertTrue(self.check(fixture(body='<link rel="stylesheet" href="lost.css"/>')))
         for directive in ('@import url(lost.css);', '@import "lost.css";', "@import 'lost.css' screen;", '@import url("lost.css") print;'):
-            with self.subTest(directive=directive), self.assertRaisesRegex(integrity.EpubInputError, '必需资源'):
-                self.check(fixture(extra_items='<item id="css" href="style.css" media-type="text/css"/>',
-                                   extras={'OEBPS/style.css': directive.encode()}))
+            with self.subTest(directive=directive):
+                self.assertTrue(self.check(fixture(extra_items='<item id="css" href="style.css" media-type="text/css"/>',
+                                   extras={'OEBPS/style.css': directive.encode()})))
 
-    def test_existing_undeclared_stylesheet_is_scanned_and_not_accepted(self):
+    def test_existing_undeclared_stylesheet_and_image_are_preserved(self):
         for css, message in ((b'p{background:url(lost.png)}', '图片'), (b'p{margin:1em}', '未完整声明')):
-            with self.subTest(css=css), self.assertRaisesRegex(integrity.EpubInputError, message):
-                self.check(fixture(body='<link href="extra.css" rel="stylesheet"/>', extras={'OEBPS/extra.css': css}))
-        with self.assertRaisesRegex(integrity.EpubInputError, '未完整声明'):
-            self.check(fixture(body='<img src="present.svg"/>', extras={'OEBPS/present.svg': b'<svg xmlns="http://www.w3.org/2000/svg"/>'}))
+            with self.subTest(css=css):
+                self.assertTrue(self.check(fixture(body='<link href="extra.css" rel="stylesheet"/>', extras={'OEBPS/extra.css': css})))
+        self.assertTrue(self.check(fixture(body='<img src="present.svg"/>', extras={'OEBPS/present.svg': b'<svg xmlns="http://www.w3.org/2000/svg"/>'})))
 
-    def test_stylesheet_import_cycles_are_bounded_and_each_file_read_once(self):
+    def test_stylesheet_import_cycles_have_bounded_plan_and_validation_reads(self):
         data = fixture(body='<link rel="stylesheet" href="a.css"/>',
             extra_items='<item id="a" href="a.css" media-type="text/css"/><item id="b" href="b.css" media-type="text/css"/>',
             extras={'OEBPS/a.css': b'@import "b.css"; p{margin:1em}', 'OEBPS/b.css': b'@import url(a.css);'})
@@ -227,10 +234,10 @@ class ResourceTests(unittest.TestCase):
             return original(archive, name, *args, **kwargs)
         with patch.object(zipfile.ZipFile, 'open', tracked):
             self.check(data)
-        self.assertEqual(opened.count('OEBPS/a.css'), 1)
-        self.assertEqual(opened.count('OEBPS/b.css'), 1)
+        self.assertEqual(opened.count('OEBPS/a.css'), 2)  # Plan + independent strict check.
+        self.assertEqual(opened.count('OEBPS/b.css'), 2)
 
-    def test_undeclared_css_and_image_are_lost_by_actual_packager(self):
+    def test_undeclared_css_and_image_survive_actual_packager(self):
         with patch('dotenv.load_dotenv', return_value=False):
             from app.engine.compiler import EPUBCHECK_JAR
             from app.converter import EpubConverter
@@ -246,29 +253,25 @@ class ResourceTests(unittest.TestCase):
             archive.writestr('EPUB/extra.css', 'p{margin:1em}')
             archive.writestr('EPUB/picture.svg', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1"/></svg>')
         data = stream.getvalue()
-        with self.assertRaisesRegex(integrity.EpubInputError, '未完整声明'):
-            self.check(data)
+        self.assertTrue(self.check(data))
         with tempfile.TemporaryDirectory() as directory, patch('socket.socket.connect', side_effect=AssertionError('network forbidden')):
             source, output = Path(directory) / 'source.epub', Path(directory) / 'output.epub'
             source.write_bytes(data)
             self.assertIsNotNone(EpubUnpacker(source).load_book())
             result = EpubConverter().convert_file_to_horizontal(source, output, OutputMode.simplified, enable_translation=False)
-            self.assertFalse(result.validation_passed)
+            self.assertTrue(result.validation_passed, result.message)
             with zipfile.ZipFile(output) as archive:
-                self.assertFalse(any(name.endswith(('extra.css', 'picture.svg')) for name in archive.namelist()))
+                self.assertTrue(any(name.endswith('extra.css') for name in archive.namelist()))
+                self.assertTrue(any(name.endswith('picture.svg') for name in archive.namelist()))
 
-    def test_valid_nav_overrides_broken_ncx_but_sole_ncx_is_checked(self):
+    def test_missing_nav_ncx_and_dead_toc_targets_are_recoverable(self):
         self.check(fixture(ncx=True))
-        with self.assertRaisesRegex(integrity.EpubInputError, '正文或目录'):
-            self.check(fixture(ncx=True, missing=('OEBPS/toc.ncx',)))
-        with self.assertRaisesRegex(integrity.EpubInputError, '正文或目录'):
-            self.check(fixture(ncx=True, nav=False))
-        with self.assertRaisesRegex(integrity.EpubInputError, '正文或目录'):
-            self.check(fixture(extras={'OEBPS/nav.xhtml': b'<nav epub:type="toc"><ol><li><a href="lost.xhtml">Lost</a></li></ol></nav>'}))
+        self.assertTrue(self.check(fixture(ncx=True, missing=('OEBPS/toc.ncx',))))
+        self.assertTrue(self.check(fixture(ncx=True, nav=False)))
+        self.assertTrue(self.check(fixture(extras={'OEBPS/nav.xhtml': b'<nav epub:type="toc"><ol><li><a href="lost.xhtml">Lost</a></li></ol></nav>'})))
 
     def test_body_nav_does_not_override_required_ncx(self):
-        with self.assertRaisesRegex(integrity.EpubInputError, '正文或目录'):
-            self.check(fixture(ncx=True, nav=False, body='<nav epub:type="toc"><ol><li><a href="body.xhtml">Chapter</a></li></ol></nav>'))
+        self.check(fixture(ncx=True, nav=False, body='<nav epub:type="toc"><ol><li><a href="body.xhtml">Chapter</a></li></ol></nav>'))
 
     def test_external_and_embedded_images_are_not_fetched(self):
         with patch('socket.socket.connect', side_effect=AssertionError('network access')):
@@ -314,7 +317,7 @@ class ResourceTests(unittest.TestCase):
                     integrity.validate_epub_resources(stream)
             self.assertEqual(stream.tell(), 3)
 
-    def test_each_document_is_read_once(self):
+    def test_document_read_count_is_bounded_after_repair_validation(self):
         opened = []
         data = fixture()
         original = zipfile.ZipFile.open
@@ -323,8 +326,8 @@ class ResourceTests(unittest.TestCase):
             return original(archive, name, *args, **kwargs)
         with patch.object(zipfile.ZipFile, 'open', tracked):
             self.check(data)
-        self.assertEqual(opened.count('OEBPS/body.xhtml'), 1)
-        self.assertEqual(opened.count('OEBPS/nav.xhtml'), 1)
+        self.assertLessEqual(opened.count('OEBPS/body.xhtml'), 2)
+        self.assertLessEqual(opened.count('OEBPS/nav.xhtml'), 2)
 
 
 class UploadGateTests(unittest.TestCase):
@@ -368,7 +371,7 @@ class UploadGateTests(unittest.TestCase):
         self.assertEqual(list(self.uploads.iterdir()), [])
 
     def test_all_single_routes_reject_before_file_order_payment_and_probe(self):
-        bad_books = [fixture(missing=('OEBPS/body.xhtml',)), fixture(body='<img src="lost.jpg"/>')]
+        bad_books = [fixture(missing=('OEBPS/body.xhtml',)), b'PK invalid archive']
         for data in bad_books:
             for path in ('/api/v1/jobs', '/api/v2/jobs'):
                 for translation in ('false', 'true'):
@@ -387,8 +390,8 @@ class UploadGateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assert_no_effects()
 
-    def test_missing_css_and_smil_never_create_payment(self):
-        for kind, filename in (('text/css', 'style.css'), ('application/smil+xml', 'audio.smil')):
+    def test_unsupported_missing_resources_never_create_payment(self):
+        for kind, filename in (('application/octet-stream', 'unknown.bin'), ('application/smil+xml', 'audio.smil')):
             with self.subTest(kind=kind):
                 data = fixture(extra_items=f'<item id="required" href="{filename}" media-type="{kind}"/>')
                 response = self.client.post('/api/v2/jobs', files={'file': ('bad.epub', data)})
@@ -402,6 +405,31 @@ class UploadGateTests(unittest.TestCase):
         self.assertEqual(self.qr.call_count + self.pay.call_count, 1)
         self.assertEqual(self.add.call_count, 1)
         self.main._validate_upload_format(UploadFile(filename='notes.md', file=io.BytesIO(b'# notes')))
+
+    def test_repairable_input_reaches_checkout_with_durable_warning(self):
+        data = fixture(body='<img src="lost.jpg"/>')
+        response = self.client.post('/api/v2/jobs', files={'file': ('partial.epub', data)})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body['source_warnings'])
+        self.assertEqual(self.qr.call_count + self.pay.call_count, 1)
+        job = self.main.job_store.get(body['job_id'])
+        self.assertEqual(job.translation_stats['source_warnings'], body['source_warnings'])
+        self.assertEqual(Path(job.input_path).read_bytes(), data)
+        detail = self.client.get('/api/v2/jobs/' + job.id, headers={'X-Job-Token': body['access_token']})
+        self.assertEqual(detail.json()['source_warnings'], body['source_warnings'])
+
+    def test_repairable_batch_continues_and_reports_warnings_per_book(self):
+        response = self.client.post('/api/v2/batches', files=[
+            ('files', ('normal.epub', fixture())),
+            ('files', ('partial.epub', fixture(body='<img src="lost.png"/>'))),
+        ])
+        self.assertEqual(response.status_code, 200, response.text)
+        jobs = response.json()['jobs']
+        self.assertEqual(len(jobs), 2)
+        self.assertFalse(jobs[0]['source_warnings'])
+        self.assertTrue(jobs[1]['source_warnings'])
+        self.assertEqual(self.qr.call_count + self.pay.call_count, 1)
 
     def test_old_unconfirmed_bad_order_cannot_create_payment_or_change_state(self):
         from app.models import Job, JobStatus, OutputMode

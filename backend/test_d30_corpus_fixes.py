@@ -275,6 +275,13 @@ class CorpusFixTests(unittest.TestCase):
         EpubPackager._ensure_navigation_targets_in_spine(book)
         self.assertEqual(book.spine[-1], ('aux', 'no'))
 
+        # The installed writer also generates page-list entries for epub:type
+        # chapter + id, even without pagebreak or an original page-list.
+        book.spine = list(original_spine)
+        extra.content = '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><h2 epub:type="chapter" id="volume">卷索引</h2></body></html>'
+        EpubPackager._ensure_navigation_targets_in_spine(book)
+        self.assertEqual(book.spine[-1], ('aux', 'no'))
+
     def test_percentage_image_dimensions_move_to_css_without_pixel_changes(self):
         fixture(self.source)
         book = EpubUnpacker(self.source).load_book(); item = book.get_item_with_id('ch')
@@ -282,6 +289,22 @@ class CorpusFixTests(unittest.TestCase):
         root = etree.fromstring(item.get_content()); image = root.xpath('//*[local-name()="img"]')[0]
         self.assertNotIn('width', image.attrib); self.assertNotIn('height', image.attrib)
         self.assertIn('width:100%', image.get('style')); self.assertIn('height:50%', image.get('style'))
+
+    def test_preserved_nav_page_list_adds_existing_auxiliary_without_book_pages(self):
+        book = epub.EpubBook()
+        chapter = epub.EpubHtml(uid='body', file_name='Text/body.xhtml', content='<p>正文。</p>')
+        auxiliary = epub.EpubHtml(uid='aux', file_name='Text/contents.xhtml', content='<p id="volume">索引。</p>')
+        nav = epub.EpubNav(file_name='Navigation/nav.xhtml')
+        nav.content = b'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="page-list"><ol><li><a href="../Text/contents.xhtml#volume">1</a></li><li><a href="../Text/missing.xhtml">2</a></li><li><a href="https://example.invalid/book">3</a></li></ol></nav></body></html>'
+        for item in (chapter, auxiliary, nav): book.add_item(item)
+        book.spine = ['body']
+        book.toc = [epub.Link('Text/body.xhtml', 'Chapter', 'chapter')]
+        before = nav.content
+        EpubPackager._ensure_navigation_targets_in_spine(book)
+        self.assertEqual(book.spine, ['body', ('aux', 'no')])
+        self.assertEqual(nav.content, before)
+        EpubPackager._ensure_navigation_targets_in_spine(book)
+        self.assertEqual(book.spine, ['body', ('aux', 'no')])
 
     def test_legacy_font_alignment_dimensions_and_empty_title_keep_content(self):
         root = etree.fromstring(b'<html><head><title/></head><body><blockquote id="anchor" align="center" width="90%" height="4"><font face="Serif" size="+1" color="black">Original text</font></blockquote></body></html>')
@@ -310,7 +333,7 @@ class CorpusFixTests(unittest.TestCase):
         fixture(self.source, missing_body=True)
         unpacker = EpubUnpacker(self.source)
         self.assertIsNone(unpacker.load_book())
-        self.assertIn('原书缺少正文', str(unpacker._last_error))
+        self.assertIn('没有可读取的正文', str(unpacker._last_error))
 
     def test_legacy_epub_type_keeps_note_semantics_and_existing_attributes(self):
         root = etree.fromstring(b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body><aside id="note" epub-type="footnote">Text</aside><aside epub:type="endnote" epub-type="footnote">Other</aside></body></html>')

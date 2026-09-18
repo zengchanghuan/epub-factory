@@ -119,6 +119,11 @@ def restarted_translation_stats(
     preflight = old.get("translation_preflight")
     if isinstance(preflight, dict) and preflight.get("confirmed"):
         stats["translation_preflight"] = dict(preflight)
+    # Source-resource limitations belong to the uploaded book, not one paid
+    # model attempt. A retry must not make these warnings disappear.
+    source_warnings = old.get("source_warnings")
+    if isinstance(source_warnings, list):
+        stats["source_warnings"] = list(source_warnings)
     restart_summary = f"{action_label}已排队"
     stats["qa_report"] = {
         "status": "retrying",
@@ -130,6 +135,7 @@ def restarted_translation_stats(
         "flags": [],
         "checks": [],
         "score": 0,
+        "source_warnings": list(stats.get("source_warnings") or []),
     }
     return stats
 

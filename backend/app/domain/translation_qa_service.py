@@ -22,6 +22,7 @@ from app.engine.chunk_extractor import (
     should_skip_image_note_block,
     should_skip_reference_note_block,
     NON_TEXT_TAGS,
+    is_source_placeholder_document,
 )
 
 
@@ -135,6 +136,7 @@ def audit_translated_epub_output(
         "text_blocks": 0,
         "checked_text_blocks": 0,
         "reference_note_blocks_skipped": 0,
+        "source_placeholder_documents_skipped": 0,
         "residual_blocks": 0,
         "residual_categories": {},
         "samples": [],
@@ -163,6 +165,9 @@ def audit_translated_epub_output(
                 raw = zf.read(name).decode("utf-8", errors="replace")
                 soup = BeautifulSoup(raw, "html.parser")
                 report["html_files"] += 1
+                if is_source_placeholder_document(soup):
+                    report["source_placeholder_documents_skipped"] += 1
+                    continue
                 if name in nav_names or _is_non_body_document(name, soup):
                     report["non_body_files_skipped"] += 1
                     continue
@@ -241,6 +246,10 @@ def build_translation_qa_report(
     title_original = (stats.get("book_title_original") or "").strip()
     title_translated = (stats.get("book_title_translated") or "").strip()
     artifact_audit = stats.get("artifact_audit") if isinstance(stats.get("artifact_audit"), dict) else {}
+    source_warnings = list(dict.fromkeys(
+        warning for warning in (stats.get("source_warnings") or [])
+        if isinstance(warning, str) and warning.strip()
+    ))
 
     report: dict[str, Any] = {
         "rules_version": QA_RULES_VERSION,
@@ -257,6 +266,7 @@ def build_translation_qa_report(
         "free_retry_count": int(stats.get("free_retry_count") or 0),
         "max_free_retries": max_free_retries(),
         "translation_attempt": int(stats.get("translation_attempt") or 1),
+        "source_warnings": source_warnings,
     }
 
     if error_code == "TRANSLATION_PROVIDER_UNAVAILABLE" or stats.get("provider_blocked"):
@@ -331,6 +341,10 @@ def build_translation_qa_report(
     elif audit_warn:
         report["status"] = "warning"
         report["summary"] = f"{audit_warn} 个段落建议复核"
+
+    if source_warnings and report["status"] not in {"failed", "blocked"}:
+        report["status"] = "warning"
+        report["summary"] += "；" + "；".join(source_warnings)
 
     if (report["status"] not in {"failed", "blocked"}
             and artifact_audit.get("status") in {"passed", "skipped"}

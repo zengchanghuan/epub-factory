@@ -7,6 +7,7 @@
 """
 
 import re
+from app.utils.html_text import map_html_text
 
 
 # 只注入一次的标识注释
@@ -50,10 +51,8 @@ class TypographyEnhancer:
         return text.encode("utf-8")
 
     def _fix_punctuation(self, html: str) -> str:
-        """在 HTML 文本节点中修复标点，跳过标签内部属性"""
-        # 用正则只处理 > 和 < 之间的文本节点
-        def fix_text_node(match):
-            text = match.group(1)
+        """Only prose punctuation changes; code, math and attributes stay literal."""
+        def fix_text_node(text):
             original = text
             # 三个及以上的点 → 省略号（保留已是省略号的情况）
             text = re.sub(r"\.{3,}", "…", text)
@@ -63,6 +62,6 @@ class TypographyEnhancer:
             if text != original:
                 self.stats["typography_fixed"] += 1
                 
-            return f">{text}<"
+            return text
 
-        return re.sub(r">([^<]+)<", fix_text_node, html)
+        return map_html_text(html, fix_text_node)

@@ -13,6 +13,7 @@ from .packager import EpubPackager
 from .cleaners import CssSanitizer, CjkNormalizer, SemanticsTranslator, DeviceProfileCompiler, TypographyEnhancer, StemGuard
 from .toc_rebuilder import TocRebuilder
 from .epub_validation import EpubValidationResult, validate_epub
+from .chunk_extractor import is_source_placeholder_document
 
 
 class TranslationPipelineError(RuntimeError):
@@ -81,6 +82,7 @@ class ExtremeCompiler:
         self.error_code = None
         self.validation_passed = False  # 只有实际执行并通过 EPUBCheck 才可交付
         self._epubcheck_result: EpubValidationResult | None = None
+        self.source_warnings: list[str] = []
         
         # 依赖 models.QualityStats，我们先局部引入避免循环依赖
         from app.models import QualityStats, ErrorCode  # noqa: F401 – ErrorCode 供下方使用
@@ -135,6 +137,8 @@ class ExtremeCompiler:
                     continue
                 content = item.get_content()
                 if not content:
+                    continue
+                if is_source_placeholder_document(content):
                     continue
                 try:
                     raw = content.decode("utf-8", errors="ignore") if isinstance(content, (bytes, bytearray)) else str(content)
@@ -230,6 +234,8 @@ class ExtremeCompiler:
         print(self.metrics.summary())
         if not self.final_message:
             self.final_message = "转换成功"
+        if self.source_warnings:
+            self.final_message += "；" + "；".join(self.source_warnings)
         return result
 
     # ─── 完整流水线 ──────────────────────────────────────────────────────
@@ -239,6 +245,7 @@ class ExtremeCompiler:
         t = time.monotonic()
         self._unpacker = EpubUnpacker(self.input_path)
         self.book = self._unpacker.load_book()
+        self.source_warnings = list(getattr(self._unpacker, "source_warnings", []) or [])
         unpack_ms = (time.monotonic() - t) * 1000
         self.metrics.record("Unpack", unpack_ms)
         self.stage_callback("preprocessing", "解包完成", int(unpack_ms))
@@ -276,9 +283,14 @@ class ExtremeCompiler:
             if content is None:
                 # ebooklib 某些 item（如空白占位资源）内容为 None，跳过处理避免 set_content 崩溃
                 continue
+            if is_source_placeholder_document(content):
+                # This is our generated explanation, not book prose. Keep its
+                # fixed wording/marker through preprocessing and later reloads.
+                continue
             for cleaner in self.cleaners:
                 if isinstance(cleaner, SemanticsTranslator):
-                    if self._should_skip_translation_for_file(file_name):
+                    if (self._should_skip_translation_for_file(file_name)
+                            or is_source_placeholder_document(content)):
                         self.progress_callback(f"跳过非正文翻译: {file_name} ({i+1}/{total_docs})")
                         continue
                     # 替换回调以带上文件名上下文
@@ -377,6 +389,7 @@ class ExtremeCompiler:
             t = time.monotonic()
             unpacker = getattr(self, "_unpacker", None) or EpubUnpacker(self.input_path)
             book = unpacker.load_book()
+            self.source_warnings = list(getattr(unpacker, "source_warnings", []) or [])
             self.metrics.record("SafeMode:Unpack", (time.monotonic() - t) * 1000)
             if not book:
                 err = getattr(unpacker, "_last_error", None)
@@ -392,6 +405,8 @@ class ExtremeCompiler:
             if item_type == 9 or item_type == 2:
                 raw = item.get_content()
                 if raw is None:
+                    continue
+                if is_source_placeholder_document(raw):
                     continue
                 result_content = safe_cleaner.process(raw, item_type)
                 if result_content is not None:
@@ -418,12 +433,15 @@ class ExtremeCompiler:
                 print(cleaner.stats.summary(cleaner.model))
 
     def get_translation_stats(self) -> dict:
-        if not self.enable_translation:
-            return {}
-        for cleaner in self.cleaners:
-            if isinstance(cleaner, SemanticsTranslator):
-                return cleaner.stats.to_dict(cleaner.model)
-        return {}
+        stats = {}
+        if self.enable_translation:
+            for cleaner in self.cleaners:
+                if isinstance(cleaner, SemanticsTranslator):
+                    stats = cleaner.stats.to_dict(cleaner.model)
+                    break
+        if self.source_warnings:
+            stats["source_warnings"] = list(self.source_warnings)
+        return stats
 
     def _validate_output(self) -> None:
         """All packaging paths, including safe fallback, share the delivery gate."""

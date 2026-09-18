@@ -185,6 +185,31 @@ def _word_count(s: str) -> int:
     return len(s.split()) if s.strip() else 0
 
 
+def is_source_placeholder_document(content: bytes | str | BeautifulSoup) -> bool:
+    """Recognize only our fixed missing-source explanation, never arbitrary prose.
+
+    A generic ``translate=no`` (or the marker on its own) cannot exempt real
+    source text from translation or quality checks.
+    """
+    if isinstance(content, BeautifulSoup):
+        soup = content
+    else:
+        marker = (b"data-epub-factory-missing-document" if isinstance(content, bytes)
+                  else "data-epub-factory-missing-document")
+        if not content or marker not in content:
+            return False
+        raw = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
+        soup = BeautifulSoup(raw or "", "html.parser")
+    body = soup.find("body")
+    if not body or body.get("data-epub-factory-missing-document") != "true":
+        return False
+    text = re.sub(r"\s+", "", body.get_text())
+    return text in {
+        "原文件缺少本章节本页仅说明原文件缺失，不代表译文；其余可用章节继续处理。",
+        "原文件缺少本章節本頁僅說明原文件缺失，不代表譯文；其餘可用章節繼續處理。",
+    }
+
+
 def extract_chunks_with_stats(html_content: bytes, chapter_id: str) -> tuple[List[ChunkItem], dict[str, Any]]:
     """
     从 HTML 中提取块级 chunk，返回带稳定 locator 的列表。
@@ -204,6 +229,9 @@ def extract_chunks_with_stats(html_content: bytes, chapter_id: str) -> tuple[Lis
         "reference_note_chunks_skipped": 0,
         "structured_note_chunks": 0,
     }
+    if is_source_placeholder_document(soup):
+        stats["source_placeholder_documents_skipped"] = 1
+        return [], stats
     seq = 0
     for block in blocks:
         if not _is_leaf_block(block):

@@ -721,6 +721,8 @@ async def _translate_manifest_async(
             "image_caption_chunks": image_caption_chunks,
             "reference_note_chunks_skipped": reference_note_chunks_skipped,
             "structured_note_chunks": structured_note_chunks,
+            "source_warnings": list(manifest.get("source_warnings") or []),
+            "source_placeholder_documents_skipped": int(manifest_stats.get("source_placeholder_documents_skipped") or 0),
             "chunks_processed": int(stats.get("translated_chunks") or 0)
             + int(stats.get("cached_chunks") or 0)
             + int(stats.get("failed_chunks") or 0),
@@ -1260,6 +1262,11 @@ def run_fast_translation_job(
         t = time.monotonic()
         stage_callback("mapping", "生成章节 Manifest", None)
         manifest = build_manifest(str(preprocessed), job.id)
+        manifest["source_warnings"] = list(dict.fromkeys([
+            *((job.translation_stats or {}).get("source_warnings") or []),
+            *((pre_result.translation_stats or {}).get("source_warnings") or []),
+            *(manifest.get("source_warnings") or []),
+        ]))
         if manifest.get("error"):
             _log_stage("mapping_failed", error=manifest["error"])
             progress_callback(f"生成章节 Manifest 失败：{_short_log(manifest['error'])}")
@@ -1356,6 +1363,7 @@ def run_fast_translation_job(
                 JobStatus.running,
                 profile_message,
                 translation_stats={
+                    "source_warnings": list(manifest.get("source_warnings") or []),
                     "book_profile": book_profile,
                     "book_profile_status": book_profile.get("status"),
                     "translation_strategy_requested": requested_strategy,
@@ -1480,6 +1488,8 @@ def run_fast_translation_job(
             resume_key=resume_key,
         ))
         translation_stats.update({
+            "source_warnings": list(manifest.get("source_warnings") or []),
+            "source_placeholder_documents_skipped": int((manifest.get("stats") or {}).get("source_placeholder_documents_skipped") or 0),
             "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
             "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
             "temperature": getattr(job, "temperature", None),
@@ -1585,6 +1595,8 @@ def run_fast_translation_job(
     if not validation_passed:
         message = validation_result.message if validation_result else "打包成功但 EPUB 校验未通过，结果不可交付"
         error_code = validation_result.error_code if validation_result else ErrorCode.EPUB_VALIDATION_FAILED.value
+    if translation_stats.get("source_warnings"):
+        message += "；" + "；".join(translation_stats["source_warnings"])
     translation_stats = attach_translation_qa_report(
         translation_stats,
         output_path=output_path,

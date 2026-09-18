@@ -18,7 +18,7 @@ from typing import List, Optional
 from opencc import OpenCC
 
 from app.utils.encoding import decode_with_fallback
-from app.utils.html_text import map_html_text
+from app.utils.html_text import map_html_text, map_html_styles
 from .lexicon_matcher import LexiconMatcher, LexiconReport
 
 logger = logging.getLogger("epub_factory.cjk")
@@ -91,7 +91,7 @@ class CjkNormalizer:
         # html (9)
         if item_type == 9:
             text = decode_with_fallback(content)
-            text = self._horizontalize_css(text)
+            text = map_html_styles(text, self._horizontalize_css)
             text = map_html_text(text, self._replace_vertical_punctuation)
             # L2+L3 先于 L1 运行：词典中记录的是原始繁体形式（如「軟體」「滑鼠」），
             # 必须在 OpenCC 字形转换之前匹配，否则 OpenCC 会把「軟體」→「软体」
