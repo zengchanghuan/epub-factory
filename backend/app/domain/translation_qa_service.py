@@ -267,6 +267,18 @@ def build_translation_qa_report(
         _flag(report, "provider_unavailable", report["summary"])
         return report
 
+    if error_code in {"EPUB_VALIDATION_UNAVAILABLE", "EPUB_VALIDATION_FAILED"}:
+        unavailable = error_code == "EPUB_VALIDATION_UNAVAILABLE"
+        summary = (
+            "EPUB 校验未能执行完成，结果不可交付"
+            if unavailable else "EPUB 格式校验未通过，结果不可交付"
+        )
+        report.update(status="blocked" if unavailable else "failed",
+                      delivery_status="blocked" if unavailable else "failed",
+                      can_deliver=False, score=None, summary=summary, retryable=False)
+        _flag(report, "epub_validation_unavailable" if unavailable else "epub_validation_failed", summary)
+        return report
+
     if failed:
         _flag(report, "failed_chunks", f"{failed} 个段落翻译失败")
         report["score"] -= min(80, 20 + failed * 2)

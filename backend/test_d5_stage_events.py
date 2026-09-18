@@ -17,9 +17,10 @@ from app.main import app
 from app.models import Job, JobStage, JobStatus, OutputMode, StageStatus
 from app.storage import job_store
 from app.job_runner import run_job
+from test_epub_fixture import minimal_epub_bytes
 
 client = TestClient(app)
-MINIMAL_EPUB = b"PK\x03\x04"
+MINIMAL_EPUB = minimal_epub_bytes()
 
 
 def test_stage_events_recorded_on_run():

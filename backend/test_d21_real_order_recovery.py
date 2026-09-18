@@ -407,7 +407,10 @@ class TestDeliveryRecovery(unittest.TestCase):
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), SHA)
         manifest = build_manifest(str(path), 'offline-regression')
         self.assertFalse(manifest.get('error'))
-        self.assertEqual(sum(len(c['chunks']) for c in manifest['chapters'] if c['chapter_kind'] == 'body'), 2681)
+        self.assertEqual(sum(len(c['chunks']) for c in manifest['chapters'] if c['chapter_kind'] == 'body'), 2662)
+        contents = next(c for c in manifest['chapters'] if c['file_path'] == 'cS.xhtml')
+        self.assertEqual(contents['chapter_kind'], 'nav')
+        self.assertEqual(len(contents['chunks']), 19)  # 原计数包含的书内目录仍单独保留。
         chapter = next(c for c in manifest['chapters'] if c['chapter_id'] == 'c179')
         title = next(c for c in chapter['chunks'] if c['chunk_id'] == 'c179_0002')
         self.assertEqual(title['text'], TITLE)

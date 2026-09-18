@@ -12,11 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
-import json
 import logging
 import os
 import re
-import subprocess
 import tempfile
 import time
 import sqlite3
@@ -54,6 +52,7 @@ from app.domain.translation_strategy import (
 )
 from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult
 from app.engine.compiler import EPUBCHECK_JAR
+from app.engine.epub_validation import EpubValidationResult, validate_epub
 from app.engine.glossary_extractor import verify_and_fix, GlossaryCandidate
 from app.engine.glossary_service import build_consistent_glossary, GlossaryBuildResult, load_global_glossary
 from app.engine.unpacker import EpubUnpacker
@@ -320,38 +319,19 @@ def _upsert_chunk(
     )
 
 
-def _run_epubcheck(output_path: Path) -> bool:
-    jar = os.path.abspath(EPUBCHECK_JAR)
-    if not os.path.exists(jar):
-        return True
-
-    json_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-            json_path = tmp.name
-        subprocess.run(
-            ["java", "-jar", jar, str(output_path), "--json", json_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        messages = data.get("messages", [])
-        fatals = sum(1 for m in messages if m.get("severity") == "FATAL")
-        errors = sum(1 for m in messages if m.get("severity") == "ERROR")
-        return fatals == 0 and errors == 0
-    except Exception:
-        return False
-    finally:
-        if json_path:
-            try:
-                os.unlink(json_path)
-            except OSError:
-                pass
+def _run_epubcheck(
+    output_path: Path, *, on_result: Callable[[EpubValidationResult], None] | None = None,
+) -> bool:
+    result = validate_epub(output_path, EPUBCHECK_JAR)
+    logger.info("EPUBCheck completed", extra={"_extra_fields": {
+        "passed": result.passed, "error_code": result.error_code, "message": result.message,
+    }})
+    if on_result is not None:
+        on_result(result)
+    return result.passed
 
 
-def _metrics_summary(timings: list[tuple[str, float]]) -> str:
+def _metrics_summary(timings: list[tuple[str, float]], *, failed_stages: set[str] | None = None) -> str:
     total = sum(ms for _, ms in timings)
     lines = [
         "",
@@ -360,7 +340,8 @@ def _metrics_summary(timings: list[tuple[str, float]]) -> str:
         "────────────────────────────────────────────────────",
     ]
     for name, ms in timings:
-        lines.append(f"  ✅ {name:<28} {ms:>7.1f} ms")
+        icon = "❌" if name in (failed_stages or ()) else "✅"
+        lines.append(f"  {icon} {name:<28} {ms:>7.1f} ms")
     lines.append("────────────────────────────────────────────────────")
     return "\n".join(lines)
 
@@ -1267,6 +1248,14 @@ def run_fast_translation_job(
         timings.append(("Preprocess", (time.monotonic() - t) * 1000))
         _log_stage("preprocessing", timings[-1][1])
         raise_if_cancelled(cancel_check)
+        if not pre_result.validation_passed:
+            # Do not pay for profiling/glossary/translation when the source pipeline
+            # cannot produce and actually validate a deliverable EPUB.
+            message = pre_result.message or "预处理后的 EPUB 未通过校验，已停止翻译"
+            progress_callback(message)
+            stage_callback("validating_failed", message, int(timings[-1][1]))
+            _log_stage("preprocessing_validation_failed", error_code=pre_result.error_code)
+            return pre_result
 
         t = time.monotonic()
         stage_callback("mapping", "生成章节 Manifest", None)
@@ -1573,12 +1562,15 @@ def run_fast_translation_job(
     t = time.monotonic()
     raise_if_cancelled(cancel_check)
     stage_callback("validating", "校验 EPUB", None)
-    validation_passed = _run_epubcheck(output_path)
+    validation_results: list[EpubValidationResult] = []
+    validation_passed = _run_epubcheck(output_path, on_result=validation_results.append)
+    validation_result = validation_results[-1] if validation_results else None
     timings.append(("EpubCheck", (time.monotonic() - t) * 1000))
     _log_stage("validating", timings[-1][1], passed=validation_passed)
     if not validation_passed:
-        progress_callback("EPUB 校验未通过：打包结果不可交付")
-        stage_callback("validating_failed", "EPUB 校验未通过：打包结果不可交付", int(timings[-1][1]))
+        validation_message = validation_result.message if validation_result else "EPUB 校验未通过：打包结果不可交付"
+        progress_callback(validation_message)
+        stage_callback("validating_failed", validation_message, int(timings[-1][1]))
 
     failed = int(translation_stats.get("failed_chunks") or 0)
     done = int(translation_stats.get("translated_chunks") or 0) + int(translation_stats.get("cached_chunks") or 0)
@@ -1591,8 +1583,8 @@ def run_fast_translation_job(
     elif audit_review:
         message = f"转换成功，但有 {audit_review} 个段落需要复核。"
     if not validation_passed:
-        message = "打包成功但 EPUB 校验未通过，结果不可交付"
-        error_code = ErrorCode.EPUB_VALIDATION_FAILED.value
+        message = validation_result.message if validation_result else "打包成功但 EPUB 校验未通过，结果不可交付"
+        error_code = validation_result.error_code if validation_result else ErrorCode.EPUB_VALIDATION_FAILED.value
     translation_stats = attach_translation_qa_report(
         translation_stats,
         output_path=output_path,
@@ -1602,7 +1594,7 @@ def run_fast_translation_job(
     total_ms = (time.monotonic() - started_all) * 1000
     timings.append(("Total", total_ms))
     translation_stats["phase_timings_ms"] = {name: round(elapsed) for name, elapsed in timings}
-    metrics = _metrics_summary(timings)
+    metrics = _metrics_summary(timings, failed_stages={"EpubCheck"} if not validation_passed else None)
     _log_stage("done", total_ms, error_code=error_code, validation_passed=validation_passed)
 
     return ConversionResult(

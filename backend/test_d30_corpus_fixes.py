@@ -72,9 +72,12 @@ class CorpusFixTests(unittest.TestCase):
 
     def test_pdf_upload_routes_reject_before_orders_and_payment(self):
         client = TestClient(app)
+        fixture(self.source)
+        valid_epub = self.source.read_bytes()
+        self.source.unlink()
         for endpoint, field, uploads in [('/api/v1/jobs', 'file', [('book.PDF', b'%PDF-1.7')]),
             ('/api/v2/jobs', 'file', [('book.pdf', b'%PDF-1.7')]),
-            ('/api/v2/batches', 'files', [('valid.epub', b'PK'), ('book.pdf', b'%PDF-1.7')])]:
+            ('/api/v2/batches', 'files', [('valid.epub', valid_epub), ('book.pdf', b'%PDF-1.7')])]:
             with self.subTest(endpoint=endpoint), patch('app.main.UPLOAD_DIR', self.root), \
                     patch('app.main.job_store.add') as add, patch('app.main.create_alipay_page_pay') as pay:
                 response = client.post(endpoint, files=[(field, (name, data)) for name, data in uploads])
@@ -94,9 +97,11 @@ class CorpusFixTests(unittest.TestCase):
             EpubConverter().convert_file_to_horizontal(self.root / 'old.pdf', self.root / 'out.epub', OutputMode.simplified)
 
     def test_valid_upload_peek_keeps_file_position(self):
-        upload = UploadFile(filename='book.epub', file=io.BytesIO(b'PKcontent'))
+        fixture(self.source)
+        source_bytes = self.source.read_bytes()
+        upload = UploadFile(filename='book.epub', file=io.BytesIO(source_bytes))
         _validate_upload_format(upload)
-        self.assertEqual(upload.file.read(), b'PKcontent')
+        self.assertEqual(upload.file.read(), source_bytes)
 
     def test_supported_adapter_builder_has_real_nav_and_readable_body(self):
         html_to_epub_builder.build('<p>这是正文。</p>', {'title': '样书', 'author': 'A & B', 'identifier': 'id<&'}, self.source)

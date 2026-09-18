@@ -1,6 +1,4 @@
 import os
-import subprocess
-import json
 import time
 import re
 from pathlib import Path
@@ -14,6 +12,7 @@ from .unpacker import EpubUnpacker
 from .packager import EpubPackager
 from .cleaners import CssSanitizer, CjkNormalizer, SemanticsTranslator, DeviceProfileCompiler, TypographyEnhancer, StemGuard
 from .toc_rebuilder import TocRebuilder
+from .epub_validation import EpubValidationResult, validate_epub
 
 
 class TranslationPipelineError(RuntimeError):
@@ -80,7 +79,8 @@ class ExtremeCompiler:
         self.stage_callback = stage_callback or (lambda name, msg, elapsed_ms=None: None)
         self.final_message = ""
         self.error_code = None
-        self.validation_passed = True  # EpubCheck 通过则为 True，否则为 False，用于杜绝假成功
+        self.validation_passed = False  # 只有实际执行并通过 EPUBCheck 才可交付
+        self._epubcheck_result: EpubValidationResult | None = None
         
         # 依赖 models.QualityStats，我们先局部引入避免循环依赖
         from app.models import QualityStats, ErrorCode  # noqa: F401 – ErrorCode 供下方使用
@@ -195,6 +195,8 @@ class ExtremeCompiler:
 
     def run(self) -> bool:
         print(f"🚀 [Start] Processing: {self.input_path}")
+        self.validation_passed = False
+        self._epubcheck_result = None
         t0 = time.monotonic()
         try:
             result = self._run_full_pipeline()
@@ -217,10 +219,11 @@ class ExtremeCompiler:
                 self.error_code = self._ErrorCode.CONVERT_FAILED
                 return False
             if result and self.enable_translation:
-                self.final_message = (
-                    "翻译流程未完成，仅做了版式转换；请检查网络与 API 配置后重试。"
-                )
-                self.error_code = self._ErrorCode.TRANSLATION_FAILED
+                if self.validation_passed:
+                    self.final_message = (
+                        "翻译流程未完成，仅做了版式转换；请检查网络与 API 配置后重试。"
+                    )
+                    self.error_code = self._ErrorCode.TRANSLATION_FAILED
                 print("❌ [SafeMode] 用户请求了翻译，但仅完成安全模式，不视为成功")
                 return False
         self.metrics.total_ms = (time.monotonic() - t0) * 1000
@@ -356,16 +359,7 @@ class ExtremeCompiler:
         if success:
             print(f"✅ [Success] Output saved to: {self.output_path}")
             self._print_translation_stats()
-            self.stage_callback("validating", "开始校验")
-            t = time.monotonic()
-            self.validation_passed = self._run_epubcheck()
-            check_ms = (time.monotonic() - t) * 1000
-            self.metrics.record("EpubCheck", check_ms)
-            self.stage_callback("validating", "校验完成", int(check_ms))
-            if not self.validation_passed:
-                self.error_code = self._ErrorCode.EPUB_VALIDATION_FAILED
-                self.final_message = "打包成功但 EPUB 校验未通过，结果不可交付"
-                self.progress_callback("EPUB 校验未通过：打包结果不可交付")
+            self._validate_output()
         else:
             self.progress_callback("打包失败：未能保存 EPUB 输出文件")
             print("❌ [Error] Failed to save EPUB.")
@@ -411,6 +405,7 @@ class ExtremeCompiler:
 
         if success:
             print(f"✅ [SafeMode] Direction-only output saved to: {self.output_path}")
+            self._validate_output()
         return success
 
     # ─── 辅助方法 ────────────────────────────────────────────────────────
@@ -430,57 +425,24 @@ class ExtremeCompiler:
                 return cleaner.stats.to_dict(cleaner.model)
         return {}
 
+    def _validate_output(self) -> None:
+        """All packaging paths, including safe fallback, share the delivery gate."""
+        self.stage_callback("validating", "开始校验")
+        started = time.monotonic()
+        self._epubcheck_result = None
+        self.validation_passed = self._run_epubcheck()
+        elapsed = (time.monotonic() - started) * 1000
+        self.metrics.record("EpubCheck", elapsed, "ok" if self.validation_passed else "error")
+        if self.validation_passed:
+            self.stage_callback("validating", "校验通过", int(elapsed))
+            return
+        details = self._epubcheck_result
+        self.error_code = details.error_code if details else self._ErrorCode.EPUB_VALIDATION_FAILED
+        self.final_message = details.message if details else "打包成功但 EPUB 校验未通过，结果不可交付"
+        self.stage_callback("validating_failed", self.final_message, int(elapsed))
+        self.progress_callback(self.final_message)
+
     def _run_epubcheck(self) -> bool:
-        """
-        执行 EpubCheck 校验，仅当 0 个 FATAL 且 0 个 ERROR 时视为通过。
-        :return: True 通过或跳过（无 JAR/Java），False 有致命或错误级别问题
-        """
-        jar = os.path.abspath(EPUBCHECK_JAR)
-        if not os.path.exists(jar):
-            print("⚠️ [EpubCheck] JAR not found, skipping validation")
-            return True  # 跳过时不影响交付
-
-        try:
-            import tempfile as _tmpfile
-            json_out = _tmpfile.mktemp(suffix=".json")
-            result = subprocess.run(
-                ["java", "-jar", jar, self.output_path, "--json", json_out],
-                capture_output=True, text=True, timeout=60
-            )
-            try:
-                with open(json_out, "r") as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                lines = result.stderr.strip().split('\n')
-                for line in lines[-5:]:
-                    print(f"  {line}")
-                return False  # 无法解析结果时保守视为未通过
-            finally:
-                if os.path.exists(json_out):
-                    os.unlink(json_out)
-
-            messages = data.get("messages", [])
-            fatals = sum(1 for m in messages if m.get("severity") == "FATAL")
-            errors = sum(1 for m in messages if m.get("severity") == "ERROR")
-            warnings = sum(1 for m in messages if m.get("severity") == "WARNING")
-
-            if fatals == 0 and errors == 0:
-                print(f"✅ [EpubCheck] PASSED — 0 errors, {warnings} warnings")
-                return True
-            print(f"⚠️ [EpubCheck] {fatals} fatals / {errors} errors / {warnings} warnings")
-            for m in messages:
-                if m.get("severity") in ("FATAL", "ERROR"):
-                    loc = m.get("locations", [{}])[0]
-                    path = loc.get("path", "?")
-                    line = loc.get("line", "?")
-                    print(f"  {m.get('severity')} {m.get('id','')}: {path}:{line} — {m.get('message','')}")
-            return False
-        except FileNotFoundError:
-            print("⚠️ [EpubCheck] Java not installed, skipping validation")
-            return True
-        except subprocess.TimeoutExpired:
-            print("⚠️ [EpubCheck] Timed out after 60s")
-            return False
-        except Exception as e:
-            print(f"⚠️ [EpubCheck] Unexpected error: {e}")
-            return False
+        self._epubcheck_result = validate_epub(self.output_path, EPUBCHECK_JAR)
+        print(f"[EpubCheck] {self._epubcheck_result.message}")
+        return self._epubcheck_result.passed

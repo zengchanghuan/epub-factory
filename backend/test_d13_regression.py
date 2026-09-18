@@ -18,11 +18,12 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models import Job, JobStatus, OutputMode, DeviceProfile
 from app.storage import job_store
+from test_epub_fixture import minimal_epub_bytes
 
 client = TestClient(app)
 
-# 最小合法 EPUB 占位（仅用于 POST 创建任务）
-MINIMAL_EPUB = b"PK\x03\x04"
+# 最小合法 EPUB（建单入口检查容器与资源完整性）。
+MINIMAL_EPUB = minimal_epub_bytes()
 
 
 def test_e2e_translation_failed_must_return_failed():

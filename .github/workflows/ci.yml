@@ -19,7 +19,6 @@ jobs:
         # 排除项及原因：
         #   - c4_bilingual / c6_glossary_rag：需真实 LLM 调用与外网，CI 无密钥
         #   - d1_celery_bootstrap / d4_celery_job_pipeline：依赖 Redis broker
-        #   - d3_api_v2_skeleton / d5_stage_events：既有 fixture 缺陷，跨环境一致失败（与本仓库改动无关）
         run: |
           docker run --rm \
             -e OPENAI_API_KEY=dummy \
@@ -31,6 +30,8 @@ jobs:
               set -e
               SUITE="
                 test_d2_task_data_models
+                test_d3_api_v2_skeleton
+                test_d5_stage_events
                 test_d6_manifest
                 test_d7_translate_chapter
                 test_d8_reduce
@@ -42,7 +43,18 @@ jobs:
                 test_d14_fast_translation_runner
                 test_d15_translation_quality_audit
                 test_d16_translation_qa_service
+                test_d17_batch_conversion
+                test_d20_checkout_webhook
+                test_d19_order_admin
                 test_d18_paid_translation_regression
+                test_d20_translation_confirmation
+                test_d21_real_order_recovery
+                test_d23_flash_alias
+                test_d29_translation_performance
+                test_d30_corpus_fixes
+                test_d31_input_integrity
+                test_d31_epub_validation
+                test_d31_reduce_index
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard

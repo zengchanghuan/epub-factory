@@ -41,6 +41,7 @@ from .domain.translation_preflight_service import build_translation_preflight
 from .domain.book_preview_service import build_book_preview
 from .domain.feedback_service import FEEDBACK_TYPES, feedback_limiter, persist_feedback
 from .domain.input_formats import validate_filename, is_pdf_header, PDF_DISABLED_MESSAGE
+from .domain.epub_input_integrity import EpubInputError, validate_epub_resources
 
 
 def _validate_upload_format(upload: UploadFile) -> None:
@@ -56,6 +57,16 @@ def _validate_upload_format(upload: UploadFile) -> None:
         upload.file.seek(position)
     if is_pdf_header(prefix):
         raise HTTPException(status_code=400, detail=PDF_DISABLED_MESSAGE)
+    if (upload.filename or '').lower().endswith('.epub'):
+        upload.file.seek(0, 2)
+        size = upload.file.tell()
+        upload.file.seek(position)
+        if size > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(status_code=413, detail=f"文件过大，单文件最大支持 {MAX_FILE_SIZE_MB}MB。")
+        try:
+            validate_epub_resources(upload.file)
+        except EpubInputError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -1175,7 +1186,7 @@ async def create_job(
             detail="付费翻译已下线在 v1 接口，请改用 POST /api/v2/jobs（含支付下单与回调验签）",
         )
 
-    _validate_upload_format(file)
+    await asyncio.to_thread(_validate_upload_format, file)
 
     glossary: dict = {}
     if glossary_json:
@@ -1332,7 +1343,7 @@ async def create_job_v2(
     )
     _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
-    _validate_upload_format(file)
+    await asyncio.to_thread(_validate_upload_format, file)
 
     # 免费配额已关闭，所有转换均走付费流程
     client_ip = get_real_ip(request)
@@ -1783,6 +1794,16 @@ def confirm_translation_profile_v2(
             status_code=409,
             detail="当前任务已确认或正在确认，请勿重复提交",
         )
+    # Older unconfirmed uploads may predate the input gate. Check before the
+    # confirmation CAS or payment call, preserving their state on rejection.
+    if str(job.input_path).lower().endswith('.epub'):
+        try:
+            with Path(job.input_path).open('rb') as source:
+                validate_epub_resources(source)
+        except EpubInputError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except OSError:
+            raise HTTPException(status_code=400, detail="原文件无法读取，请重新上传完整 EPUB。") from None
     preflight = (job.translation_stats or {}).get("translation_preflight")
     confirmed, strategy, bilingual, glossary = _confirmed_translation_preflight(
         existing=preflight,
@@ -1976,7 +1997,7 @@ async def create_batch_v2(
         raise HTTPException(status_code=400, detail="批量模式暂不支持 AI 精校，请关闭精校后提交")
 
     for upload in files:
-        _validate_upload_format(upload)
+        await asyncio.to_thread(_validate_upload_format, upload)
 
     batch_id = uuid.uuid4().hex[:12]
     access_token = uuid.uuid4().hex

@@ -174,7 +174,7 @@ def test_candidate_routes_default():
 
 
 def test_candidate_routes_with_fallbacks():
-    """有 OPENAI_BASE_URL_FALLBACKS / OPENAI_MODEL_FALLBACKS 时路由含备选。"""
+    """显式非 Flash 模型可使用配置的备选，不依赖当前默认模型。"""
     old_values = {key: os.environ.get(key) for key in (
         "OPENAI_BASE_URL_FALLBACKS",
         "OPENAI_MODEL_FALLBACKS",
@@ -186,7 +186,7 @@ def test_candidate_routes_with_fallbacks():
     os.environ.pop("TOKENHUB_BASE_URL", None)
     os.environ.pop("TOKENHUB_API_KEY", None)
     try:
-        t = SemanticsTranslator(target_lang="zh-CN")
+        t = SemanticsTranslator(target_lang="zh-CN", model="deepseek-v4-pro")
         routes = t._candidate_routes()
         assert len(routes) >= 6
         bases = {r[0] for r in routes}
@@ -461,8 +461,8 @@ def test_translate_many_chunks_uses_multiple_quality_retries():
     assert t.stats.failed_chunks == 0
 
 
-def test_translate_many_chunks_escalates_quality_retry_to_pro_model():
-    """单段补译反复不过质检后，应把该段补译升级到 deepseek-v4-pro。"""
+def test_translate_many_chunks_keeps_flash_quality_retries_on_flash():
+    """Flash 补译保持原模型，即使旧配置仍指向 Pro。"""
     old_values = {
         "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
         "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
@@ -491,10 +491,10 @@ def test_translate_many_chunks_escalates_quality_retry_to_pro_model():
                 {item["id"]: "这是重要的译文。" for item in payload},
                 {"model": t.model, "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
             )
-        if preferred_model == "deepseek-v4-pro":
+        if len(calls) == 3:
             return (
                 {item["id"]: "这是<strong>重要的</strong>译文。" for item in payload},
-                {"model": preferred_model, "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
+                {"model": t.model, "base_url": "fake://llm", "prompt_tokens": 10, "completion_tokens": 20},
             )
         return (
             {item["id"]: "这是重要的译文。" for item in payload},
@@ -504,10 +504,10 @@ def test_translate_many_chunks_escalates_quality_retry_to_pro_model():
     t._call_llm_json_batch = fake_call
     out = asyncio.run(t.translate_many_chunks_async(["<p>This is <strong>important</strong>.</p>"]))
 
-    assert calls == ["deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-pro"]
+    assert calls == ["deepseek-v4-flash"] * 3
     assert out[0].error is None
     assert "<strong>" in out[0].translated_html
-    assert t.stats.quality_fallback_attempts == 1
+    assert t.stats.quality_fallback_attempts == 0
 
 
 def test_translate_many_chunks_emits_final_failure_progress():
@@ -736,8 +736,8 @@ def test_structured_note_allows_short_italic_title_to_remain_english():
     assert "<em>Political Tracts</em>" in out[0].translated_html
 
 
-def test_structured_note_upgrades_model_after_untranslated_response():
-    """Flash 对长脚注返回原文时，应在同一预算内升级质量模型。"""
+def test_structured_note_retries_on_flash_after_untranslated_response():
+    """Flash 长脚注返回原文时，在同一预算内用原模型补译。"""
     old_values = {
         "EPUB_TRANSLATION_QUALITY_RETRIES": os.environ.get("EPUB_TRANSLATION_QUALITY_RETRIES"),
         "EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES": os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"),
@@ -747,7 +747,7 @@ def test_structured_note_upgrades_model_after_untranslated_response():
     os.environ["EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES"] = "1"
     os.environ["EPUB_TRANSLATION_CHUNK_RETRY_BUDGET"] = "3"
     try:
-        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}", model="deepseek-flash")
         calls = []
         html = (
             '<p class="footnote"><sup>4</sup>'
@@ -759,13 +759,13 @@ def test_structured_note_upgrades_model_after_untranslated_response():
             calls.append(preferred_model)
             translation = (
                 "根据词典，这条较长的解释性脚注阐明了该词的用法。"
-                if preferred_model == "deepseek-v4-pro"
+                if len(calls) > 1
                 else payload[0]["html"]
             )
             return (
                 {payload[0]["id"]: translation},
                 {
-                    "model": preferred_model or "deepseek-v4-flash",
+                    "model": preferred_model or t.model,
                     "base_url": "fake://llm",
                     "prompt_tokens": 10,
                     "completion_tokens": 20,
@@ -776,11 +776,11 @@ def test_structured_note_upgrades_model_after_untranslated_response():
         t._call_llm_json_batch = fake_call
         out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
 
-        assert calls == [None, "deepseek-v4-pro"]
+        assert calls == [None, None]
         assert out[0].error is None
         assert "根据词典" in out[0].translated_html
         assert out[0].retry_count == 1
-        assert t.stats.quality_fallback_attempts == 1
+        assert t.stats.quality_fallback_attempts == 0
         assert t.stats.structured_note_successes == 1
         assert t.stats.retry_budget_exhausted_chunks == 0
     finally:
@@ -818,7 +818,7 @@ def test_structured_note_reports_exact_retry_budget_exhaustion():
         t._call_llm_json_batch = fake_call
         out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
 
-        assert calls == [None, "deepseek-v4-pro"]
+        assert calls == [None, None]  # 默认 Flash 保持原模型，仍只消耗两次请求预算。
         assert out[0].error is not None
         assert out[0].retry_count == 2
         assert t.stats.retry_budget_exhausted_chunks == 1
@@ -1209,14 +1209,14 @@ def _run():
         test_translate_many_chunks_rescues_singleton_call_failure,
         test_translate_many_chunks_retries_untranslated_response,
         test_translate_many_chunks_uses_multiple_quality_retries,
-        test_translate_many_chunks_escalates_quality_retry_to_pro_model,
+        test_translate_many_chunks_keeps_flash_quality_retries_on_flash,
         test_translate_many_chunks_emits_final_failure_progress,
         test_translate_many_chunks_adds_retry_hint_for_untranslated_math_chunk,
         test_translate_many_chunks_rescues_formula_chunk_by_text_segments,
         test_translate_many_chunks_routes_structured_note_through_text_nodes,
         test_structured_note_without_natural_language_is_preserved_without_retry,
         test_structured_note_allows_short_italic_title_to_remain_english,
-        test_structured_note_upgrades_model_after_untranslated_response,
+        test_structured_note_retries_on_flash_after_untranslated_response,
         test_structured_note_reports_exact_retry_budget_exhaustion,
         test_translate_many_chunks_honors_per_chunk_retry_budget,
         test_extract_json_tolerates_preamble_and_trailing_commas,

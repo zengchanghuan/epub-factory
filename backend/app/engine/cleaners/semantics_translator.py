@@ -377,6 +377,10 @@ class SemanticsTranslator:
         if quality_fallback_model is None:
             quality_fallback_model = os.environ.get("EPUB_TRANSLATION_QUALITY_FALLBACK_MODEL", "deepseek-v4-pro")
         self.quality_fallback_model = (quality_fallback_model or "").strip()
+        if self.model in {"deepseek-v4-flash", "deepseek-flash"}:
+            # Keep Flash jobs on Flash, including repair/review and configured fallbacks.
+            self.model_fallbacks = [m for m in self.model_fallbacks if m == self.model]
+            self.quality_fallback_model = ""
         self.pro_fallback_after_retries = max(0, int(os.environ.get("EPUB_TRANSLATION_PRO_FALLBACK_AFTER_RETRIES", "1")))
         # 模型白名单护栏：仅允许受控的翻译模型，防止客户端绕过 UI 传入高价模型。
         from app.infra.llm_guard import assert_models_allowed

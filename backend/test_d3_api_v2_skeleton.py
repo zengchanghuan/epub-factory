@@ -26,15 +26,25 @@ from app.models import ChunkStatus, ErrorCode, Job, JobChapter, JobChunk, JobSta
 from app.storage import job_store
 from app.job_runner import run_job
 from app.domain.translation_attempt import initial_translation_stats
+from test_epub_fixture import minimal_epub_bytes
 
-# 最小化 payload：仅用于触发「创建任务」并校验响应，不要求真实 EPUB 内容
-MINIMAL_EPUB_BYTES = b"PK\x03\x04"  # 任意短内容，满足 .epub 后缀校验即可
+# 创建任务需通过付款前容器/资源检查，使用无客户内容的合法 EPUB。
+MINIMAL_EPUB_BYTES = minimal_epub_bytes()
 
 
 class TestApiV2Skeleton(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
+        # These are API contract tests; worker/model execution has separate suites.
+        # Valid input fixtures must not enqueue real translation in offline CI.
+        enqueue = patch.object(main_module, '_enqueue_conversion')
+        enqueue.start()
+        cls.addClassCleanup(enqueue.stop)
+        inline_worker = patch.object(main_module, 'process_job')
+        inline_worker.start()
+        cls.addClassCleanup(inline_worker.stop)
+        cls.addClassCleanup(cls.client.close)
 
     def test_v2_list_jobs_empty(self):
         """GET /api/v2/jobs 无任务时返回 items 数组。"""

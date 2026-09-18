@@ -3,6 +3,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -20,6 +21,8 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from app.cancellation import JobCancelled
 from app.domain.fast_translation_runner import _translate_manifest_async, run_fast_translation_job
 from app.domain.manifest_service import build_manifest
+from app.domain.epub_navigation_audit import audit_epub_navigation
+from app.domain.translation_residual_policy import normalize_text, residual_category
 from app.domain.translation_attempt import restarted_translation_stats
 from app.domain.translation_checkpoints import TranslationCheckpoints, book_resume_key
 from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult, _within_request_budget
@@ -465,7 +468,11 @@ class PerformanceTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('EPUB_REGRESSION_BOOK'), 'selected real source book not provided')
     def test_real_book_resume_fingerprint_is_stable_and_catches_image_bullet_change(self):
         manifest = build_manifest(os.environ['EPUB_REGRESSION_BOOK'], self.job.id)
-        self.assertEqual(sum(len(ch['chunks']) for ch in manifest['chapters'] if ch['chapter_kind']=='body'), 2681)
+        self.assert_real_manifest_scope(manifest)
+        with zipfile.ZipFile(os.environ['EPUB_REGRESSION_BOOK']) as archive:
+            navigation = audit_epub_navigation(archive, sample_limit=0)
+        self.assertGreater(navigation['navigation_labels_checked'], 0)
+        self.assertEqual(navigation['navigation_broken_targets'], 0)
         key = book_resume_key(self.job, manifest)
         self.job.translation_stats['attempt_id'] = 'new-real-book-attempt'
         self.assertEqual(key, book_resume_key(self.job, manifest))
@@ -474,11 +481,53 @@ class PerformanceTests(unittest.TestCase):
         bullet['html'] = bullet['html'].replace('<img', '<img data-changed="yes"', 1)
         self.assertNotEqual(key, book_resume_key(self.job, changed))
 
+    def assert_real_manifest_scope(self, manifest):
+        # The previous 2681 count included this secondary HTML contents page.
+        # Keep its 19 blocks accounted for separately; changing the body total
+        # alone could conceal a newly omitted document or navigation content.
+        self.assertEqual(sum(len(ch['chunks']) for ch in manifest['chapters'] if ch['chapter_kind']=='body'), 2662)
+        contents = next(ch for ch in manifest['chapters'] if ch['file_path'] == 'cS.xhtml')
+        self.assertEqual(contents['chapter_kind'], 'nav')
+        self.assertEqual(len(contents['chunks']), 19)
+        blocks = [BeautifulSoup(spec['html'], 'html.parser') for spec in contents['chunks']]
+        self.assertEqual(sum(bool(block.find(['h1', 'h2', 'h3'])) for block in blocks), 1)
+        self.assertEqual(sum(bool(block.find('a', href=True)) for block in blocks), 18)
+        return blocks
+
     @unittest.skipUnless(os.environ.get('EPUB_REGRESSION_BOOK') and os.environ.get('EPUB_REGRESSION_TRANSLATED_BOOK'),
                          'selected real original and formal translated book not provided')
     def test_real_twenty_block_image_bullet_chapter_resumes_without_requests(self):
         source = build_manifest(os.environ['EPUB_REGRESSION_BOOK'], self.job.id)
         target = build_manifest(os.environ['EPUB_REGRESSION_TRANSLATED_BOOK'], self.job.id)
+        source_contents = self.assert_real_manifest_scope(source)
+        target_contents = self.assert_real_manifest_scope(target)
+        self.assertEqual(
+            {ch['file_path']: len(ch['chunks']) for ch in source['chapters'] if ch['chapter_kind'] == 'body'},
+            {ch['file_path']: len(ch['chunks']) for ch in target['chapters'] if ch['chapter_kind'] == 'body'},
+        )
+        with zipfile.ZipFile(os.environ['EPUB_REGRESSION_TRANSLATED_BOOK']) as archive:
+            # This book's user-approved preserved name is documented in
+            # docs/QUALITY-FOLLOWUP-2026-09-17.md. Keep the exception local to
+            # this fixture; it must not become a global residual exemption.
+            navigation = audit_epub_navigation(archive, preserved_terms=['KELVIN CHIU'], sample_limit=0)
+        self.assertGreater(navigation['navigation_labels_checked'], 0)
+        self.assertEqual(navigation['navigation_residual_labels'], 0)
+        self.assertEqual(navigation['navigation_broken_targets'], 0)
+        self.assertEqual(
+            [link['href'] for block in source_contents for link in block.find_all('a', href=True)],
+            [link['href'] for block in target_contents for link in block.find_all('a', href=True)],
+        )
+        for index, block in enumerate(target_contents):
+            label = block.get_text('', strip=False).strip()
+            # This printed contents page decorates the approved name with a
+            # page number. Only strip that numeric/punctuation frame when the
+            # remaining label exactly matches this fixture's approved name.
+            undecorated = re.sub(r'^[\W\d_]+|[\W\d_]+$', '', label)
+            if normalize_text(undecorated) == normalize_text('KELVIN CHIU'):
+                label = undecorated
+            self.assertFalse(residual_category(label, title_like=True,
+                                              preserved_terms=['KELVIN CHIU']),
+                             f'secondary contents block {index} has untranslated text')
         chapter = next(ch for ch in source['chapters'] if ch['chapter_id'] == 'c38')
         translations = {spec['chunk_id']: spec for ch in target['chapters'] for spec in ch['chunks']}
         lookup = {}

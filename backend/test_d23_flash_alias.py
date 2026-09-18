@@ -64,6 +64,16 @@ class FlashAliasTests(unittest.TestCase):
         self.assertIn('id="translationModel" value="deepseek-flash"', html)
         self.assertIn('DeepSeek V4.1 Flash', html)
 
+    def test_flash_repair_cannot_silently_upgrade_to_pro(self):
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'offline-only',
+                'OPENAI_MODEL_FALLBACKS': 'deepseek-v4-pro,deepseek-chat',
+                'EPUB_TRANSLATION_QUALITY_FALLBACK_MODEL': 'deepseek-v4-pro'}, clear=True), \
+             patch('app.engine.cleaners.semantics_translator.TranslationCache', return_value=Mock()):
+            for model in ('deepseek-flash', 'deepseek-v4-flash'):
+                translator = SemanticsTranslator(target_lang='zh-CN', model=model)
+                self.assertEqual(translator.quality_fallback_model, '')
+                self.assertEqual({name for _, name in translator._candidate_routes()}, {model})
+
 
 if __name__ == '__main__':
     unittest.main()

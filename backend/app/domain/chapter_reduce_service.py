@@ -96,6 +96,41 @@ def get_node_by_locator(soup: BeautifulSoup, locator: str) -> Optional[Tag]:
     return current if isinstance(current, Tag) else None
 
 
+def _index_nodes_by_locator(soup: BeautifulSoup) -> dict[str, Tag]:
+    """Index the original DOM once, counting siblings by tag and identity.
+
+    Resolving each paragraph by scanning its siblings is quadratic in long
+    chapters. Store the actual nodes before rewriting any contents so later
+    locators cannot accidentally address markup introduced by a translation.
+    """
+    nodes: dict[str, Tag] = {}
+    stack = [(soup, "")]
+    while stack:
+        parent, path = stack.pop()
+        counts: dict[str, int] = {}
+        for child in parent.children:
+            if not isinstance(child, Tag):
+                continue
+            counts[child.name] = counts.get(child.name, 0) + 1
+            child_path = f"{path}/{child.name}[{counts[child.name]}]"
+            nodes[child_path] = child
+            stack.append((child, child_path))
+    return nodes
+
+
+def _canonical_locator(locator: str) -> str | None:
+    """Keep the legacy locator rules, including omitted [1] and tag case."""
+    if not locator or not locator.strip():
+        return None
+    parts = [part for part in locator.strip("/").split("/") if part]
+    if not parts:
+        return None
+    segments = [_parse_locator_segment(part) for part in parts]
+    if any(index < 1 for _, index in segments):
+        return None
+    return "".join(f"/{tag}[{index}]" for tag, index in segments)
+
+
 def apply_chunk_results(
     html_content: bytes,
     chunk_results: List[ChunkResultLike],
@@ -111,13 +146,15 @@ def apply_chunk_results(
     """
     text = html_content.decode("utf-8", errors="replace")
     soup = BeautifulSoup(text, "html.parser")
-    # 按 sequence 排序，避免乱序回写导致后续 locator 失效
+    # Apply in the existing deterministic order, resolving all original nodes
+    # before any replacement instead of rescanning siblings for each chunk.
     sorted_chunks = sorted(
         (c for c in chunk_results if c.locator and c.translated_html is not None),
         key=lambda c: (getattr(c, "sequence", 0), getattr(c, "chunk_id", "")),
     )
-    for cr in sorted_chunks:
-        node = get_node_by_locator(soup, cr.locator)
+    node_index = _index_nodes_by_locator(soup) if sorted_chunks else {}
+    targets = [(cr, node_index.get(_canonical_locator(cr.locator))) for cr in sorted_chunks]
+    for cr, node in targets:
         if node is None:
             continue
         try:

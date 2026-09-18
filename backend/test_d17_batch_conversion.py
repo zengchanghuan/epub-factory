@@ -14,13 +14,14 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models import JobStage, JobStatus, StageStatus
 from app.storage import job_store
+from test_epub_fixture import minimal_epub_bytes
 
 
 client = TestClient(app)
 
 
 def _files(count=2):
-    return [("files", (f"book-{uuid.uuid4().hex[:6]}.epub", b"test-epub", "application/epub+zip")) for _ in range(count)]
+    return [("files", (f"book-{uuid.uuid4().hex[:6]}.epub", minimal_epub_bytes(), "application/epub+zip")) for _ in range(count)]
 
 
 def _create_batch(*, skip_payment=True):

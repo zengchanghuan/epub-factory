@@ -14,6 +14,7 @@ OPF_NS = 'http://www.idpf.org/2007/opf'
 EPUB_NS = 'http://www.idpf.org/2007/ops'
 DC_NS = 'http://purl.org/dc/elements/1.1/'
 XML_NS = 'http://www.w3.org/XML/1998/namespace'
+CONTAINER_NS = 'urn:oasis:names:tc:opendocument:xmlns:container'
 DC_TERMS = {'title', 'creator', 'subject', 'description', 'publisher', 'contributor',
             'date', 'type', 'format', 'identifier', 'source', 'language', 'relation',
             'coverage', 'rights'}
@@ -25,17 +26,67 @@ META_PROPERTIES = {'alternate-script', 'authority', 'belongs-to-collection', 'co
                    'display-seq', 'dictionary-type', 'file-as', 'group-position', 'identifier-type',
                    'meta-auth', 'role', 'source-language', 'source-of', 'target-language', 'term',
                    'title-type', 'pageBreakSource'}
+FONT_MEDIA_TYPES = {'application/vnd.ms-opentype', 'application/font-sfnt',
+                    'application/font-woff', 'application/x-font-ttf',
+                    'application/x-font-opentype', 'application/x-font-truetype'}
+
+
+def is_font_item(item):
+    kind = (item.get('media-type') or '').lower()
+    return kind.startswith('font/') or kind in FONT_MEDIA_TYPES
+
+
+def missing_font_is_optional(package, item):
+    """Only remove an absent reading font without OPF references/dependencies.
+
+CSS font-face sources are handled separately by the packager's existing font
+fallback repair. Spine/fallback/overlay/refines/metadata dependencies are not
+guessed away. Shared with the pre-payment gate to keep both decisions aligned.
+"""
+    uid = item.get('id')
+    if not is_font_item(item) or not uid or item.get('properties'):
+        return False
+    if any(item.get(key) for key in ('fallback', 'fallback-style', 'media-overlay')):
+        return False
+    target = posixpath.normpath(unquote(urlsplit(item.get('href') or '').path))
+    for node in package.iter():
+        if node is item:
+            continue
+        for key, value in node.attrib.items():
+            local = key.rsplit('}', 1)[-1]
+            if local == 'id':
+                continue
+            if uid in value.split() or '#' + uid in value.split():
+                return False
+            if local in {'href', 'src', 'content'}:
+                link = urlsplit(value)
+                if not link.scheme and not link.netloc and link.path:
+                    if posixpath.normpath(unquote(link.path)) == target:
+                        return False
+    return True
 
 
 def xml_tree(raw):
     return etree.fromstring(raw, etree.XMLParser(resolve_entities=False, no_network=True))
 
 
+def selected_package_path(container):
+    """Match ebooklib's last declared OPF, including the container namespace."""
+    roots = [item for item in container.iter(f'{{{CONTAINER_NS}}}rootfile')
+             if item.get('media-type') == 'application/oebps-package+xml']
+    if not roots:
+        raise ValueError('EPUB 缺少有效 OPF 入口，请提供完整 EPUB。')
+    path = roots[-1].get('full-path') or ''
+    uri = urlsplit(path)
+    if (not path or uri.scheme or uri.netloc or uri.query or uri.fragment
+            or '\\' in path or '\x00' in path or path.startswith('/')
+            or posixpath.normpath(path) == '..' or posixpath.normpath(path).startswith('../')):
+        raise ValueError('EPUB 的 OPF 入口无效，请提供完整 EPUB。')
+    return path
+
+
 def package_path(archive):
-    container = xml_tree(archive.read('META-INF/container.xml'))
-    roots = container.xpath('//*[local-name()="rootfile"]')
-    if not roots: raise ValueError('EPUB 缺少 OPF 入口')
-    return unquote(roots[0].get('full-path') or '')
+    return selected_package_path(xml_tree(archive.read('META-INF/container.xml')))
 
 
 def valid_xml_id(value):
@@ -44,7 +95,7 @@ def valid_xml_id(value):
 
 
 def normalize_package(archive, opf_path):
-    """Only repair declared types and an optional, absent EPUB2 page-map."""
+    """Repair types and remove only optional absent page maps/reading fonts."""
     raw = archive.read(opf_path)
     tree = xml_tree(raw)
     manifest = tree.find(f'{{{OPF_NS}}}manifest')
@@ -55,6 +106,16 @@ def normalize_package(archive, opf_path):
     changed = False
     ids = [item.get('id') for item in manifest]
     if len(ids) != len(set(ids)): raise ValueError('原书 manifest 存在重复资源标识，无法可靠确定章节引用。')
+    # Decide before ID repair so even legacy numeric refines/dependencies stay
+    # visible to the guard. Removing the declaration prevents ebooklib from
+    # unconditionally reading the missing font before CSS fallback can run.
+    for item in list(manifest):
+        resource = posixpath.normpath(posixpath.join(base, unquote(item.get('href') or '')))
+        if resource not in names and is_font_item(item):
+            if not missing_font_is_optional(tree, item):
+                raise ValueError('原书缺少被其他资源依赖的字体文件，请提供完整 EPUB。')
+            manifest.remove(item)
+            changed = True
     used_ids = {node.get('id') for node in tree.iter() if node.get('id')}
     remapped = {}
     for number, item in enumerate(manifest):
@@ -93,6 +154,7 @@ def normalize_package(archive, opf_path):
                 continue
             if media_type in {'application/xhtml+xml', 'text/html'}:
                 raise ValueError(f'原书缺少正文/目录资源：{PurePosixPath(resource).name}；请提供完整 EPUB，不能凭空补齐正文。')
+            raise ValueError('原书缺少声明的资源文件，请提供完整 EPUB。')
         if media_type == 'text/html' and PurePosixPath(href).suffix.lower() in {'.html', '.htm', '.xhtml'}:
             item.set('media-type', 'application/xhtml+xml'); changed = True
         if media_type.startswith('image/') and resource in names:

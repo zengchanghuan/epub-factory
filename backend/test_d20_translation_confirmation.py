@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from app.domain.translation_preflight_service import _chapters
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.models import ChapterKind, Job, JobStatus, OutputMode
+from test_epub_fixture import minimal_epub_bytes
 
 
 def _preflight() -> dict:
@@ -107,7 +109,7 @@ def test_create_translation_stops_before_payment_for_preflight():
         ):
             response = TestClient(main_module.app).post(
                 "/api/v2/jobs",
-                files={"file": ("preflight.epub", b"fake epub", "application/epub+zip")},
+                files={"file": ("preflight.epub", minimal_epub_bytes(), "application/epub+zip")},
                 data={
                     "enable_translation": "true",
                     "profile_confirmation": "true",
@@ -130,13 +132,16 @@ def test_create_translation_stops_before_payment_for_preflight():
 
 
 def test_confirmation_endpoint_starts_only_after_explicit_confirm():
+    source_dir = tempfile.TemporaryDirectory()
+    source = Path(source_dir.name) / 'book.epub'
+    source.write_bytes(minimal_epub_bytes())
     job_id = f"d20_{uuid.uuid4().hex[:10]}"
     token = uuid.uuid4().hex
     job = Job(
         id=job_id,
         trace_id=uuid.uuid4().hex,
         source_filename="book.epub",
-        input_path="/tmp/book.epub",
+        input_path=str(source),
         access_token=token,
         expected_amount="5.99",
         output_mode=OutputMode.simplified,
@@ -176,6 +181,7 @@ def test_confirmation_endpoint_starts_only_after_explicit_confirm():
         )
         assert duplicate.status_code == 409
     finally:
+        source_dir.cleanup()
         if previous is None:
             os.environ.pop("SKIP_PAYMENT_CHECK", None)
         else:
