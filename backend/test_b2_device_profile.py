@@ -71,8 +71,9 @@ def test_kindle_removes_colors():
     text = extract_all_text(output_file)
 
     import re
-    # 检查 opacity 已被移除
-    opacity_matches = re.findall(r'opacity\s*:\s*[^;]+', text, re.IGNORECASE)
+    # 半透明需移除；opacity:0 用于隐藏内容，应保留而不是意外显露。
+    opacity_matches = [value for value in re.findall(r'(?<![-\w])opacity\s*:\s*([^;}<]+)', text, re.IGNORECASE)
+                       if not re.fullmatch(r'(?:0+(?:\.0*)?|\.0+)%?(?:\s*!important)?\s*', value.strip(), re.I)]
     print(f"  opacity 残留: {len(opacity_matches)} 处")
     assert len(opacity_matches) == 0, f"Kindle mode should remove opacity, found: {opacity_matches[:3]}"
 

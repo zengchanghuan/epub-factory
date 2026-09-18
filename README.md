@@ -140,7 +140,7 @@ python3 -m http.server 5173
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `file` | File | — | .epub 或 .pdf 文件 |
+| `file` | File | — | .epub、.mobi、.azw3、.docx 或 .md 文件；暂不支持 PDF |
 | `output_mode` | string | `simplified` | `simplified` \| `traditional` |
 | `device` | string | `generic` | `generic` \| `kindle` \| `apple` |
 | `enable_translation` | bool | `false` | 是否开启 AI 翻译 |

@@ -15,7 +15,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 from app.domain.translation_residual_policy import residual_category
-from app.domain.epub_navigation_audit import audit_epub_navigation
+from app.domain.epub_navigation_audit import audit_epub_navigation, navigation_document_names
 
 from app.engine.chunk_extractor import (
     BLOCK_TAGS,
@@ -37,7 +37,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20260918-confirmed-name-v6"
+QA_RULES_VERSION = "20260918-script-aware-v7"
 
 
 def max_free_retries() -> int:
@@ -104,8 +104,9 @@ def _artifact_text_residual_category(text: str, block: Tag | None = None, preser
 
 
 def _is_non_body_document(member_name: str, soup: BeautifulSoup) -> bool:
-    lower_name = (member_name or "").lower()
-    if any(token in lower_name for token in ("nav", "toc", "copyright", "license", "colophon")):
+    from app.domain.manifest_service import classify_chapter_kind
+    from app.models import ChapterKind
+    if classify_chapter_kind(member_name) in {ChapterKind.nav, ChapterKind.copyright}:
         return True
 
     first_heading = ""
@@ -153,15 +154,16 @@ def audit_translated_epub_output(
     try:
         with zipfile.ZipFile(output_path) as zf:
             report.update(audit_epub_navigation(zf, preserved_terms, sample_limit))
+            nav_names = navigation_document_names(zf)
             names = sorted(
                 name for name in zf.namelist()
-                if name.lower().endswith((".html", ".xhtml"))
+                if name.lower().endswith((".html", ".htm", ".xhtml"))
             )
             for name in names:
                 raw = zf.read(name).decode("utf-8", errors="replace")
                 soup = BeautifulSoup(raw, "html.parser")
                 report["html_files"] += 1
-                if _is_non_body_document(name, soup):
+                if name in nav_names or _is_non_body_document(name, soup):
                     report["non_body_files_skipped"] += 1
                     continue
                 if bilingual:

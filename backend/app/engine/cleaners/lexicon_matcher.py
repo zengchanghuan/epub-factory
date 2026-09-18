@@ -143,14 +143,8 @@ def replace_in_html(html_text: str, automaton, hit_counter: dict) -> str:
     """
     只在 HTML 文本节点中做替换，保留标签结构。
     """
-    parts = _TAG_RE.split(html_text)
-    out: list[str] = []
-    for part in parts:
-        if part.startswith("<"):
-            out.append(part)        # 标签原样保留
-        else:
-            out.append(_replace_with_automaton(part, automaton, hit_counter))
-    return "".join(out)
+    from app.utils.html_text import map_html_text
+    return map_html_text(html_text, lambda text: _replace_with_automaton(text, automaton, hit_counter))
 
 
 class LexiconMatcher:

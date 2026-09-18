@@ -24,6 +24,9 @@ class DeviceProfileCompiler:
                 text = self._kindle_optimize_html(text)
             elif self.device == "apple":
                 text = self._apple_optimize_html(text)
+            optimize_css = self._kindle_optimize_css if self.device == 'kindle' else self._apple_optimize_css
+            text = re.sub(r'(<style\b[^>]*>)([\s\S]*?)(</style\s*>)',
+                          lambda match: match[1] + optimize_css(match[2]) + match[3], text, flags=re.I)
             return text.encode('utf-8')
 
         if item_type == 2:  # CSS
@@ -51,7 +54,7 @@ class DeviceProfileCompiler:
                 '', style, flags=re.IGNORECASE
             )
             # opacity -> 移除（墨水屏不支持半透明）
-            style = re.sub(r'opacity\s*:[^;]+;?', '', style, flags=re.IGNORECASE)
+            style = self._remove_partial_opacity(style)
             style = style.strip()
             if not style or style == ';':
                 return ''
@@ -71,7 +74,7 @@ class DeviceProfileCompiler:
             '', text, flags=re.IGNORECASE
         )
         # 移除 opacity
-        text = re.sub(r'opacity\s*:[^;]+;', '', text, flags=re.IGNORECASE)
+        text = self._remove_partial_opacity(text)
         # 提升表格边框可见性
         text = re.sub(
             r'(border[^:]*:\s*)(\d*\.?\d+)(px)',
@@ -79,6 +82,16 @@ class DeviceProfileCompiler:
             text
         )
         return text
+
+    @staticmethod
+    def _remove_partial_opacity(text):
+        def replace(match):
+            value = re.sub(r'\s*!important\s*$', '', match[1], flags=re.I).strip()
+            # Fully hidden content is semantically different from translucency.
+            # Removing opacity:0 would reveal intentionally hidden text/images.
+            if re.fullmatch(r'(?:0+(?:\.0*)?|\.0+)%?', value): return match[0]
+            return ''
+        return re.sub(r'(?<![-\w])opacity\s*:\s*([^;}]+);?', replace, text, flags=re.I)
 
     # ─── Apple Books ───
 

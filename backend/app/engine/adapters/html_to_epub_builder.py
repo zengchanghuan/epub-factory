@@ -4,13 +4,14 @@ html_to_epub_builder
 Shared utility: turns an HTML body string + metadata dict into a
 minimal but valid EPUB 3 ZIP file.
 
-All format adapters (PDF, DOCX, Markdown) funnel through here so
-the EPUB assembly logic lives in exactly one place.
+Supported DOCX and Markdown adapters funnel through here so the EPUB
+assembly logic lives in exactly one place. PDF remains disabled publicly.
 """
 
 import html as _html_mod
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -35,8 +36,9 @@ def build(html_body: str, metadata: dict, output_epub: Path) -> None:
     """
     title = _html_mod.escape(metadata.get("title") or "Untitled")
     author = _html_mod.escape(metadata.get("author") or "")
-    language = metadata.get("language") or "zh"
-    identifier = metadata.get("identifier") or str(uuid.uuid4())
+    language = _html_mod.escape(metadata.get("language") or "zh", quote=True)
+    identifier = _html_mod.escape(metadata.get("identifier") or str(uuid.uuid4()), quote=True)
+    modified = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
     chapter_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -55,7 +57,7 @@ def build(html_body: str, metadata: dict, output_epub: Path) -> None:
       p {{ margin: 0.5em 0; text-indent: 2em; }}
     </style>
   </head>
-  <body>
+  <body id="chapter-start">
 {html_body}
   </body>
 </html>
@@ -69,14 +71,26 @@ def build(html_body: str, metadata: dict, output_epub: Path) -> None:
     <dc:identifier id="BookId">{identifier}</dc:identifier>
     <dc:title>{title}</dc:title>
 {creator_elem}    <dc:language>{language}</dc:language>
+    <meta property="dcterms:modified">{modified}</meta>
   </metadata>
   <manifest>
-    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
   </manifest>
   <spine page-progression-direction="ltr">
     <itemref idref="chapter1"/>
   </spine>
 </package>
+"""
+
+    nav_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{language}" lang="{language}">
+  <head><title>Contents</title></head>
+  <body><nav epub:type="toc" id="toc"><h1>Contents</h1><ol>
+    <li><a href="chapter1.xhtml#chapter-start">{title}</a></li>
+  </ol></nav></body>
+</html>
 """
 
     container_xml = """<?xml version="1.0" encoding="utf-8"?>
@@ -93,3 +107,4 @@ def build(html_body: str, metadata: dict, output_epub: Path) -> None:
         zf.writestr("META-INF/container.xml", container_xml, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/content.opf", content_opf, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/chapter1.xhtml", chapter_xhtml, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/nav.xhtml", nav_xhtml, compress_type=zipfile.ZIP_DEFLATED)

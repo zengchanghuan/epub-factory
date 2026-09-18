@@ -114,6 +114,11 @@ def restarted_translation_stats(
         "completion_tokens", "total_tokens", "cost_usd",
     )})
     stats["cost_history"] = history
+    # Confirmation is user authority, not a per-attempt runtime counter. Losing
+    # it both changes the agreed book strategy and needlessly reruns profiling.
+    preflight = old.get("translation_preflight")
+    if isinstance(preflight, dict) and preflight.get("confirmed"):
+        stats["translation_preflight"] = dict(preflight)
     restart_summary = f"{action_label}已排队"
     stats["qa_report"] = {
         "status": "retrying",

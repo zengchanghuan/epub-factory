@@ -6,15 +6,23 @@ from bs4 import BeautifulSoup
 from app.domain.translation_residual_policy import residual_category
 
 
-def audit_epub_navigation(archive, preserved_terms=(), sample_limit=12):
-    names = set(archive.namelist())
+def navigation_document_names(archive):
+    """Use OPF declarations, not a navigation document's arbitrary filename."""
     nav_names = set()
-    for name in names:
+    for name in archive.namelist():
         if name.lower().endswith('.opf'):
             package = ET.fromstring(archive.read(name))
             for item in package.findall('.//{*}manifest/{*}item'):
                 if 'nav' in item.get('properties', '').split():
                     nav_names.add(posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(item.get('href', '')))))
+    return nav_names
+
+
+def audit_epub_navigation(archive, preserved_terms=(), sample_limit=12):
+    from app.domain.manifest_service import classify_chapter_kind
+    from app.models import ChapterKind
+    names = set(archive.namelist())
+    nav_names = navigation_document_names(archive)
     records = []
     for name in sorted(names):
         if name.lower().endswith('.ncx'):
@@ -24,7 +32,8 @@ def audit_epub_navigation(archive, preserved_terms=(), sample_limit=12):
                 content = point.find('./{*}content')
                 if label is not None and content is not None:
                     records.append((name, ''.join(label.itertext()).strip(), content.get('src', '')))
-        elif name in nav_names:
+        elif name in nav_names or (name.lower().endswith(('.html', '.htm', '.xhtml'))
+                                   and classify_chapter_kind(name) == ChapterKind.nav):
             soup = BeautifulSoup(archive.read(name), 'html.parser')
             for nav in soup.find_all('nav'):
                 if 'toc' not in str(nav.get('epub:type') or '').split():

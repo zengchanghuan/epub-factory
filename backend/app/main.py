@@ -40,6 +40,22 @@ from .domain.translation_strategy import TRANSLATION_STRATEGY_CHOICES
 from .domain.translation_preflight_service import build_translation_preflight
 from .domain.book_preview_service import build_book_preview
 from .domain.feedback_service import FEEDBACK_TYPES, feedback_limiter, persist_feedback
+from .domain.input_formats import validate_filename, is_pdf_header, PDF_DISABLED_MESSAGE
+
+
+def _validate_upload_format(upload: UploadFile) -> None:
+    """Reject before storing a file, creating an order, or requesting payment."""
+    try:
+        validate_filename(upload.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    position = upload.file.tell()
+    try:
+        prefix = upload.file.read(1024)
+    finally:
+        upload.file.seek(position)
+    if is_pdf_header(prefix):
+        raise HTTPException(status_code=400, detail=PDF_DISABLED_MESSAGE)
 
 # Sentry：若配置了 SENTRY_DSN，在应用启动时初始化，error_reporter 上报才会生效
 _sentry_dsn = _os.environ.get("SENTRY_DSN")
@@ -1159,9 +1175,7 @@ async def create_job(
             detail="付费翻译已下线在 v1 接口，请改用 POST /api/v2/jobs（含支付下单与回调验签）",
         )
 
-    supported_exts = (".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown")
-    if not any(file.filename.lower().endswith(ext) for ext in supported_exts):
-        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件")
+    _validate_upload_format(file)
 
     glossary: dict = {}
     if glossary_json:
@@ -1318,9 +1332,7 @@ async def create_job_v2(
     )
     _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
-    supported_exts = (".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown")
-    if not (file.filename and any(file.filename.lower().endswith(ext) for ext in supported_exts)):
-        raise HTTPException(status_code=400, detail="仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件")
+    _validate_upload_format(file)
 
     # 免费配额已关闭，所有转换均走付费流程
     client_ip = get_real_ip(request)
@@ -1963,12 +1975,8 @@ async def create_batch_v2(
     if enable_precision_polish:
         raise HTTPException(status_code=400, detail="批量模式暂不支持 AI 精校，请关闭精校后提交")
 
-    supported_exts = (".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown")
-    invalid = [file.filename or "未命名文件" for file in files if not (
-        file.filename and any(file.filename.lower().endswith(ext) for ext in supported_exts)
-    )]
-    if invalid:
-        raise HTTPException(status_code=400, detail=f"存在不支持的文件：{', '.join(invalid[:3])}")
+    for upload in files:
+        _validate_upload_format(upload)
 
     batch_id = uuid.uuid4().hex[:12]
     access_token = uuid.uuid4().hex

@@ -15,10 +15,13 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 from app.infra.llm_errors import ProviderAccountUnavailable
+from app.cancellation import JobCancelled
+from billiard.exceptions import SoftTimeLimitExceeded
 
 from .glossary_extractor import (
     GlossaryCandidate,
@@ -130,6 +133,7 @@ async def build_consistent_glossary_async(
     user_glossary: dict[str, str] | None = None,
     min_count: int = 2,
     max_terms: int = 160,
+    cancel_check=None,
 ) -> GlossaryBuildResult:
     """
     Build the glossary used by a translation job.
@@ -140,6 +144,7 @@ async def build_consistent_glossary_async(
     - user entries override everything.
     """
     user_glossary = user_glossary or {}
+    started = time.monotonic()
     raw_candidates, extraction_stats = extract_candidates(
         texts,
         min_count=min_count,
@@ -148,6 +153,8 @@ async def build_consistent_glossary_async(
     candidates = filter_candidates(raw_candidates, max_terms=max_terms)
     global_glossary = load_global_glossary(target_lang)
     auto_glossary: dict[str, str] = {}
+    extraction_ms = round((time.monotonic() - started) * 1000)
+    llm_metrics: dict = {}
 
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if api_key and api_key != "dummy":
@@ -156,12 +163,15 @@ async def build_consistent_glossary_async(
                 candidates,
                 target_lang=target_lang,
                 max_terms_per_call=80,
+                metrics=llm_metrics,
+                cancel_check=cancel_check,
             )
-        except ProviderAccountUnavailable:
+        except (ProviderAccountUnavailable, JobCancelled, SoftTimeLimitExceeded):
             raise
         except Exception as exc:
             logger.warning("auto glossary translation skipped: %s", exc)
             auto_glossary = {}
+            llm_metrics["llm_batches_failed"] = max(1, llm_metrics.get("llm_batches_failed", 0))
 
     merged = merge_glossaries(global_glossary, auto_glossary)
     merged = merge_glossaries(user_glossary, merged)
@@ -172,6 +182,9 @@ async def build_consistent_glossary_async(
         user_glossary=user_glossary,
         candidates=candidates,
         stats={
+            **llm_metrics,
+            "extraction_ms": extraction_ms,
+            "auto_glossary_complete": not bool(llm_metrics.get("llm_batches_failed")),
             "total_chars_scanned": extraction_stats.total_chars_scanned,
             "raw_candidates": extraction_stats.raw_candidates,
             "after_filter": extraction_stats.after_filter,
@@ -191,6 +204,7 @@ def build_consistent_glossary(
     user_glossary: dict[str, str] | None = None,
     min_count: int = 2,
     max_terms: int = 160,
+    cancel_check=None,
 ) -> GlossaryBuildResult:
     import asyncio
 
@@ -208,4 +222,5 @@ def build_consistent_glossary(
         user_glossary=user_glossary,
         min_count=min_count,
         max_terms=max_terms,
+        cancel_check=cancel_check,
     ))

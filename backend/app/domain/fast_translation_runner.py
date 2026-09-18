@@ -19,6 +19,8 @@ import re
 import subprocess
 import tempfile
 import time
+import sqlite3
+from dataclasses import asdict
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,10 +36,12 @@ from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
 from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.translation_attempt import attempt_id_from_stats
+from app.domain.translation_checkpoints import TranslationCheckpoints, book_resume_key, fingerprint
 from app.domain.manifest_service import build_manifest
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_residual_policy import confirmed_preserved_terms
 from app.infra.llm_errors import ProviderAccountUnavailable
+from app.infra.async_requests import gather_cancel_on_error
 from app.domain.translation_consistency_audit import audit_book_consistency
 from app.domain.term_highlight_service import highlight_confirmed_terms
 from app.domain.translation_qa_service import attach_translation_qa_report
@@ -48,10 +52,10 @@ from app.domain.translation_strategy import (
     strategy_allows_literary_polish,
     strategy_recommends_bilingual,
 )
-from app.engine.cleaners.semantics_translator import SemanticsTranslator
+from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult
 from app.engine.compiler import EPUBCHECK_JAR
-from app.engine.glossary_extractor import verify_and_fix
-from app.engine.glossary_service import build_consistent_glossary
+from app.engine.glossary_extractor import verify_and_fix, GlossaryCandidate
+from app.engine.glossary_service import build_consistent_glossary, GlossaryBuildResult, load_global_glossary
 from app.engine.unpacker import EpubUnpacker
 from app.models import (
     ChapterKind,
@@ -130,6 +134,20 @@ def _extract_texts_from_manifest(manifest: dict) -> list[str]:
             if text:
                 texts.append(text)
     return texts
+
+
+def _serialize_glossary(result: GlossaryBuildResult) -> dict:
+    data = asdict(result)
+    for candidate in data["candidates"]:
+        candidate["kinds"] = sorted(candidate["kinds"])
+    return data
+
+
+def _deserialize_glossary(data: dict) -> GlossaryBuildResult:
+    data = dict(data)
+    data["candidates"] = [GlossaryCandidate(**{**item, "kinds": set(item.get("kinds", []))})
+                          for item in data.get("candidates", [])]
+    return GlossaryBuildResult(**data)
 
 
 def _build_glossary_catalog(
@@ -214,6 +232,7 @@ async def _translate_book_title_async(
     cache_policy: str = "reuse",
     translation_strategy: str = "neutral_faithful",
     book_profile: dict[str, Any] | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> str:
     title = (title or "").strip()
     if not title or not any(ch.isalpha() for ch in title):
@@ -229,6 +248,7 @@ async def _translate_book_title_async(
         translation_strategy=translation_strategy,
         book_profile=book_profile,
     )
+    translator.cancel_check = cancel_check
     result = await translator.translate_single_chunk_async(f"<p>{html.escape(title)}</p>")
     if result.error:
         return title
@@ -420,6 +440,7 @@ async def _translate_manifest_async(
     enable_term_highlights: bool = False,
     progress_callback: ProgressCallback,
     cancel_check: CancelCheck | None = None,
+    resume_key: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     chapter_strategy_overrides = dict(chapter_strategy_overrides or {})
     quality_mode = getattr(job, "translation_quality", "standard") or "standard"
@@ -455,6 +476,9 @@ async def _translate_manifest_async(
         )
     )
     if literary_polish_enabled:
+        style_store = TranslationCheckpoints(job.id, resume_key or book_resume_key(job, manifest))
+        style_key = "style:" + fingerprint([translator._cache_lang_key, book_profile, glossary])
+        cached_style = style_store.get(style_key)
         all_texts = _extract_texts_from_manifest(manifest)
         sample_texts: list[str] = []
         if all_texts:
@@ -467,11 +491,45 @@ async def _translate_manifest_async(
             })
             sample_texts = [all_texts[index][:2400] for index in sample_indexes]
         _emit_progress(progress_callback, "正在生成全书文学翻译风格档案")
-        translator.style_guide = await translator.build_style_guide_async(
-            book_title=original_book_title,
-            sample_texts=sample_texts,
-        )
+        if cached_style and isinstance(cached_style.get("style"), str) and cached_style["style"]:
+            translator.style_guide = cached_style["style"]
+        else:
+            translator.style_guide = await translator.build_style_guide_async(
+                book_title=original_book_title,
+                sample_texts=sample_texts,
+            )
+            if translator.style_guide:
+                raise_if_cancelled(cancel_check)
+                style_store.put(style_key, {"style": translator.style_guide})
         _emit_progress(progress_callback, "文学翻译风格档案已锁定，全书将统一执行")
+    checkpoint_stats = {"checkpoint_resumed_chunks": 0, "checkpoint_rejected_chunks": 0,
+                        "checkpoint_io_errors": 0}
+    checkpoint_store = None
+    saved_chunks = {}
+    try:
+        checkpoint_store = TranslationCheckpoints(job.id, fingerprint({
+            "book": resume_key or book_resume_key(job, manifest),
+            "cache": translator._cache_lang_key,
+            "prompt": translator._build_system_prompt(),
+            "chapter_strategies": chapter_strategy_overrides,
+        }))
+        saved_chunks = checkpoint_store.chunks()
+    except (OSError, sqlite3.Error):
+        checkpoint_stats["checkpoint_io_errors"] += 1
+        logger.warning("book checkpoint storage unavailable; translation cache remains active")
+
+    def save_checkpoint(spec, context, result, *, phase="draft"):
+        if checkpoint_store is None:
+            return
+        payload = {"source": fingerprint([spec["html"], spec.get("locator"), context]),
+                   "attempt_id": expected_attempt_id, "phase": phase, "result": asdict(result)}
+        try:
+            raise_if_cancelled(cancel_check)
+            checkpoint_store.put("chunk:" + spec["chunk_id"], payload)
+            saved_chunks[spec["chunk_id"]] = payload
+        except (OSError, sqlite3.Error):
+            checkpoint_stats["checkpoint_io_errors"] += 1
+            logger.warning("book checkpoint write unavailable; translation cache remains active")
     manifest_body_chunk_total = sum(len(ch.get("chunks") or []) for ch in body_chapters)
     manifest_stats = manifest.get("stats") if isinstance(manifest.get("stats"), dict) else {}
     image_note_chunks_skipped = int(manifest_stats.get("image_note_chunks_skipped") or 0)
@@ -512,7 +570,13 @@ async def _translate_manifest_async(
         "failed_chunk_rescue_succeeded": 0,
         "failed_chunk_rescue_failed": 0,
         "failed_chunk_rescue_concurrency": 0,
+        "failed_chunk_rescue_queue_wait_ms": 0,
+        "failed_chunk_rescue_elapsed_ms": 0,
     }
+    configured_rescue = int(os.environ.get("EPUB_FAILED_CHUNK_RESCUE_CONCURRENCY", "2"))
+    rescue_cap = int(os.environ.get("EPUB_FAILED_CHUNK_RESCUE_CONCURRENCY_CAP", "2"))
+    rescue_concurrency = max(1, min(configured_rescue, max(1, rescue_cap)))
+    rescue_sem = asyncio.Semaphore(rescue_concurrency)
 
     def _record_quality_audit(chapter: dict, spec: dict, quality: dict) -> tuple[bool, bool]:
         risk_level = quality.get("risk_level")
@@ -698,6 +762,7 @@ async def _translate_manifest_async(
             **audit_summary,
             **book_consistency_audit,
             **rescue_stats,
+            **checkpoint_stats,
         })
         if flat_results is not None:
             skipped_ids = {
@@ -842,29 +907,66 @@ async def _translate_manifest_async(
             chapter_contexts = _build_chapter_contexts(chapter, specs)
             chapter_contexts_by_id[chapter["chapter_id"]] = chapter_contexts
 
+            restored = [None] * len(specs)
+            prior_retries = [0] * len(specs)
+            verified_indices = set()
+            for index, (spec, context) in enumerate(zip(specs, chapter_contexts)):
+                saved = saved_chunks.get(spec["chunk_id"])
+                if not saved or saved.get("source") != fingerprint([spec["html"], spec.get("locator"), context]):
+                    continue
+                try:
+                    candidate = SingleChunkResult(**saved["result"])
+                    if saved.get("attempt_id") == expected_attempt_id:
+                        prior_retries[index] = max(0, min(translator.chunk_retry_budget, candidate.retry_count))
+                    if candidate.error:
+                        continue
+                    quality = audit_translation_chunk(original_html=spec["html"],
+                        translated_html=candidate.translated_html, glossary=glossary,
+                        error_like_checker=translator._looks_like_error_response,
+                        preserved_terms=translator.preserved_terms)
+                    if (translator._invalid_translation_reason(spec["html"], candidate.translated_html)
+                            or quality.risk_level == "fail"):
+                        checkpoint_stats["checkpoint_rejected_chunks"] += 1
+                        continue
+                    restored[index] = candidate
+                    checkpoint_stats["checkpoint_resumed_chunks"] += 1
+                    if saved.get("phase") == "final":
+                        verified_indices.add(index)
+                except (TypeError, ValueError, KeyError):
+                    checkpoint_stats["checkpoint_rejected_chunks"] += 1
+            if any(restored):
+                emit_progress(f"断点续译 {chapter['file_path']}：复用 {sum(r is not None for r in restored)}/{len(specs)} 段已检查译文")
+
             translated = await translator.translate_many_chunks_async(
                 [c["html"] for c in specs],
                 progress_label=f"快速翻译 {chapter['file_path']}",
                 translation_strategies=[c.get("translation_strategy") or "html" for c in specs],
                 contexts=chapter_contexts,
                 book_translation_strategy=chapter_strategy,
+                checkpoint_results=restored,
+                prior_retry_counts=prior_retries,
+                result_callback=lambda index, result: save_checkpoint(specs[index], chapter_contexts[index], result),
             )
-            if quality_mode == "high":
+            review_indices = [index for index in range(len(specs)) if index not in verified_indices]
+            review_sources = [specs[index]["html"] for index in review_indices]
+            review_drafts = [translated[index] for index in review_indices]
+            review_contexts = [chapter_contexts[index] for index in review_indices]
+            if quality_mode == "high" and review_indices:
                 emit_progress(f"高质量语义校对 {chapter['file_path']}（{len(specs)} 段）")
-                translated = await translator.review_many_chunks_async(
-                    [c["html"] for c in specs],
-                    translated,
-                    contexts=chapter_contexts,
+                review_drafts = await translator.review_many_chunks_async(
+                    review_sources,
+                    review_drafts,
+                    contexts=review_contexts,
                     progress_label=f"语义校对 {chapter['file_path']}",
                     book_translation_strategy=chapter_strategy,
                 )
-            elif quality_mode == "literary":
+            elif quality_mode == "literary" and review_indices:
                 if strategy_allows_literary_polish(chapter_strategy):
                     emit_progress(f"文学模式章节编辑 {chapter['file_path']}（{len(specs)} 段）")
-                    translated = await translator.polish_literary_chapter_async(
-                        [c["html"] for c in specs],
-                        translated,
-                        contexts=chapter_contexts,
+                    review_drafts = await translator.polish_literary_chapter_async(
+                        review_sources,
+                        review_drafts,
+                        contexts=review_contexts,
                         progress_label=f"章节文学编辑 {chapter['file_path']}",
                         book_translation_strategy=chapter_strategy,
                     )
@@ -874,13 +976,15 @@ async def _translate_manifest_async(
                         f"已关闭强文学润色：{chapter['file_path']}"
                     )
                 emit_progress(f"文学译文语义回查 {chapter['file_path']}（{len(specs)} 段）")
-                translated = await translator.verify_literary_chapter_async(
-                    [c["html"] for c in specs],
-                    translated,
-                    contexts=chapter_contexts,
+                review_drafts = await translator.verify_literary_chapter_async(
+                    review_sources,
+                    review_drafts,
+                    contexts=review_contexts,
                     progress_label=f"文学语义回查 {chapter['file_path']}",
                     book_translation_strategy=chapter_strategy,
                 )
+            for index, result in zip(review_indices, review_drafts):
+                translated[index] = result
             raise_if_cancelled(cancel_check)
             chunk_results: list[ChunkResult] = []
             chunk_statuses: list[ChunkStatus] = []
@@ -895,6 +999,11 @@ async def _translate_manifest_async(
                     chapter_audit_fail += 1
                 chunk_results.append(cr)
                 chunk_statuses.append(status)
+                if not res.error and not failed_quality:
+                    save_checkpoint(spec, chapter_contexts[len(chunk_results) - 1],
+                                    SingleChunkResult(cr.translated_html, cr.cached, cr.model, cr.base_url,
+                                        cr.prompt_tokens, cr.completion_tokens, cr.latency_ms, cr.error,
+                                        cr.retry_count, cr.error_type), phase="final")
                 _upsert_chunk(
                     job.id,
                     chapter["chapter_id"],
@@ -925,7 +1034,11 @@ async def _translate_manifest_async(
                 started=started,
                 message_prefix="章节翻译完成",
             )
-            return chunk_results
+        # Release the chapter slot before rescue. Another chapter can start,
+        # while the failed block overlaps its work instead of waiting for the
+        # whole book's gather barrier. A shared semaphore caps all rescue work.
+        await rescue_failed_chunks_async({chapter["chapter_id"]: chunk_results})
+        return chunk_results
 
     def _final_chunk_status(cr: ChunkResult) -> ChunkStatus:
         raw_text = BeautifulSoup(cr.original_html, "html.parser").get_text()
@@ -944,6 +1057,8 @@ async def _translate_manifest_async(
         rescue_items: list[tuple[dict, list[ChunkResult], int, dict, ChunkResult]] = []
         for chapter in body_chapters:
             chapter_id = chapter["chapter_id"]
+            if chapter_id not in chapter_results_by_id:
+                continue
             specs = chapter.get("chunks") or []
             specs_by_chunk_id = {spec["chunk_id"]: spec for spec in specs}
             chunk_results = chapter_results_by_id.get(chapter_id, [])
@@ -958,17 +1073,14 @@ async def _translate_manifest_async(
                 if spec is not None:
                     rescue_items.append((chapter, chunk_results, position, spec, cr))
 
-        rescue_stats["failed_chunk_rescue_candidates"] = len(rescue_items)
+        rescue_stats["failed_chunk_rescue_candidates"] += len(rescue_items)
         if not rescue_items:
             return
 
-        configured = int(os.environ.get("EPUB_FAILED_CHUNK_RESCUE_CONCURRENCY", "2"))
-        cap = int(os.environ.get("EPUB_FAILED_CHUNK_RESCUE_CONCURRENCY_CAP", "2"))
-        rescue_concurrency = max(1, min(configured, max(1, cap)))
         rescue_stats["failed_chunk_rescue_concurrency"] = rescue_concurrency
-        queue: asyncio.Queue[tuple[dict, list[ChunkResult], int, dict, ChunkResult]] = asyncio.Queue()
+        queue = asyncio.Queue()
         for item in rescue_items:
-            queue.put_nowait(item)
+            queue.put_nowait((*item, time.monotonic()))
 
         emit_progress(f"失败段落补译队列启动：{len(rescue_items)} 段，{rescue_concurrency} 并发")
         _log_stage(
@@ -981,10 +1093,15 @@ async def _translate_manifest_async(
         async def worker() -> None:
             while True:
                 try:
-                    chapter, chunk_results, position, spec, old_cr = queue.get_nowait()
+                    chapter, chunk_results, position, spec, old_cr, queued_at = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     return
+                acquired = False
                 try:
+                    await rescue_sem.acquire()
+                    acquired = True
+                    work_started = time.monotonic()
+                    rescue_stats["failed_chunk_rescue_queue_wait_ms"] += round((work_started - queued_at) * 1000)
                     raise_if_cancelled(cancel_check)
                     rescue_stats["failed_chunk_rescue_attempted"] += 1
                     _upsert_chunk(
@@ -997,24 +1114,26 @@ async def _translate_manifest_async(
                     emit_progress(
                         f"失败段落补译中：{chapter['file_path']} #{old_cr.sequence}"
                     )
+                    context = chapter_contexts_by_id[chapter["chapter_id"]][position]
                     translated = await translator.translate_many_chunks_async(
                         [old_cr.original_html],
                         progress_label=f"失败段落补译 {chapter['file_path']}",
                         translation_strategies=[spec.get("translation_strategy") or "html"],
                         prior_retry_counts=[int(getattr(old_cr, "retry_count", 0) or 0)],
-                        contexts=[(
-                            chapter_contexts_by_id.get(chapter["chapter_id"], [""] * len(chapter.get("chunks") or []))[position]
-                            if position < len(chapter_contexts_by_id.get(chapter["chapter_id"], []))
-                            else ""
-                        )],
+                        contexts=[context],
                         book_translation_strategy=chapter_strategy_overrides.get(
                             chapter["chapter_id"],
                             translation_strategy,
                         ),
+                        result_callback=lambda _index, result: save_checkpoint(spec, context, result),
                     )
                     res = translated[0]
                     new_cr, status, _warned, _failed_quality = _build_chunk_result(chapter, spec, res)
                     chunk_results[position] = new_cr
+                    # Rescue produces a new draft. Only standard mode has no
+                    # outstanding semantic/literary review stage on recovery.
+                    save_checkpoint(spec, context, res,
+                                    phase="final" if quality_mode == "standard" and not new_cr.error and not _failed_quality else "draft")
                     _upsert_chunk(
                         job.id,
                         chapter["chapter_id"],
@@ -1041,9 +1160,12 @@ async def _translate_manifest_async(
                         force=True,
                     )
                 finally:
+                    if acquired:
+                        rescue_stats["failed_chunk_rescue_elapsed_ms"] += round((time.monotonic() - work_started) * 1000)
+                        rescue_sem.release()
                     queue.task_done()
 
-        await asyncio.gather(*(worker() for _ in range(rescue_concurrency)))
+        await gather_cancel_on_error(*(worker() for _ in range(rescue_concurrency)))
         raise_if_cancelled(cancel_check)
 
         for chapter in body_chapters:
@@ -1089,7 +1211,6 @@ async def _translate_manifest_async(
         ch["chapter_id"]: results
         for ch, results in zip(body_chapters, chapter_results)
     }
-    await rescue_failed_chunks_async(chapter_results_by_id)
     raise_if_cancelled(cancel_check)
     book_consistency_audit.update(audit_book_consistency(
         chapter_results=chapter_results_by_id,
@@ -1161,6 +1282,12 @@ def run_fast_translation_job(
         _log_stage("mapping", timings[-1][1], chapters=len(manifest.get("chapters", [])))
         raise_if_cancelled(cancel_check)
 
+        resume_key = fingerprint({"book": book_resume_key(job, manifest),
+                                  "title": original_book_title,
+                                  "global_glossary": load_global_glossary(job.target_lang)})
+        preparation_hits = {"profile": False, "glossary": False, "title": False}
+        preparations = TranslationCheckpoints(job.id, resume_key)
+
         t = time.monotonic()
         stage_callback("profiling", "分析全书文体并选择翻译策略", None)
         preflight = (
@@ -1186,17 +1313,27 @@ def run_fast_translation_job(
             )
             strategy_source = "user_confirmed"
         else:
-            book_profile = profile_book(
-                epub_path=str(preprocessed),
-                manifest=manifest,
-                book_title=original_book_title,
-                model=getattr(job, "translation_model", None) or None,
-                target_lang=job.target_lang,
-            )
+            cached_profile = preparations.get("profile")
+            if cached_profile and isinstance(cached_profile.get("profile"), dict):
+                book_profile = cached_profile["profile"]
+                preparation_hits["profile"] = True
+            else:
+                book_profile = profile_book(
+                    epub_path=str(preprocessed),
+                    manifest=manifest,
+                    book_title=original_book_title,
+                    model=getattr(job, "translation_model", None) or None,
+                    target_lang=job.target_lang,
+                )
+                if book_profile.get("status") == "ok":
+                    raise_if_cancelled(cancel_check)
+                    preparations.put("profile", {"profile": book_profile})
             resolved_strategy, strategy_source = resolve_translation_strategy(
                 requested_strategy,
                 book_profile,
             )
+        if confirmed_preflight and requested_strategy not in {"auto", resolved_strategy}:
+            resolved_strategy, strategy_source = resolve_translation_strategy(requested_strategy, book_profile)
         timings.append(("BookProfile", (time.monotonic() - t) * 1000))
         strategy_label = TRANSLATION_STRATEGY_LABELS.get(resolved_strategy, resolved_strategy)
         profile_label = str(book_profile.get("genre") or "unknown")
@@ -1247,13 +1384,31 @@ def run_fast_translation_job(
         t = time.monotonic()
         stage_callback("glossary", "构建全书术语表", None)
         texts = _extract_texts_from_manifest(manifest)
-        glossary_result = build_consistent_glossary(
-            texts,
-            target_lang=job.target_lang,
-            user_glossary=getattr(job, "glossary", None) or {},
-            min_count=2,
-            max_terms=160,
-        )
+        cached_glossary = preparations.get("glossary")
+        glossary_result = None
+        if cached_glossary:
+            try:
+                glossary_result = _deserialize_glossary(cached_glossary)
+                preparation_hits["glossary"] = True
+                glossary_result.stats.update(reused=True, llm_api_calls=0, llm_elapsed_ms=0)
+            except (TypeError, ValueError, KeyError):
+                logger.warning("invalid glossary checkpoint ignored")
+        if glossary_result is None:
+            glossary_result = build_consistent_glossary(
+                texts,
+                target_lang=job.target_lang,
+                user_glossary=getattr(job, "glossary", None) or {},
+                min_count=2,
+                max_terms=160,
+                cancel_check=cancel_check,
+            )
+            # Never freeze a partially failed terminology pass as the book's
+            # authoritative glossary. A later retry can complete preparation.
+            if glossary_result.stats.get("auto_glossary_complete", True):
+                raise_if_cancelled(cancel_check)
+                preparations.put("glossary", _serialize_glossary(glossary_result))
+            else:
+                progress_callback("术语模型部分请求未完成，暂用已得到的术语；该结果不作为可复用的完整术语表")
         character_glossary = {
             str(character.get("source_name") or "").strip(): str(character.get("translated_name") or "").strip()
             for character in book_profile.get("characters") or []
@@ -1274,7 +1429,7 @@ def run_fast_translation_job(
         stage_callback(
             "glossary",
             (
-                f"术语表就绪：全局 {len(glossary_result.global_glossary)} 条，"
+                f"{'复用持久化术语表' if preparation_hits['glossary'] else '术语表就绪'}：全局 {len(glossary_result.global_glossary)} 条，"
                 f"自动 {len(glossary_result.auto_glossary)} 条，"
                 f"用户 {len(getattr(job, 'glossary', {}) or {})} 条，"
                 f"角色 {len(character_glossary)} 条"
@@ -1285,17 +1440,27 @@ def run_fast_translation_job(
 
         t = time.monotonic()
         stage_callback("metadata", "翻译书名元数据", None)
-        translated_book_title = asyncio.run(_translate_book_title_async(
-            title=original_book_title,
-            target_lang=job.target_lang,
-            glossary=glossary,
-            temperature=getattr(job, "temperature", None),
-            model=getattr(job, "translation_model", None) or None,
-            quality_mode=getattr(job, "translation_quality", "standard") or "standard",
-            cache_policy=getattr(job, "cache_policy", "reuse") or "reuse",
-            translation_strategy=resolved_strategy,
-            book_profile=book_profile,
-        ))
+        title_key = "title:" + fingerprint([book_profile, glossary, resolved_strategy])
+        cached_title = preparations.get(title_key)
+        if cached_title and isinstance(cached_title.get("title"), str) and cached_title["title"]:
+            translated_book_title = cached_title["title"]
+            preparation_hits["title"] = True
+        else:
+            translated_book_title = asyncio.run(_translate_book_title_async(
+                title=original_book_title,
+                target_lang=job.target_lang,
+                glossary=glossary,
+                temperature=getattr(job, "temperature", None),
+                model=getattr(job, "translation_model", None) or None,
+                quality_mode=getattr(job, "translation_quality", "standard") or "standard",
+                cache_policy=getattr(job, "cache_policy", "reuse") or "reuse",
+                translation_strategy=resolved_strategy,
+                book_profile=book_profile,
+                cancel_check=cancel_check,
+            ))
+            if translated_book_title != original_book_title or not re.search(r"[A-Za-z]", original_book_title):
+                raise_if_cancelled(cancel_check)
+                preparations.put(title_key, {"title": translated_book_title})
         timings.append(("BookTitle", (time.monotonic() - t) * 1000))
         _log_stage(
             "metadata", timings[-1][1],
@@ -1323,11 +1488,13 @@ def run_fast_translation_job(
             ),
             progress_callback=progress_callback,
             cancel_check=cancel_check,
+            resume_key=resume_key,
         ))
         translation_stats.update({
             "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
             "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
             "temperature": getattr(job, "temperature", None),
+            "preparation_checkpoint_hits": preparation_hits,
             "glossary_stats": glossary_result.stats,
             "glossary_terms_total": len(glossary),
             "glossary_catalog": glossary_catalog,
@@ -1434,6 +1601,7 @@ def run_fast_translation_job(
 
     total_ms = (time.monotonic() - started_all) * 1000
     timings.append(("Total", total_ms))
+    translation_stats["phase_timings_ms"] = {name: round(elapsed) for name, elapsed in timings}
     metrics = _metrics_summary(timings)
     _log_stage("done", total_ms, error_code=error_code, validation_passed=validation_passed)
 

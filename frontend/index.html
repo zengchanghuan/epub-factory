@@ -7,7 +7,7 @@
 
   <!-- SEO Meta -->
   <meta name="description" content="专业级 AI EPUB 电子书翻译与排版工具：一键获取极致双语对照、沉浸式译文、完美竖排转横排、繁简转换，以及针对 Kindle 和 Apple Books 的深度排版优化。" />
-  <meta name="keywords" content="EPUB翻译,AI翻译电子书,EPUB竖排转横排,EPUB繁简转换,Kindle排版优化,Apple Books优化,双语对照电子书,EPUB在线工具,英文书翻译中文,电子书格式转换,PDF转EPUB" />
+  <meta name="keywords" content="EPUB翻译,AI翻译电子书,EPUB竖排转横排,EPUB繁简转换,Kindle排版优化,Apple Books优化,双语对照电子书,EPUB在线工具,英文书翻译中文,电子书格式转换" />
     <meta name="author" content="FixEpub" />
     <meta name="baidu-site-verification" content="codeva-8TKfm9ozPI" />
     <meta name="robots" content="index, follow" />
@@ -72,7 +72,6 @@
       "EPUB 简体转繁体",
       "Kindle 排版优化",
       "Apple Books 优化",
-      "PDF 转换",
       "AI 英文翻译中文"
     ]
   }
@@ -151,10 +150,10 @@
       },
       {
         "@type": "Question",
-        "name": "PDF 转 EPUB 的效果如何？能否自由调整字号？",
+        "name": "当前是否支持 PDF？",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "FixEpub 支持将 PDF 转换为可重排布局 (Reflowable Layout) 的 EPUB。这意味着您可以像原生 EPUB 一样自由调整字号、字体和行间距。建议使用文字版 PDF 以获得最佳的 Unicode 标准化效果。"
+          "text": "当前暂不支持 PDF，请先转换为 EPUB 后上传。PDF 的 OCR、图文布局保留与转换验收将在后续阶段实现。"
         }
       }
     ]
@@ -1367,7 +1366,7 @@
   <div class="container">
     <header>
       <h1>AI 沉浸式电子书翻译与精排版引擎</h1>
-      <p>专业级电子书排版与 AI 翻译工具：一键上传 EPUB/PDF，获取极致双语对照、完美竖排转横排、Kindle/Apple Books 原生级阅读体验。</p>
+      <p>专业级电子书排版与 AI 翻译工具：一键上传 EPUB，获取极致双语对照、完美竖排转横排、Kindle/Apple Books 原生级阅读体验。</p>
       <nav class="nav-tabs">
         <a href="#" id="navUpload" class="active">上传转换</a>
         <a href="#" id="navTasks">任务中心</a>
@@ -1381,12 +1380,12 @@
       <div id="dropzone" class="dropzone">
         <span class="icon">📁</span>
         <div class="main-text">拖拽文件到这里，或点击选择</div>
-        <div class="sub-text">支持一次选择 1–10 个 .epub / .pdf / .mobi / .azw3 / .docx / .md 文件</div>
+        <div class="sub-text">支持一次选择 1–10 个 .epub / .mobi / .azw3 / .docx / .md 文件；暂不支持 PDF</div>
         <button type="button" id="folderSelectBtn" style="margin-top:10px; padding:7px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); cursor:pointer; font-size:12px; font-family:inherit;">选择整个文件夹</button>
         <div class="file-name" id="fileName" style="display:none;"></div>
       </div>
-      <input id="fileInput" type="file" multiple accept=".epub,.pdf,.mobi,.azw3,.docx,.md,.markdown" />
-      <input id="folderInput" type="file" multiple webkitdirectory directory accept=".epub,.pdf,.mobi,.azw3,.docx,.md,.markdown" />
+      <input id="fileInput" type="file" multiple accept=".epub,.mobi,.azw3,.docx,.md,.markdown" />
+      <input id="folderInput" type="file" multiple webkitdirectory directory accept=".epub,.mobi,.azw3,.docx,.md,.markdown" />
 
       <div class="mode-grid" id="taskModeGrid">
         <label class="mode-card">
@@ -1826,7 +1825,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-  <script src="lib.js?v=20260917-review-preview"></script>
+  <script src="lib.js?v=20260918-corpus-fixes"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
@@ -2542,7 +2541,7 @@
     function isTranslationSupportedForSelectedFile() {
       if (selectedFiles.length > 1) return false;
       const ext = getSelectedFileExt();
-      return !ext || [".epub", ".pdf", ".docx", ".md", ".markdown"].includes(ext);
+      return !ext || [".epub", ".docx", ".md", ".markdown"].includes(ext);
     }
 
     function getTaskMode() {
@@ -3314,11 +3313,11 @@
 
     function selectFiles(files, fromFolder = false) {
       const allFiles = Array.from(files || []);
-      const _supported = [".epub", ".pdf", ".mobi", ".azw3", ".docx", ".md", ".markdown"];
+      const _supported = [".epub", ".mobi", ".azw3", ".docx", ".md", ".markdown"];
       const supportedFiles = allFiles.filter(file => _supported.some(ext => file.name.toLowerCase().endsWith(ext)));
       const nextFiles = fromFolder ? supportedFiles : allFiles;
       if (!nextFiles.length) {
-        if (fromFolder) alert("该文件夹内没有支持的电子书文件");
+        if (fromFolder) alert(allFiles.some(file => file.name.toLowerCase().endsWith(".pdf")) ? "暂不支持 PDF，该文件夹内没有支持的电子书文件。" : "该文件夹内没有支持的电子书文件");
         return;
       }
       if (nextFiles.length > 10) {
@@ -3327,7 +3326,7 @@
       }
       const invalid = nextFiles.find(file => !_supported.some(ext => file.name.toLowerCase().endsWith(ext)));
       if (invalid) {
-        alert("仅支持 .epub, .pdf, .mobi, .azw3, .docx 或 .md 文件");
+        alert(invalid.name.toLowerCase().endsWith(".pdf") ? "暂不支持 PDF，请先转换为 EPUB 后上传。" : "仅支持 .epub, .mobi, .azw3, .docx 或 .md 文件");
         return;
       }
       selectedFiles = nextFiles;
@@ -3938,8 +3937,8 @@
           <p>集成大语言模型（LLM）实现高质量的英文书籍翻译。不同于传统的机翻，我们的 AI 翻译能够深度理解语义语境，提供自然流畅的中文译文，并支持精细的双语对照排版，是学术研究与文学鉴赏的得力助手。</p>
         </div>
         <div class="feature-card">
-          <h3>PDF 转 EPUB (Reflowable Layout)</h3>
-          <p>支持将 PDF 文档转换为适合移动设备阅读的 <strong>可重排布局 (Reflowable Layout)</strong> EPUB 格式。系统会自动识别文本流，智能优化图像位置，让您的 PDF 资料在 Kindle 或手机上重现新生，彻底告别缩放阅读的烦恼。</p>
+          <h3>PDF 支持计划（暂未开放）</h3>
+          <p>当前暂不支持 PDF，请先转换为 EPUB 后上传。PDF 的 OCR、图文布局保留与转换验收将在后续阶段实现。</p>
         </div>
       </div>
 
@@ -3986,7 +3985,7 @@
       <div class="guide-block">
         <h2 class="seo-title">如何转换您的电子书？</h2>
         <ol class="guide-steps">
-          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 / .docx / .md 文件（单文件大小限制 60MB 以内）。</li>
+          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .mobi / .azw3 / .docx / .md 文件（单文件大小限制 60MB 以内；暂不支持 PDF）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
           <li><strong>下载使用：</strong>转换完成后，直接下载 EPUB 文件，导入 Apple Books、Kindle 或任意阅读器即可使用。</li>
@@ -4020,8 +4019,8 @@
         <p>我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。单文件上限 60MB。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
       </details>
       <details class="faq-item">
-        <summary>PDF 转 EPUB 的效果如何？</summary>
-        <p>FixEpub 采用了业界领先的 PDF 文本流提取算法。与普通的截图转码不同，我们尝试重建 PDF 的<strong>可重排布局 (Reflowable Layout)</strong>，这意味着转换后的 EPUB 可以在手机或 Kindle 上自由调整字号和字体。建议使用文字版 PDF 以获得 100% 的文字还原度及最佳的 <strong>Unicode 标准化</strong> 效果。</p>
+        <summary>当前是否支持 PDF？</summary>
+        <p>当前暂不支持 PDF，请先转换为 EPUB 后上传。尚未完成图文版式与 OCR 验收，因此不会接收 PDF 或为其创建收费订单。</p>
       </details>
     </div>
   </section>

@@ -39,10 +39,20 @@ def is_preserved_reference(text: str) -> bool:
 
 def residual_category(text: str, *, source_text: str | None = None,
                       title_like: bool = False, preserved_terms: Iterable[str] = ()) -> str:
+    preserved_terms = tuple(preserved_terms)
     normalized = normalize_text(text)
     if (not normalized or is_preserved_reference(text)
             or normalized in {normalize_text(term) for term in preserved_terms}):
         return ""
+    script_text = text
+    for term in sorted(preserved_terms, key=lambda value: -len(value)):
+        if term:
+            script_text = re.sub(re.escape(term), '', script_text, flags=re.I)
+    kana = len(re.findall(r'[\u3041-\u3096\u30a1-\u30fa]', script_text))
+    if kana and source_text and normalized == normalize_text(source_text):
+        return 'unchanged_japanese_source'
+    if kana >= 3:
+        return 'japanese_script_residual'
     latin = sum("LATIN" in unicodedata.name(ch, "") for ch in text)
     words = [word for word in re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text)
              if any("LATIN" in unicodedata.name(ch, "") for ch in word)]

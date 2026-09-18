@@ -66,8 +66,8 @@ def test_toc_entries_generated():
 
     # 从输出中提取 TOC 条目数
     import re
-    match = re.search(r'\[TOC\] Rebuilt with (\d+) entries', output)
-    assert match, "TOC rebuild message not found in output"
+    match = re.search(r'\[TOC\] (?:Rebuilt with|Preserved) (\d+)(?: existing)? entries', output)
+    assert match, "TOC preservation/rebuild message not found in output"
 
     count = int(match.group(1))
     print(f"  TOC entries: {count}")

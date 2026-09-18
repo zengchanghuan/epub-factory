@@ -6,6 +6,7 @@ from pathlib import Path
 from .models import ConversionResult, DeviceProfile, OutputMode
 from .engine import ExtremeCompiler
 from .engine.adapters import html_to_epub_builder
+from .domain.input_formats import PDF_DISABLED_MESSAGE
 
 
 class EpubConverter:
@@ -38,12 +39,7 @@ class EpubConverter:
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
             )
         if suffix == ".pdf":
-            return self._convert_via_html_to_epub(
-                input_path, output_path, output_mode, enable_translation, target_lang,
-                device, bilingual, glossary, temperature, translation_model, traditional_variant,
-                lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
-                adapter="pdf",
-            )
+            raise RuntimeError(PDF_DISABLED_MESSAGE)
         if suffix == ".docx":
             return self._convert_via_html_to_epub(
                 input_path, output_path, output_mode, enable_translation, target_lang,
@@ -60,7 +56,7 @@ class EpubConverter:
             )
         raise RuntimeError(
             f"Unsupported file type '{suffix}'. "
-            "Supported: .epub, .pdf, .docx, .md, .markdown"
+            "Supported: .epub, .docx, .md, .markdown"
         )
 
     # ──────────────────────────────────────────────────────────────────────

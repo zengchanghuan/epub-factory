@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-回归测试：依次执行 D1–D13 与 C1–C6，汇总通过/失败/跳过。
+回归测试：依次执行 D 系列与 C 系列，汇总通过/失败。
 用于验收「上传、排队、后台、任务中心、通知、下载、失败处理」整条链路。
 """
 
@@ -42,6 +42,8 @@ D_SUITE = [
     "test_d26_preview_feedback.py",
     "test_d27_targeted_book_repair.py",
     "test_d28_media_text_translation.py",
+    "test_d29_translation_performance.py",
+    "test_d30_corpus_fixes.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

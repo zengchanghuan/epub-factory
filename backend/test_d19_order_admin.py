@@ -84,9 +84,12 @@ class AdminTests(unittest.TestCase):
     def test_fail_closed_and_throttling(self):
         with patch.dict(os.environ, {'ADMIN_PASSWORD_HASH':''}):
             self.assertEqual(self.client.post('/api/admin/login',json={'username':'tristan','password':self.password}).status_code,503)
-        for _ in range(10):
-            self.assertEqual(self.client.post('/api/admin/login',json={'username':'tristan','password':'wrong'}).status_code,401)
-        self.assertEqual(self.client.post('/api/admin/login',json={'username':'tristan','password':self.password}).status_code,429)
+        # Keep a single 5-minute bucket: wall-clock rollover during the burst
+        # must not make this rate-limit test nondeterministic.
+        with patch('app.admin.auth.time.time', return_value=1800000000):
+            for _ in range(10):
+                self.assertEqual(self.client.post('/api/admin/login',json={'username':'tristan','password':'wrong'}).status_code,401)
+            self.assertEqual(self.client.post('/api/admin/login',json={'username':'tristan','password':self.password}).status_code,429)
 
     def test_csrf_and_origin(self):
         self.job(); self.login()

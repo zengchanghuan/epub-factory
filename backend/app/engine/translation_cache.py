@@ -17,6 +17,9 @@ class TranslationCache:
                     target_lang TEXT
                 )
             """)
+            # Compatible retries otherwise scan the entire persistent cache for
+            # every paragraph when glossary/context namespaces differ.
+            conn.execute("CREATE INDEX IF NOT EXISTS translations_source_idx ON translations(source_html)")
 
     def _get_hash(self, text: str, target_lang: str) -> str:
         return hashlib.sha256(f"{text}_{target_lang}".encode('utf-8')).hexdigest()

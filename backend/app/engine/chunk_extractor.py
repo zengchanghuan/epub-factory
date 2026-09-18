@@ -159,6 +159,27 @@ def _is_leaf_block(block: Tag) -> bool:
     return block.find(BLOCK_TAGS) is None
 
 
+def _locator_index(soup: BeautifulSoup) -> dict[int, str]:
+    """Index by object identity in one traversal, preserving locator syntax.
+
+    Scanning every same-tag sibling for every paragraph is quadratic in long
+    chapters. Tag objects themselves cannot be dict keys here: BeautifulSoup's
+    equality/hash serialize markup and conflate duplicate paragraphs.
+    """
+    locators = {}
+    stack = [(soup, '')]
+    while stack:
+        parent, path = stack.pop()
+        counts = {}
+        for child in parent.children:
+            if not isinstance(child, Tag): continue
+            counts[child.name] = counts.get(child.name, 0) + 1
+            child_path = f'{path}/{child.name}[{counts[child.name]}]'
+            locators[id(child)] = child_path
+            stack.append((child, child_path))
+    return locators
+
+
 def _word_count(s: str) -> int:
     """简单按空白分词计数。"""
     return len(s.split()) if s.strip() else 0
@@ -175,6 +196,7 @@ def extract_chunks_with_stats(html_content: bytes, chapter_id: str) -> tuple[Lis
     text = html_content.decode("utf-8", errors="ignore")
     soup = BeautifulSoup(text, "html.parser")
     blocks = soup.find_all(BLOCK_TAGS)
+    locators = _locator_index(soup)
     items: List[ChunkItem] = []
     stats = {
         "image_note_chunks_skipped": 0,
@@ -207,7 +229,7 @@ def extract_chunks_with_stats(html_content: bytes, chapter_id: str) -> tuple[Lis
         strategy = "text_nodes" if structured_note or block.find(list(MEDIA_TAGS)) else "html"
         if structured_note:
             stats["structured_note_chunks"] += 1
-        locator = _build_locator(block, soup)
+        locator = locators[id(block)]
         chunk_id = f"{chapter_id}_{seq:04d}"
         items.append(
             ChunkItem(

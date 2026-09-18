@@ -60,7 +60,7 @@ test("F10-4b AI 翻译可选择标准/高质量/文学档位", () => {
 
 test("F10-5 MOBI/AZW3 禁用翻译模式", () => {
   assert.ok(html.includes('isTranslationSupportedForSelectedFile'), "应有文件类型判断");
-  assert.ok(html.includes('[".epub", ".pdf", ".docx", ".md", ".markdown"].includes(ext)'), "仅可翻译合适文件类型");
+  assert.ok(html.includes('[".epub", ".docx", ".md", ".markdown"].includes(ext)'), "仅可翻译合适文件类型");
   assert.ok(html.includes('translationRadio.disabled = !supported'), "不支持时应禁用翻译模式");
 });
 

@@ -16,11 +16,15 @@ import json
 import logging
 import os
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 from urllib.parse import urlsplit
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
+from app.infra.async_requests import bounded_request
+from app.cancellation import JobCancelled, raise_if_cancelled
+from billiard.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger("epub_factory.glossary")
 
@@ -266,6 +270,8 @@ async def translate_glossary(
     *,
     target_lang: str = "zh-CN",
     max_terms_per_call: int = 80,
+    metrics: dict | None = None,
+    cancel_check=None,
 ) -> dict[str, str]:
     """
     将候选术语整体送 LLM，得到 {原文: 译名} 字典。
@@ -291,11 +297,14 @@ async def translate_glossary(
         }
         for c in candidates
     ]
+    max_terms_per_call = max(1, max_terms_per_call)
     batches = [entries[i:i + max_terms_per_call] for i in range(0, len(entries), max_terms_per_call)]
 
     try:
         from openai import AsyncOpenAI
     except ImportError:
+        if metrics is not None:
+            metrics["llm_batches_failed"] = len(batches)
         logger.warning("openai SDK 未安装，跳过术语 LLM 翻译")
         return {}
 
@@ -311,22 +320,40 @@ async def translate_glossary(
     try:
         assert_model_allowed(model, context="glossary")
     except ModelNotAllowedError as exc:
+        if metrics is not None:
+            metrics["llm_batches_failed"] = len(batches)
         logger.warning("glossary 跳过：%s", exc)
         return {}
 
     # 显式传入自建 http_client：避免 openai SDK 内部向新版 httpx(>=0.28) 传递已被
     # 移除的 proxies 参数而抛 TypeError（与 SemanticsTranslator 的构造方式保持一致）。
     import httpx
-    http_client = httpx.AsyncClient(timeout=60)
+    request_timeout = max(1.0, float(os.environ.get("EPUB_GLOSSARY_REQUEST_TIMEOUT", "300")))
+    http_client = httpx.AsyncClient(timeout=min(60, request_timeout))
     client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0, http_client=http_client)
     merged: dict[str, str] = {}
+    concurrency = max(1, min(4, int(os.environ.get("EPUB_GLOSSARY_CONCURRENCY", "2"))))
+    stats = metrics if metrics is not None else {}
+    stats.update(llm_batches_total=len(batches), llm_batches_failed=0,
+                 llm_batches_successful=0, llm_concurrency=concurrency, llm_api_calls=0)
+    started = time.monotonic()
+    blocked = None
+    queue = asyncio.Queue()
+    for item in enumerate(batches, start=1):
+        queue.put_nowait(item)
 
-    try:
-        for batch_idx, batch in enumerate(batches, start=1):
+    async def worker():
+        nonlocal blocked
+        while not queue.empty():
+            raise_if_cancelled(cancel_check)
+            if blocked:
+                raise blocked
+            batch_idx, batch = queue.get_nowait()
             try:
                 user_msg = json.dumps(batch, ensure_ascii=False)
                 batch_terms = {item["term"] for item in batch}
-                resp = await client.chat.completions.create(
+                stats["llm_api_calls"] += 1
+                resp = await bounded_request(client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
@@ -334,7 +361,7 @@ async def translate_glossary(
                     ],
                     temperature=0.2,  # 术语翻译要稳定，温度调低
                     response_format={"type": "json_object"} if "gpt" in model.lower() else None,
-                )
+                ), timeout=request_timeout, cancel_check=cancel_check)
                 raw = (resp.choices[0].message.content or "").strip()
                 # 处理 markdown 包裹
                 if raw.startswith("```"):
@@ -343,23 +370,44 @@ async def translate_glossary(
                     if raw.endswith("```"):
                         raw = raw[:-3].strip()
                 parsed = json.loads(raw)
-                translations = parsed.get("translations", {}) if isinstance(parsed, dict) else {}
+                if not isinstance(parsed, dict) or "translations" not in parsed:
+                    raise ValueError("glossary response requires a translations object")
+                translations = parsed["translations"]
                 if isinstance(translations, dict):
                     for k, v in translations.items():
                         if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
                             # 只保留发生了语言变换的（避免把保留原文的也加入字典）
                             if k.strip() in batch_terms and k.strip() != v.strip():
                                 merged[k.strip()] = v.strip()
+                else:
+                    raise ValueError("glossary translations must be a JSON object")
+                stats["llm_batches_successful"] += 1
                 logger.info(
                     "glossary llm batch ok",
                     extra={"batch": batch_idx, "in": len(batch), "out": len(translations) if isinstance(translations, dict) else 0},
                 )
+            except (JobCancelled, SoftTimeLimitExceeded, ProviderAccountUnavailable):
+                raise
             except Exception as e:
                 if is_balance_error(e):
-                    raise ProviderAccountUnavailable(urlsplit(base_url).hostname or "primary") from e
-                logger.warning(f"glossary llm batch {batch_idx} failed: {e}")
+                    blocked = ProviderAccountUnavailable(urlsplit(base_url).hostname or "primary")
+                    raise blocked from e
+                stats["llm_batches_failed"] += 1
+                # Do not include model responses or candidate book text in logs.
+                logger.warning("glossary llm batch %s failed (%s)", batch_idx, type(e).__name__)
                 continue
+            finally:
+                queue.task_done()
+
+    tasks = [asyncio.create_task(worker()) for _ in range(min(concurrency, len(batches)))]
+    try:
+        await asyncio.gather(*tasks)
     finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        stats["llm_elapsed_ms"] = round((time.monotonic() - started) * 1000)
         try:
             await http_client.aclose()
         except Exception:

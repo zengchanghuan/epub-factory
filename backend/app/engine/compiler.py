@@ -2,6 +2,8 @@ import os
 import subprocess
 import json
 import time
+import re
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List
 from dotenv import load_dotenv
@@ -183,16 +185,11 @@ class ExtremeCompiler:
     @staticmethod
     def _should_skip_translation_for_file(file_name: str) -> bool:
         """仅跳过纯导航/元数据文件，正文性质的辅助章节（目录、附录、索引等）仍翻译。"""
-        lower = (file_name or "").lower()
-        skip_keywords = (
-            "nav",
-            "copyright",
-            "license",
-            "colophon",
-            "titlepage",
-            "cover",
-        )
-        return any(k in lower for k in skip_keywords)
+        from app.domain.manifest_service import classify_chapter_kind
+        from app.models import ChapterKind
+        kind = classify_chapter_kind(file_name)
+        return kind in {ChapterKind.nav, ChapterKind.copyright} or bool(
+            re.match(r'^cover(?:$|[_ .-])', Path(file_name or '').stem, re.I))
 
     # ─── 公共入口：带两级降级兜底 ───────────────────────────────────────
 

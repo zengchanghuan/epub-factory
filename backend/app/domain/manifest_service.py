@@ -7,6 +7,7 @@ EPUB Manifest 服务：解包后按文件识别正文/非正文，生成标准 C
 import re
 from pathlib import Path
 from typing import Any, Dict, List
+from ebooklib import epub
 
 from app.models import ChapterKind
 from app.engine.unpacker import EpubUnpacker
@@ -18,22 +19,36 @@ def classify_chapter_kind(file_name: str) -> ChapterKind:
     """
     根据 EPUB 内文件名/路径识别章节类型。
     """
-    lower = (file_name or "").lower()
-    if any(k in lower for k in ("nav", "toc", "contents", "ncx")):
+    lower = Path((file_name or "").replace('\\', '/')).stem.lower()
+    # Calibre's generic index_split_N files are chapters, not a book index.
+    # Directory names and embedded substrings (navy, discovery, etc.) are not
+    # evidence that the entire document is navigation or metadata.
+    if re.fullmatch(r'(?:index|content|contents|book|text)_split_\d+', lower):
+        return ChapterKind.body
+    def named(*words):
+        return any(re.match(r'^(?:\d+[_ .-])?' + re.escape(word) + r'(?:$|[_ .-])', lower) for word in words)
+    if named("nav", "toc", "contents", "ncx", "tableofcontents", "table-of-contents", "table_of_contents", "table of contents"):
         return ChapterKind.nav
-    if any(k in lower for k in ("copyright", "license", "colophon", "titlepage")):
+    if named("copyright", "license", "colophon", "titlepage"):
         return ChapterKind.copyright
-    if any(k in lower for k in ("appendix", "appendices")):
+    if named("appendix", "appendices"):
         return ChapterKind.appendix
-    if any(k in lower for k in ("index", "glossary", "bibliograph")):
+    if named("index", "glossary", "bibliography", "bibliographies"):
         return ChapterKind.index
-    if any(k in lower for k in ("cover", "acknowledg", "about", "footnote", "endnote")):
+    if named("cover", "acknowledgments", "acknowledgements", "about", "footnote", "footnotes", "endnote", "endnotes"):
         return ChapterKind.other
     # 其余视为正文
     return ChapterKind.body
 
 
 _CONTENT_HEADING_KINDS = {
+    "contents": ChapterKind.nav,
+    "table of contents": ChapterKind.nav,
+    "目录": ChapterKind.nav,
+    "目錄": ChapterKind.nav,
+    "索引": ChapterKind.index,
+    "参考文献": ChapterKind.index,
+    "參考文獻": ChapterKind.index,
     "index": ChapterKind.index,
     "bibliography": ChapterKind.index,
     "references": ChapterKind.index,
@@ -123,7 +138,8 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         manifest_stats["image_caption_chunks"] += int(extraction_stats.get("image_caption_chunks") or 0)
         manifest_stats["reference_note_chunks_skipped"] += int(extraction_stats.get("reference_note_chunks_skipped") or 0)
         manifest_stats["structured_note_chunks"] += int(extraction_stats.get("structured_note_chunks") or 0)
-        kind = classify_chapter_kind_from_chunks(file_name, chunk_list)
+        kind = (ChapterKind.nav if isinstance(item, epub.EpubNav)
+                else classify_chapter_kind_from_chunks(file_name, chunk_list))
         chunks_payload = [
             {
                 "chunk_id": c.chunk_id,

@@ -2,12 +2,15 @@ import re
 import shutil
 import tempfile
 import zipfile
+import posixpath
 from pathlib import Path
-from urllib.parse import unquote, urldefrag, urlparse
+from urllib.parse import quote, unquote, urldefrag, urlparse, urlsplit, urlunsplit
 
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
+from lxml import etree
+from .font_compat import repair_font_sources
 
 # ebooklib 的已知 Bug：它的 XML 解析器会把所有属性名强制小写，
 # 但 SVG 规范中的 preserveAspectRatio、viewBox 等属性是大小写敏感的。
@@ -152,6 +155,7 @@ class EpubPackager:
         try:
             self._fix_toc_uids(self.book)
             self._ensure_epub3_navigation(self.book)
+            self._ensure_navigation_targets_in_spine(self.book)
             epub.write_epub(self.output_path, self.book, {})
             self._post_fix()
             return True
@@ -163,10 +167,70 @@ class EpubPackager:
     def _ensure_epub3_navigation(book) -> None:
         """ebooklib always writes EPUB 3, which requires exactly one nav item."""
         nav_items = [item for item in book.get_items() if isinstance(item, epub.EpubNav)]
-        if nav_items:
-            return
-        book.add_item(epub.EpubNav())
-        print("🔧 [PackageFix] Added missing EPUB 3 nav document")
+        if not nav_items:
+            book.add_item(epub.EpubNav())
+            print("🔧 [PackageFix] Added missing EPUB 3 nav document")
+        # ebooklib writes spine toc="ncx" even when no NCX item exists.
+        # Supply a real compatibility NCX instead of a dangling OPF reference.
+        if not any(isinstance(item, epub.EpubNcx) for item in book.get_items()):
+            used_ids = {item.get_id() for item in book.get_items()}
+            used_names = {item.get_name() for item in book.get_items()}
+            uid, name = 'ncx', 'toc.ncx'
+            while uid in used_ids: uid += '_compat'
+            while name in used_names: name = 'compat_' + name
+            book.add_item(epub.EpubNcx(uid=uid, file_name=name))
+
+    @staticmethod
+    def _ensure_navigation_targets_in_spine(book) -> None:
+        """Make existing TOC/page-list targets reachable without changing flow.
+
+        ebooklib regenerates a page-list from pagebreak markers in all HTML,
+        including auxiliary documents excluded from the original spine.
+        Preserve these references and append only existing HTML as linear=no;
+        never fabricate a missing resource or insert it into normal reading.
+        """
+        present = set()
+        for entry in book.spine:
+            value = entry[0] if isinstance(entry, (tuple, list)) else entry
+            present.add(value.get_id() if hasattr(value, 'get_id') else value)
+        items = {posixpath.normpath(item.get_name()): item for item in book.get_items()
+                 if isinstance(item, epub.EpubHtml)}
+        added = 0
+
+        def include(item):
+            nonlocal added
+            if item is not None and item.get_id() not in present:
+                book.spine.append((item.get_id(), 'no'))
+                present.add(item.get_id()); added += 1
+
+        def visit(nodes):
+            for node in nodes or []:
+                obj = node[0] if isinstance(node, (tuple, list)) else node
+                href = getattr(obj, 'href', None)
+                if not href and isinstance(obj, epub.EpubHtml): href = obj.get_name()
+                link = urlsplit(href or '')
+                if link.path and not link.scheme and not link.netloc:
+                    item = items.get(posixpath.normpath(unquote(link.path)))
+                    include(item)
+                if isinstance(node, (tuple, list)): visit(node[1])
+        visit(book.toc)
+        visit(getattr(book, 'pages', []))
+        # A source may have no page-list at all. The writer still creates one
+        # from pagebreak markers, including corrected legacy epub-type hints.
+        for item in items.values():
+            if isinstance(item, epub.EpubNav) or item.get_id() in present: continue
+            raw = item.content or b''
+            if isinstance(raw, str): raw = raw.encode('utf-8')
+            if b'pagebreak' not in raw: continue
+            try:
+                root = etree.fromstring(raw, etree.XMLParser(resolve_entities=False, no_network=True))
+            except etree.XMLSyntaxError:
+                root = etree.fromstring(raw, etree.HTMLParser(no_network=True))
+            if root is not None and any('pagebreak' in (
+                    node.get('{http://www.idpf.org/2007/ops}type') or node.get('epub:type') or node.get('epub-type') or '').split()
+                    for node in root.iter() if isinstance(node.tag, str)):
+                include(item)
+        if added: print(f'🔧 [PackageFix] Added {added} non-linear navigation target(s)')
 
     @staticmethod
     def _fix_toc_uids(book) -> None:
@@ -202,6 +266,16 @@ class EpubPackager:
 
             if self._sync_serialized_toc_files(temp_dir):
                 fixes_applied.append("toc files")
+
+            missing_font_sources = 0
+            for css_path in temp_dir.rglob('*.css'):
+                original_css = css_path.read_text(encoding='utf-8')
+                repaired_css, count = repair_font_sources(original_css, css_path, temp_dir)
+                if count:
+                    css_path.write_text(repaired_css, encoding='utf-8')
+                    missing_font_sources += count; fixes_applied.append(css_path.name)
+            if missing_font_sources:
+                print(f'⚠️ [FontFallback] Removed {missing_font_sources} absent optional font source(s); reader fallback retained')
 
             document_paths = [
                 path
@@ -362,9 +436,6 @@ class EpubPackager:
         files can therefore show the original English directory.
         """
         title_map = self._toc_title_map()
-        if not title_map:
-            return False
-
         changed = False
         for nav_path in temp_dir.rglob("*.xhtml"):
             raw = nav_path.read_text(encoding="utf-8", errors="ignore")
@@ -392,11 +463,35 @@ class EpubPackager:
                 label_text = nav_point.find("text")
                 if not content or not label_text:
                     continue
+                # ebooklib writes NCX src from package-relative book.toc but
+                # fails to relativize it when the NCX lives in a subdirectory.
+                link = urlsplit(content.get('src', ''))
+                if link.path and not link.scheme and not link.netloc:
+                    package_dir = temp_dir / self.book.FOLDER_NAME
+                    target = package_dir / unquote(link.path)
+                    if target.is_file():
+                        src = urlunsplit(('', '', quote(posixpath.relpath(target.as_posix(), ncx_path.parent.as_posix()), safe='/'), link.query, link.fragment))
+                        if src != content.get('src'):
+                            content['src'] = src; local_changed = True
                 candidates = self._serialized_href_candidates(temp_dir, ncx_path, content.get("src", ""))
                 title = next((title_map[c] for c in candidates if c in title_map), None)
                 if title and label_text.get_text(strip=True) != title:
                     label_text.string = title
                     local_changed = True
+            # NCX IDs have their own namespace: repairing invalid/duplicate
+            # navPoint IDs must never rename document anchors or OPF item IDs.
+            used_ids = set()
+            for number, node in enumerate(soup.find_all(["navPoint", "pageTarget", "navTarget"])):
+                uid = node.get('id') or ''
+                try:
+                    valid = bool(uid) and etree.QName(uid).namespace is None
+                except ValueError:
+                    valid = False
+                if not valid or uid in used_ids:
+                    uid = f'navpoint-compat-{number}'
+                    while uid in used_ids: uid += '-compat'
+                    node['id'] = uid; local_changed = True
+                used_ids.add(uid)
             if local_changed:
                 ncx_path.write_text(str(soup), encoding="utf-8")
                 changed = True

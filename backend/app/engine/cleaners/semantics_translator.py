@@ -8,6 +8,7 @@ import re
 import os
 import time
 from contextvars import ContextVar
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 from bs4 import BeautifulSoup, Tag, NavigableString
@@ -34,29 +35,20 @@ from app.infra.llm_token_bucket import (
 )
 from app.infra.llm_route_health import DistributedRouteHealth
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
+from app.infra.async_requests import bounded_request, gather_cancel_on_error as _gather_cancel_on_error
 from app.domain.translation_residual_policy import confirmed_preserved_terms, residual_category
 from ..translation_cache import TranslationCache
 
 
 # Per-coroutine budget: concurrent chunks must not share mutable retry counts.
 _request_budget: ContextVar[dict | None] = ContextVar("translation_request_budget", default=None)
+_request_observer: ContextVar = ContextVar("translation_request_observer", default=None)
 
 
-async def _gather_cancel_on_error(*operations):
-    tasks = [asyncio.create_task(operation) for operation in operations]
-    try:
-        return await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-
-
-async def _within_request_budget(limit, operation):
+async def _within_request_budget(limit, operation, on_request=None):
     budget = {"remaining": max(0, limit), "used": 0}
     token = _request_budget.set(budget)
+    observer_token = _request_observer.set(on_request)
     try:
         result = await operation()
         if budget["used"] and isinstance(result, tuple) and isinstance(result[1], dict):
@@ -67,6 +59,7 @@ async def _within_request_budget(limit, operation):
         raise
     finally:
         _request_budget.reset(token)
+        _request_observer.reset(observer_token)
 
 
 # 定价：每百万 token 美元（来源：DeepSeek / OpenAI 公开价格，可随官网更新）
@@ -101,6 +94,9 @@ class TranslationStats:
     api_latency_ms_total: int = 0
     api_latency_ms_max: int = 0
     api_latency_samples: int = 0
+    request_queue_wait_ms: int = 0
+    request_queue_wait_ms_max: int = 0
+    request_slot_samples: int = 0
     quality_fallback_attempts: int = 0
     quality_fallback_model: str = ""
     complex_chunks: int = 0
@@ -228,6 +224,9 @@ class TranslationStats:
             "global_route_health_writes": self.global_route_health_writes,
             "cost_usd": self.estimate_cost(model),
             "elapsed_seconds": round(self.elapsed_seconds, 2),
+            "request_queue_wait_ms": self.request_queue_wait_ms,
+            "request_queue_wait_ms_max": self.request_queue_wait_ms_max,
+            "request_slot_samples": self.request_slot_samples,
             "last_error": self.last_error,
             "all_failed": (self.translated_chunks + self.cached_chunks) == 0 and self.failed_chunks > 0,
         }
@@ -315,7 +314,7 @@ class AdaptiveConcurrencyLimiter:
 
 
 class SemanticsTranslator:
-    _CACHE_PROMPT_VERSION = "quality-v4"
+    _CACHE_PROMPT_VERSION = "quality-v5-script-aware"
     _ROUTE_HEALTH: dict[tuple[str, str], dict[str, float]] = {}
 
     def __init__(self, target_lang="zh-CN", concurrency=6, bilingual=False,
@@ -410,6 +409,9 @@ class SemanticsTranslator:
         self.chunk_retry_budget = max(1, int(os.environ.get("EPUB_TRANSLATION_CHUNK_RETRY_BUDGET", "6")))
         self.timeout_extra_retries = max(0, int(os.environ.get("OPENAI_TIMEOUT_EXTRA_RETRIES", "2")))
         self.request_timeout = float(os.environ.get("OPENAI_REQUEST_TIMEOUT", "90"))
+        self.request_wall_timeout = max(1.0, float(os.environ.get(
+            "EPUB_LLM_REQUEST_WALL_TIMEOUT", str(max(180, self.request_timeout * 2)),
+        )))
         if temperature is not None:
             self.temperature = float(temperature)
         else:
@@ -506,6 +508,17 @@ class SemanticsTranslator:
             return True
         msg = str(exc).lower()
         return "timeout" in msg or "timed out" in msg or "read timed out" in msg
+
+    @asynccontextmanager
+    async def _request_slot(self):
+        started = time.monotonic()
+        async with self.semaphore as slot:
+            waited = round((time.monotonic() - started) * 1000)
+            self.stats.request_queue_wait_ms += waited
+            self.stats.request_queue_wait_ms_max = max(self.stats.request_queue_wait_ms_max, waited)
+            self.stats.request_slot_samples += 1
+            self._raise_if_cancelled()
+            yield slot
 
     @staticmethod
     def _classify_error(exc_or_message: Exception | str | None) -> str | None:
@@ -1157,11 +1170,13 @@ class SemanticsTranslator:
             "0", "false", "no", "off"
         }
 
-    @staticmethod
-    def _should_translate_text_node(text: str) -> bool:
+    def _should_translate_text_node(self, text: str) -> bool:
         stripped = (text or "").strip()
-        if not stripped or not re.search(r"[A-Za-z]", stripped):
+        from app.domain.translation_scripts import has_foreign_letters
+        if not stripped or not has_foreign_letters(stripped, self.target_lang):
             return False
+        if not re.search(r'[A-Za-z]', stripped):
+            return True
         words = re.findall(r"[A-Za-z][A-Za-z'\-]{0,}", stripped)
         if not words:
             return False
@@ -1245,7 +1260,7 @@ class SemanticsTranslator:
                 item['context'] = context
 
         t0 = time.monotonic()
-        async with self.semaphore:
+        async with self._request_slot():
             if preferred_model:
                 self.stats.quality_fallback_attempts += 1
                 self._emit_progress(f"文本片段补译升级模型：{preferred_model}")
@@ -1344,7 +1359,19 @@ class SemanticsTranslator:
         base_url, model = self.base_url, preferred_model or self.model
         provider = self._provider_for_base_url(base_url)
         started_call = time.monotonic()
-        
+        request_count = 0
+
+        def reserve_checkpoint():
+            nonlocal request_count
+            request_count += 1
+            observer = _request_observer.get()
+            if observer:
+                # Reserve before issuing the paid request. If a worker stops
+                # inside it, recovery remembers the in-flight retry rather than
+                # silently resetting the block's retry allowance.
+                budget = _request_budget.get()
+                observer(budget["used"] if budget is not None else request_count)
+
         attempt = 0
         while attempt < max_attempts:
             attempt += 1
@@ -1393,7 +1420,11 @@ class SemanticsTranslator:
                         budget["remaining"] -= 1
                         budget["used"] += 1
                     self.stats.api_calls += 1
-                    response = await self._get_client(base_url).chat.completions.create(**kwargs)
+                    reserve_checkpoint()
+                    response = await bounded_request(
+                        self._get_client(base_url).chat.completions.create(**kwargs),
+                        timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
+                    )
                 except (JobCancelled, SoftTimeLimitExceeded, ProviderAccountUnavailable):
                     raise
                 except Exception as response_exc:
@@ -1410,7 +1441,11 @@ class SemanticsTranslator:
                         budget["remaining"] -= 1
                         budget["used"] += 1
                     self.stats.api_calls += 1
-                    response = await self._get_client(base_url).chat.completions.create(**kwargs)
+                    reserve_checkpoint()
+                    response = await bounded_request(
+                        self._get_client(base_url).chat.completions.create(**kwargs),
+                        timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
+                    )
                 raw = (response.choices[0].message.content or "").strip()
                 try:
                     parsed = self._extract_json_from_response(raw)
@@ -1556,7 +1591,7 @@ class SemanticsTranslator:
 
     async def _translate_batch(self, html_chunks: list[str]) -> list[str]:
         payload = [{"id": i, "html": html} for i, html in enumerate(html_chunks)]
-        async with self.semaphore:
+        async with self._request_slot():
             translations_map, _ = await self._call_llm_json_batch(payload)
         
         results = []
@@ -1582,7 +1617,7 @@ class SemanticsTranslator:
                 return cached
             
         payload = [{"id": 0, "html": html_chunk}]
-        async with self.semaphore:
+        async with self._request_slot():
             translations_map, _ = await self._call_llm_json_batch(payload)
         
         translated = translations_map.get(0, html_chunk)
@@ -1618,13 +1653,13 @@ class SemanticsTranslator:
         try:
             t0 = time.monotonic()
             payload = [{"id": 0, "html": inner_html}]
-            async with self.semaphore:
+            async with self._request_slot():
                 translations_map, meta = await self._call_llm_json_batch(payload)
             translated = translations_map.get(0, "")
             if not translated:
                 raise ValueError("LLM response missing translation for chunk")
             if self._looks_like_error_response(translated) or self._looks_untranslated(inner_html, translated):
-                async with self.semaphore:
+                async with self._request_slot():
                     translations_map, meta = await self._call_llm_json_batch(payload)
                 translated = translations_map.get(0, "")
             if translated and not self._preserves_inline_tags(inner_html, translated):
@@ -1632,7 +1667,7 @@ class SemanticsTranslator:
                 if did_repair:
                     translated = repaired
                 else:
-                    async with self.semaphore:
+                    async with self._request_slot():
                         translations_map, meta = await self._call_llm_json_batch(payload)
                     translated = translations_map.get(0, "")
                     translated, _ = self._repair_inline_tags_if_safe(inner_html, translated)
@@ -1672,6 +1707,8 @@ class SemanticsTranslator:
         prior_retry_counts: list[int] | None = None,
         contexts: list[str] | None = None,
         book_translation_strategy: str | None = None,
+        checkpoint_results: list["SingleChunkResult | None"] | None = None,
+        result_callback=None,
     ) -> list["SingleChunkResult"]:
         """
         批量翻译多个 chunk，供快速 MapReduce 链路使用。
@@ -1681,6 +1718,18 @@ class SemanticsTranslator:
         返回的 translated_html 是 inner_html，Reduce 阶段会负责回写到原块级标签中。
         """
         results: list[SingleChunkResult | None] = [None] * len(html_chunks)
+        restored = checkpoint_results or [None] * len(html_chunks)
+        if len(restored) != len(html_chunks):
+            raise ValueError("checkpoint result length mismatch")
+
+        def notify_result(index):
+            if result_callback and results[index] is not None:
+                result_callback(index, results[index])
+
+        def notify_inflight(index, original_inner, count):
+            if result_callback:
+                result_callback(index, SingleChunkResult(original_inner, False, None, None, 0, 0, 0,
+                                                         "inflight request interrupted", retry_count=count))
         uncached: list[tuple[int, str]] = []
         structured_notes: list[tuple[int, str]] = []
         inner_html_by_index: dict[int, str] = {}
@@ -1741,6 +1790,13 @@ class SemanticsTranslator:
             inner_html = self._extract_inner_html(html)
             inner_html_by_index[i] = inner_html
             self.stats.total_chunks += 1
+            previous = restored[i]
+            if previous and not previous.error and not self._invalid_translation_reason(html, previous.translated_html):
+                self.stats.cached_chunks += 1
+                results[i] = SingleChunkResult(previous.translated_html, True, previous.model,
+                                               previous.base_url, 0, 0, 0, None,
+                                               previous.retry_count, previous.error_type)
+                continue
             cached = self._cache_get(
                 inner_html,
                 chunk_contexts[i],
@@ -1756,6 +1812,7 @@ class SemanticsTranslator:
                 ):
                     self.stats.cached_chunks += 1
                     results[i] = SingleChunkResult(cached, True, None, None, 0, 0, 0, None)
+                    notify_result(i)
                 else:
                     (structured_notes if strategy == "text_nodes" else uncached).append((i, inner_html))
             else:
@@ -1823,6 +1880,7 @@ class SemanticsTranslator:
                 retry_count=retry_count,
                 error_type=self._classify_error(error),
             )
+            notify_result(idx)
 
         async def retry_one(
             idx: int,
@@ -1872,18 +1930,20 @@ class SemanticsTranslator:
                     }]
                     if chunk_contexts[idx]:
                         retry_payload[0]["context"] = chunk_contexts[idx]
-                    async with self.semaphore:
+                    async with self._request_slot():
                         if preferred_model:
                             self.stats.quality_fallback_attempts += 1
                             self._emit_progress(f"单段补译升级模型：{preferred_model}")
                             translations_map, meta = await _within_request_budget(
                                 self.chunk_retry_budget - retry_count,
                                 lambda: call_translation_batch(retry_payload, preferred_model=preferred_model),
+                                on_request=lambda count: notify_inflight(idx, original_inner, retry_count + count),
                             )
                         else:
                             translations_map, meta = await _within_request_budget(
                                 self.chunk_retry_budget - retry_count,
                                 lambda: call_translation_batch(retry_payload),
+                                on_request=lambda count: notify_inflight(idx, original_inner, retry_count + count),
                             )
                     last_meta = meta
                     retry_count += max(1, int(meta.get("attempts") or 1))
@@ -1929,6 +1989,7 @@ class SemanticsTranslator:
                     error=None,
                     retry_count=max(1, retry_count),
                 )
+                notify_result(idx)
                 self.stats.chunk_rescue_successes += 1
                 return True
 
@@ -1944,6 +2005,7 @@ class SemanticsTranslator:
                             system_prompt=chapter_system_prompt if strategy_is_override else None,
                             context=chunk_contexts[idx],
                         ),
+                        on_request=lambda count: notify_inflight(idx, original_inner, retry_count + count),
                     )
                     retry_count += max(1, int(segment_meta.get("attempts") or 1))
                     invalid_reason = self._invalid_translation_reason(html_chunks[idx], translated)
@@ -1962,6 +2024,7 @@ class SemanticsTranslator:
                         error=None,
                         retry_count=max(1, retry_count),
                     )
+                    notify_result(idx)
                     self.stats.chunk_rescue_successes += 1
                     return True
                 except (JobCancelled, SoftTimeLimitExceeded, ProviderAccountUnavailable):
@@ -2008,6 +2071,7 @@ class SemanticsTranslator:
                     error=None,
                     retry_count=prior_retry_count,
                 )
+                notify_result(idx)
                 report_batch_progress(1)
                 return
             if prior_retry_count >= self.chunk_retry_budget:
@@ -2048,6 +2112,7 @@ class SemanticsTranslator:
                             system_prompt=chapter_system_prompt if strategy_is_override else None,
                             context=chunk_contexts[idx],
                         ),
+                        on_request=lambda count: notify_inflight(idx, original_inner, retry_count + count),
                     )
                     retry_count = min(
                         self.chunk_retry_budget,
@@ -2067,6 +2132,7 @@ class SemanticsTranslator:
                         error=None,
                         retry_count=retry_count,
                     )
+                    notify_result(idx)
                     report_batch_progress(1)
                     return
                 except (JobCancelled, SoftTimeLimitExceeded, ProviderAccountUnavailable):
@@ -2103,13 +2169,15 @@ class SemanticsTranslator:
             if resumed:
                 # The rescue queue is a continuation of the same chunk, not a
                 # fresh initial batch with a new provider-retry allowance.
-                for idx, html in resumed:
+                async def continue_one(idx, html):
                     await retry_one(idx, html, "previous chunk attempt failed",
                                     prior_retry_count=int(prior_retries[idx]))
                     report_batch_progress(1)
                 fresh = [(idx, html) for idx, html in batch if int(prior_retries[idx] or 0) <= 0]
-                if fresh:
-                    await run_batch(fresh)
+                await _gather_cancel_on_error(
+                    *(continue_one(idx, html) for idx, html in resumed),
+                    *([run_batch(fresh)] if fresh else []),
+                )
                 return
             payload = []
             for local_id, (idx, html) in enumerate(batch):
@@ -2128,8 +2196,12 @@ class SemanticsTranslator:
             ):
                 preferred_model = self.quality_fallback_model
                 self.stats.proactive_quality_routes += 1
+            def reserve_batch(count):
+                for index, original in batch:
+                    notify_inflight(index, original, count)
+            observer_token = _request_observer.set(reserve_batch)
             try:
-                async with self.semaphore:
+                async with self._request_slot():
                     self._raise_if_cancelled()
                     translations_map, meta = await call_translation_batch(
                         payload,
@@ -2164,12 +2236,16 @@ class SemanticsTranslator:
                     report_batch_progress(1)
                 return
 
+            finally:
+                _request_observer.reset(observer_token)
+
             latency_ms = int((time.monotonic() - t0) * 1000)
             count = max(1, len(batch))
             prompt_each = int((meta.get("prompt_tokens", 0) or 0) / count)
             completion_each = int((meta.get("completion_tokens", 0) or 0) / count)
 
             # 逐块降级：单块被判为错误响应只标记该块失败，不连累同批其它正常译文。
+            repairs = []
             for local_id, (idx, original_inner) in enumerate(batch):
                 self._raise_if_cancelled()
                 translated = translations_map.get(local_id, "")
@@ -2177,31 +2253,16 @@ class SemanticsTranslator:
                     0, int(meta.get("attempts") or 1) - 1
                 )
                 if self._looks_like_error_response(translated):
-                    await retry_one(
-                        idx,
-                        original_inner,
-                        "error-like response",
-                        prior_retry_count=initial_retry_count,
-                    )
+                    repairs.append((idx, original_inner, "error-like response", initial_retry_count))
                     continue
                 if not translated or self._looks_untranslated(html_chunks[idx], translated):
-                    await retry_one(
-                        idx,
-                        original_inner,
-                        "untranslated response",
-                        prior_retry_count=initial_retry_count,
-                    )
+                    repairs.append((idx, original_inner, "untranslated response", initial_retry_count))
                     continue
                 translated, repaired = self._repair_inline_tags_if_safe(original_inner, translated)
                 if repaired:
                     self._emit_progress("HTML 标签结构已自动修复，跳过单段补译")
                 if not self._preserves_inline_tags(original_inner, translated):
-                    await retry_one(
-                        idx,
-                        original_inner,
-                        "html tag mismatch",
-                        prior_retry_count=initial_retry_count,
-                    )
+                    repairs.append((idx, original_inner, "html tag mismatch", initial_retry_count))
                     continue
                 self._cache_set(original_inner, translated, chunk_contexts[idx])
                 self.stats.translated_chunks += 1
@@ -2216,6 +2277,12 @@ class SemanticsTranslator:
                     error=None,
                     retry_count=initial_retry_count,
                 )
+                notify_result(idx)
+            # Persist all healthy siblings before any potentially slow rescue,
+            # then repair bad siblings concurrently under the same API limit.
+            if repairs:
+                await _gather_cancel_on_error(*(retry_one(idx, original, reason, prior_retry_count=count)
+                                               for idx, original, reason, count in repairs))
             report_batch_progress(len(batch))
 
         if batches or structured_notes:
@@ -2332,7 +2399,7 @@ class SemanticsTranslator:
                     item["context"] = chunk_contexts[idx]
                 payload.append(item)
             try:
-                async with self.semaphore:
+                async with self._request_slot():
                     translations, meta = await self._call_llm_json_batch(
                         payload,
                         preferred_model=self.model,
@@ -2409,7 +2476,7 @@ class SemanticsTranslator:
 严格返回 {{"results":[{{"id":0,"translation":"风格档案正文"}}]}}。"""
         payload = [{"id": 0, "html": source, "text_node_rescue": True}]
         try:
-            async with self.semaphore:
+            async with self._request_slot():
                 translations, _meta = await self._call_llm_json_batch(
                     payload,
                     preferred_model=self.model,
@@ -2515,7 +2582,7 @@ class SemanticsTranslator:
                     item["context"] = chunk_contexts[idx]
                 payload.append(item)
             try:
-                async with self.semaphore:
+                async with self._request_slot():
                     translations, meta = await self._call_llm_json_batch(
                         payload,
                         preferred_model=self.model,
@@ -2610,7 +2677,7 @@ class SemanticsTranslator:
                     item["context"] = chunk_contexts[idx]
                 payload.append(item)
             try:
-                async with self.semaphore:
+                async with self._request_slot():
                     translations, meta = await self._call_llm_json_batch(
                         payload,
                         preferred_model=self.model,
@@ -2656,11 +2723,8 @@ class SemanticsTranslator:
         return verified
 
     def _should_translate(self, text: str) -> bool:
-        if not text.strip():
-            return False
-        if not re.search('[a-zA-Z]', text):
-            return False
-        return True
+        from app.domain.translation_scripts import has_foreign_letters
+        return has_foreign_letters(text, self.target_lang)
 
     async def process_async(self, content: bytes, item_type: int) -> bytes:
         if item_type == 9:

@@ -71,7 +71,6 @@
       "EPUB 简体转繁体",
       "Kindle 排版优化",
       "Apple Books 优化",
-      "PDF 转换",
       "AI 英文翻译中文"
     ]
   }
@@ -150,10 +149,10 @@
       },
       {
         "@type": "Question",
-        "name": "PDF 转 EPUB 的效果如何？能否自由调整字号？",
+        "name": "当前是否支持 PDF？",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "FixEpub 支持将 PDF 转换为可重排布局 (Reflowable Layout) 的 EPUB。这意味着您可以像原生 EPUB 一样自由调整字号、字体和行间距。建议使用文字版 PDF 以获得最佳的 Unicode 标准化效果。"
+          "text": "当前暂不支持 PDF，请先转换为 EPUB 后上传。PDF 的 OCR、图文布局保留与转换验收将在后续阶段实现。"
         }
       }
     ]
@@ -801,10 +800,10 @@
       <div id="dropzone" class="dropzone">
         <span class="icon">📁</span>
         <div class="main-text">拖拽文件到这里，或点击选择</div>
-        <div class="sub-text">支持 .epub / .pdf / .mobi / .azw3 格式</div>
+        <div class="sub-text">支持 .epub / .mobi / .azw3 格式；暂不支持 PDF</div>
         <div class="file-name" id="fileName" style="display:none;"></div>
       </div>
-      <input id="fileInput" type="file" accept=".epub,.pdf,.mobi,.azw3" />
+      <input id="fileInput" type="file" accept=".epub,.mobi,.azw3" />
 
       <div class="form-row">
         <div class="form-group">
@@ -1055,7 +1054,7 @@
     </footer>
   </div>
 
-  <script src="lib.js"></script>
+  <script src="lib.js?v=20260918-corpus-fixes"></script>
   <script src="https://www.paypal.com/sdk/js?client-id=ATzusU6RWdPLzCg2JzeRuNMuXfrF0yDLNpCQe-aQbuP5yTtfEAEhlkkB1gcmSJM1ey5GVg_ngtIyYdTz&currency=USD"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8001" : "");
@@ -1375,8 +1374,8 @@
     function selectFile(file) {
       if (!file) return;
       const name = file.name.toLowerCase();
-      if (!(name.endsWith(".epub") || name.endsWith(".pdf") || name.endsWith(".mobi") || name.endsWith(".azw3"))) {
-        alert("仅支持 .epub, .pdf, .mobi 或 .azw3 文件");
+      if (!(name.endsWith(".epub") || name.endsWith(".mobi") || name.endsWith(".azw3"))) {
+        alert(name.endsWith(".pdf") ? "暂不支持 PDF，请先转换为 EPUB 后上传。" : "仅支持 .epub, .mobi 或 .azw3 文件");
         return;
       }
       selectedFile = file;
@@ -1916,8 +1915,8 @@
           <p>集成大语言模型（LLM）实现高质量的英文书籍翻译。不同于传统的机翻，我们的 AI 翻译能够深度理解语义语境，提供自然流畅的中文译文，并支持精细的双语对照排版，是学术研究与文学鉴赏的得力助手。</p>
         </div>
         <div class="feature-card">
-          <h3>PDF 转 EPUB (Reflowable Layout)</h3>
-          <p>支持将 PDF 文档转换为适合移动设备阅读的 <strong>可重排布局 (Reflowable Layout)</strong> EPUB 格式。系统会自动识别文本流，智能优化图像位置，让您的 PDF 资料在 Kindle 或手机上重现新生，彻底告别缩放阅读的烦恼。</p>
+          <h3>PDF 支持计划（暂未开放）</h3>
+          <p>当前暂不支持 PDF，请先转换为 EPUB 后上传。PDF 的 OCR、图文布局保留与转换验收将在后续阶段实现。</p>
         </div>
       </div>
 
@@ -1964,7 +1963,7 @@
       <div class="guide-block">
         <h2 class="seo-title">如何转换您的电子书？</h2>
         <ol class="guide-steps">
-          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .pdf / .mobi / .azw3 电子书文件（单文件大小限制 60MB 以内）。</li>
+          <li><strong>上传源文件：</strong>点击上传区域，选择您的 .epub / .mobi / .azw3 电子书文件（单文件大小限制 60MB 以内；暂不支持 PDF）。</li>
           <li><strong>定制输出参数：</strong>根据您的阅读器类型（如 Kindle、Apple Books），配置「输出模式」和「目标设备」。</li>
           <li><strong>执行自动化转换：</strong>点击「开始转换」，系统将自动在云端完成处理并应用样式优化算法。</li>
           <li><strong>预览结果与下载：</strong>转换完成后，您可以在线预览 <strong>可重排布局 (Reflowable Layout)</strong> 的实际效果，确认无误后点击下载。</li>
@@ -1998,8 +1997,8 @@
         <p>单文件上限 60MB，可覆盖 95% 带插图电子书。我们非常重视用户隐私，所有上传文件在处理完成后均会从服务器自动删除，绝不保留任何副本。FixEpub 旨在为全球读者提供高效、安全的电子书优化方案。</p>
       </details>
       <details class="faq-item">
-        <summary>PDF 转 EPUB 的效果如何？</summary>
-        <p>FixEpub 采用了业界领先的 PDF 文本流提取算法。与普通的截图转码不同，我们尝试重建 PDF 的<strong>可重排布局 (Reflowable Layout)</strong>，这意味着转换后的 EPUB 可以在手机或 Kindle 上自由调整字号和字体。建议使用文字版 PDF 以获得 100% 的文字还原度及最佳的 <strong>Unicode 标准化</strong> 效果。</p>
+        <summary>当前是否支持 PDF？</summary>
+        <p>当前暂不支持 PDF，请先转换为 EPUB 后上传。尚未完成图文版式与 OCR 验收，因此不会接收 PDF 或为其创建收费订单。</p>
       </details>
     </div>
   </section>

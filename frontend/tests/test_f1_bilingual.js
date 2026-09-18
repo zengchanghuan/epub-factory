@@ -116,9 +116,10 @@ test("9. validateFile 接受 .epub 文件", () => {
   assert.strictEqual(result.valid, true);
 });
 
-test("10. validateFile 接受 .pdf 文件", () => {
+test("10. validateFile 明确拒绝暂未支持的 .pdf 文件", () => {
   const result = validateFile("doc.PDF"); // 大小写
-  assert.strictEqual(result.valid, true);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.error.includes("暂不支持 PDF"));
 });
 
 test("11. validateFile 接受 .docx 文件", () => {

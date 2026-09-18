@@ -131,6 +131,8 @@ flowchart TD
 
 当前 Celery 只投递整本 `jobs.run_conversion`；章节并发发生在 Worker 内的 `fast_translation_runner`，不是每章各自一个 Celery Task。重启翻译会生成新的 `attempt_id`，旧 attempt 的统计、迟到写入和临时成品不会污染新 attempt。
 
+书级准备结果与逐块检查点持久化在原缓存数据库中，设置一致的续跑不再重新请求成功术语、画像、书名和最终段落。每章结束即释放章节并发位并处理其失败补译，不等全书汇合。具体键隔离、fresh 语义、绝对时限和测试边界见 [翻译卡点修复](TRANSLATION-PERFORMANCE-2026-09-18.md)。
+
 ### 文件结构
 
 | 文件 | 职责 |
@@ -140,6 +142,8 @@ flowchart TD
 | `app/domain/manifest_service.py` | 文档类型判断与 Chunk Manifest |
 | `app/engine/chunk_extractor.py` | 正文、caption、媒体块、脚注/尾注分类与 locator |
 | `app/engine/translation_cache.py` | SQLite 初始化、SHA-256 哈希、读写操作 |
+| `app/domain/translation_checkpoints.py` | 订单/书稿/配置隔离的持久化准备结果与 chunk 检查点 |
+| `app/infra/async_requests.py` | 请求绝对时限与及时取消 |
 | `app/engine/cleaners/semantics_translator.py` | 健康感知模型路由、自适应批量/并发、缓存、质量重试、选择性审校、文学风格档案/润色/语义回查、结构化脚注和文本节点救援 |
 | `app/domain/chapter_reduce_service.py` | 按 locator 回写单章，支持单语与双语 |
 | `app/domain/book_reduce_service.py` | 全书 Reduce、书名同步、TOC 重建与打包 |

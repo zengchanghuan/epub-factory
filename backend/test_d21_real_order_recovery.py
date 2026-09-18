@@ -372,7 +372,8 @@ class TestDeliveryRecovery(unittest.TestCase):
         request = AsyncMock(side_effect=BalanceError('Insufficient Balance'))
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=request)))
         candidates = [GlossaryCandidate(term=f'Trader {index}', count=1) for index in range(3)]
-        with patch.dict(os.environ, {'OPENAI_MODEL': 'deepseek-v4-flash', 'OPENAI_API_KEY': 'offline-test'}), \
+        with patch.dict(os.environ, {'OPENAI_MODEL': 'deepseek-v4-flash', 'OPENAI_API_KEY': 'offline-test',
+                                   'EPUB_GLOSSARY_CONCURRENCY': '1'}), \
              patch('openai.AsyncOpenAI', return_value=client):
             with self.assertRaises(ProviderAccountUnavailable):
                 asyncio.run(translate_glossary(candidates, max_terms_per_call=1))
