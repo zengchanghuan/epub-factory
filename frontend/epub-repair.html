@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta name="referrer" content="no-referrer" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EPUB 格式修复 – 一键修复 Apple Books / Kindle 无法打开的 EPUB | FixEpub</title>
 
@@ -15,25 +16,7 @@
   <meta http-equiv="Cache-Control" content="no-siteapp" />
   <link rel="canonical" href="https://fixepub.com/epub-repair.html" />
 
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-HYM7H4T3RG"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-HYM7H4T3RG');
-  </script>
-
-  <!-- Baidu Analytics (百度统计) -->
-  <script>
-    var _hmt = _hmt || [];
-    (function() {
-      var hm = document.createElement("script");
-      hm.src = "https://hm.baidu.com/hm.js?YOUR_BAIDU_TONGJI_ID"; // TODO: 请替换为实际的百度统计ID
-      var s = document.getElementsByTagName("script")[0]; 
-      s.parentNode.insertBefore(hm, s);
-    })();
-  </script>
+  <!-- 处理页含任务访问凭据，不加载第三方统计；站内支付漏斗仍由服务端记录。 -->
 
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://fixepub.com/epub-repair.html" />
@@ -265,19 +248,30 @@
 
     /* ── Footer ── */
     footer {
-      border-top: 1px solid var(--border);
-      padding: 28px 24px;
+      background: #0f0f0f;
+      padding: 16px;
       text-align: center;
       font-size: 12px;
-      color: var(--subtle);
+      line-height: 1.8;
+      color: #9ca3af;
+      overflow-wrap: anywhere;
     }
-    footer a { color: var(--subtle); }
+    footer a { color: inherit; text-decoration: none; }
+    footer a:hover { color: #fff; }
+    footer .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px 14px;
+      margin-top: 6px;
+    }
 
     @media (max-width: 520px) {
       header h1 { font-size: 22px; }
       .btn-row { flex-direction: column; }
     }
   </style>
+  <link rel="stylesheet" href="/return-later.css?v=20260918">
 </head>
 <body>
 
@@ -287,16 +281,16 @@
   <div class="topbar-nav">
     <a href="/">✦ 转换 &amp; 翻译</a>
     <a href="/epub-repair.html" class="active">🔧 格式修复</a>
-    <a href="/about.html">关于我们</a>
   </div>
   <div style="flex:1"></div>
   <div id="authTopbarArea" style="margin-left:8px;"></div>
 </nav>
 
 <main class="container">
+  <section id="returnLaterPanel" aria-label="稍后下载与邮件通知"></section>
   <header>
     <h1>EPUB 格式修复</h1>
-    <p>上传无法在 Apple Books、Kindle 中打开的 EPUB 文件，自动检测格式问题并一键修复。文件不会被保存超过 1 小时，处理完成后自动删除。</p>
+    <p>上传无法在 Apple Books、Kindle 中打开的 EPUB 文件，自动检测格式问题并一键修复。处理结果可稍后回到本页下载，建议完成后及时保存到本机，请勿清理浏览器中的本站记录。</p>
     <div class="feature-pills">
       <span class="pill">✓ mimetype 位置修复</span>
       <span class="pill">✓ DOCTYPE 标准化</span>
@@ -344,7 +338,7 @@
 
           <div class="btn-row">
             <button class="btn btn-primary" id="payBtn" disabled>
-              🔧 一键修复 <strong id="priceLabel" style="margin-left:6px;">¥5.99</strong>
+              🔧 一键修复 <strong id="priceLabel" style="margin-left:6px;">¥0.99</strong>
             </button>
             <button class="btn btn-outline" id="resetBtn">重新上传</button>
           </div>
@@ -353,7 +347,7 @@
         <!-- 支付二维码 -->
         <div class="pay-box" id="payBox">
           <h3>扫码支付后自动开始修复</h3>
-          <div class="pay-price" id="payPrice">¥5.99 <span>/ 次</span></div>
+          <div class="pay-price" id="payPrice">¥0.99 <span>/ 次</span></div>
           <div class="qr-wrap">
             <img id="qrImg" src="" alt="支付宝二维码" />
             <div class="qr-hint">使用支付宝 App 扫码 · 支付完成后自动处理</div>
@@ -361,7 +355,7 @@
           <ul class="pay-steps" style="margin-top:14px">
             <li>支付成功后无需任何操作，系统自动修复</li>
             <li>通常 5 秒内完成，完成后可直接下载</li>
-            <li>如有问题请刷新页面重新上传</li>
+            <li>可以关闭页面，稍后用同一浏览器回来查看和下载，无需重新上传</li>
           </ul>
         </div>
 
@@ -421,25 +415,37 @@
   </div>
 </main>
 
-<footer style="background:#0f0f0f; color:#9ca3af; text-align:center; padding:24px 16px; font-size:12px; line-height:2;">
-  <div style="font-size:13px; color:#d1d5db; font-weight:500; margin-bottom:4px;">深圳市长欢文化艺术有限公司</div>
-  <div>深圳市宝安区西乡街道固兴社区宝安大道4676号红利大厦606</div>
-  <div style="margin-top:4px;">AI 翻译由 <a href="https://www.deepseek.com" target="_blank" rel="noopener" style="color:#9ca3af;">DeepSeek</a> API 提供算法支持</div>
-  <div style="margin-top:4px;">
-    <a href="/" style="color:#9ca3af;">FixEpub</a> ·
-    <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" style="color:#9ca3af;">粤ICP备2026051457号-1</a>
-  </div>
-  <div style="margin-top:6px; display:flex; justify-content:center; gap:14px; flex-wrap:wrap;">
-    <a href="/privacy.html" style="color:#9ca3af;">隐私政策</a>
-    <a href="/terms.html" style="color:#9ca3af;">服务条款</a>
-    <a href="/refund.html" style="color:#9ca3af;">退款政策</a>
-    <a href="/about.html" style="color:#9ca3af;">关于我们</a>
-    <a href="/contact.html" style="color:#9ca3af;">联系我们</a>
-  </div>
+<footer>
+  <p>© 2026 <a href="/">FixEpub</a> · 深圳市长欢文化艺术有限公司 · <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2026051457号-1</a></p>
+  <nav class="footer-links" aria-label="网站信息">
+    <a href="/privacy.html">隐私政策</a>
+    <a href="/terms.html">服务条款</a>
+    <a href="/refund.html">退款政策</a>
+    <a href="/contact.html">联系我们</a>
+    <a href="/about.html">关于我们</a>
+  </nav>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="/lib.js?v=20260918-return-later"></script>
+<script src="/return-later.js?v=20260918"></script>
 <script>
+  const localStorage = FixEpubReturnLater.safeStorage(window);
+  const sessionStorage = FixEpubReturnLater.safeStorage(window, "sessionStorage");
+  const repairTokens = {};
+  function repairHeaders(jobId) { return repairTokens[jobId] ? { "X-Job-Token": repairTokens[jobId] } : {}; }
+  FixEpubReturnLater.importFragment(location, history, (id, token) => { repairTokens[id] = token; }, true);
+  const returnLater = FixEpubReturnLater.mount({
+    root: document.getElementById("returnLaterPanel"), storage: localStorage, loadHistory, saveHistory, authHeaders: repairHeaders,
+    onOpen(task) {
+      if (task.kind !== "repair") return false;
+      resumeRepair(task.id);
+      return true;
+    },
+  });
+  function rememberRepairPage(jobId) {
+    history.replaceState(null, "", `/epub-repair.html?job_id=${encodeURIComponent(jobId)}`);
+  }
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
   const diagStatus = document.getElementById('diagStatus');
@@ -510,6 +516,8 @@
     clearInterval(pollTimer);
     pollTimer = null;
     currentJobId = null;
+    returnLater.setTask(null, true);
+    history.replaceState(null, '', location.pathname);
     reportBlock.classList.remove('visible');
     okBanner.style.display = 'none';
     issueArea.style.display = 'none';
@@ -537,6 +545,9 @@
       return;
     }
 
+    clearInterval(pollTimer);
+    downloadArea.style.display = 'none';
+    fixStatus.textContent = '';
     dropHint.textContent = file.name;
     showDiagStatus('loading', '正在诊断文件格式…');
     reportBlock.classList.remove('visible');
@@ -554,6 +565,8 @@
       }
       const data = await res.json();
       currentJobId = data.job_id;
+      rememberRepairPage(currentJobId);
+      returnLater.setTask({ kind: "repair", id: currentJobId, filename: file.name, status: "pending_payment" }, true);
       diagStatus.innerHTML = '';
       if (data.price_cny) {
         const _adminKey = localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key");
@@ -627,10 +640,19 @@
         return;
       }
       const data = await res.json();
+      if (data.price_cny) {
+        priceLabel.textContent = `¥${data.price_cny}`;
+        payPrice.innerHTML = `¥${escHtml(data.price_cny)} <span>/ 次</span>`;
+      }
 
       if (data.status === 'repaired') {
         // SKIP_PAYMENT_CHECK 模式
         showDownloadReady(currentJobId);
+        return;
+      }
+      if (data.status === 'paid') {
+        fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>支付成功，正在修复文件…</span></div>';
+        startPolling(currentJobId);
         return;
       }
 
@@ -644,12 +666,12 @@
         payBox.classList.add('visible');
         payBox.innerHTML = `
           <h3>请完成支付宝付款</h3>
-          <div class="pay-price">${escHtml(payPrice.textContent || '¥5.99')}</div>
+          <div class="pay-price">${escHtml(payPrice.textContent || '¥0.99')}</div>
           <div style="text-align:center; margin-top: 12px;">
             <a href="${escHtml(data.pay_url)}" target="fixepub-alipay" rel="noopener"
                class="btn btn-primary alipay-popup-link" style="text-decoration:none;">前往支付宝付款</a>
           </div>
-          <div class="qr-hint" style="margin-top:12px;">支付宝将在小窗口中打开；本页面会自动确认付款并开始修复。</div>
+          <div class="qr-hint" style="margin-top:12px;">支付宝将在小窗口中打开；服务器会确认付款并在后台开始修复，可以关闭本页。</div>
         `;
         startPolling(currentJobId);
       }
@@ -661,17 +683,28 @@
 
   // ── 轮询状态 ───────────────────────────────────────────────
   function startPolling(jobId) {
-    fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>等待支付确认…</span></div>';
+    fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>正在读取任务状态…</span></div>';
     clearInterval(pollTimer);
-    pollTimer = setInterval(async () => {
+    async function checkStatus() {
       try {
-        const res = await fetch(`/api/v2/repair/${jobId}/status`);
-        if (!res.ok) return;
+        const res = await fetch(`/api/v2/repair/${jobId}/status`, { cache: 'no-store', headers: repairHeaders(jobId) });
+        if (!res.ok) {
+          if (res.status === 404 || res.status === 403) {
+            clearInterval(pollTimer);
+            fixStatus.textContent = res.status === 404 ? '任务记录不存在或已过期，请联系客服。' : '无法读取此任务，请从原浏览器或邮件中的入口打开。';
+          }
+          return;
+        }
         const data = await res.json();
-
+        if (currentJobId !== jobId) return;
+        if (data.price_cny) {
+          priceLabel.textContent = `¥${data.price_cny}`;
+          payPrice.innerHTML = `¥${escHtml(data.price_cny)} <span>/ 次</span>`;
+        }
+        returnLater.remember({ kind: 'repair', id: jobId, status: data.status });
         if (data.status === 'paid') {
           closeAlipayPopup();
-          fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>支付成功，正在修复文件…</span></div>';
+          fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>支付成功，正在后台修复文件，可以关闭页面。</span></div>';
         } else if (data.status === 'repaired') {
           clearInterval(pollTimer);
           closeAlipayPopup();
@@ -681,14 +714,37 @@
           clearInterval(pollTimer);
           closeAlipayPopup();
           fixStatus.innerHTML = `<div class="status-msg error">❌ 修复失败：${escHtml(data.error || '未知错误')}</div>`;
+        } else {
+          fixStatus.textContent = '此任务尚未确认支付。付款成功后才会在后台修复。';
+          issueArea.style.display = 'block';
+          payBtn.disabled = false;
         }
-      } catch (e) { /* 网络抖动忽略 */ }
-    }, 3000);
+      } catch (e) { fixStatus.textContent = '暂时无法获取最新状态，稍后会自动重试；这不代表任务失败。'; }
+    }
+    pollTimer = setInterval(checkStatus, 3000);
+    checkStatus();
+  }
+
+  function resumeRepair(jobId) {
+    downloadArea.style.display = 'none';
+    payBox.classList.remove('visible');
+    issueArea.style.display = 'none';
+    okBanner.style.display = 'none';
+    issueList.replaceChildren();
+    summaryBadge.textContent = '';
+    summaryText.textContent = '已恢复原修复任务，无需重新上传。';
+    summaryMeta.textContent = '';
+    currentJobId = jobId;
+    rememberRepairPage(jobId);
+    returnLater.setTask({ kind: 'repair', id: jobId });
+    reportBlock.classList.add('visible');
+    startPolling(jobId);
   }
 
   function showDownloadReady(jobId) {
     fixStatus.innerHTML = '';
     downloadBtn.href = `/api/v2/repair/${jobId}/download`;
+    returnLater.remember({ kind: 'repair', id: jobId, status: 'repaired' });
     downloadArea.style.display = 'block';
   }
 
@@ -724,8 +780,7 @@
     }
     const jobId = params.get('job_id');
     if (!jobId) return;
-    currentJobId = jobId;
-    payBox.classList.add('visible');
+    resumeRepair(jobId);
     fixStatus.innerHTML = '<div class="status-msg loading"><div class="spinner"></div><span>正在确认支付状态…</span></div>';
     // 主动调一次 recover 兜底（webhook 没收到也能补救），再开始轮询。
     fetch(`/api/v2/repair/${jobId}/recover`, { method: 'POST' })

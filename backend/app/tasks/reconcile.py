@@ -18,12 +18,14 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 
-from app.infra.alipay import query_alipay_trade
+from app.infra.alipay import query_verified_trade
 from app.infra.celery_app import celery_app
 from app.storage import job_store
 from app.models import JobStatus
 from app.domain.translation_attempt import attempt_id_from_stats
+from app.order_events import record_event
 
 logger = logging.getLogger("epub_factory.reconcile")
 
@@ -51,9 +53,26 @@ def reconcile_payments(self) -> dict:
     for job in stale:
         batch_id = getattr(job, "batch_id", "") or ""
         order_no = f"batch_{batch_id}" if batch_id else job.id
-        trade_status = query_alipay_trade(order_no)
+        trade = query_verified_trade(order_no)
+        # The SDK query is signature-verified. Keep the identity guard here as
+        # well so an unrelated response can never release this order.
+        if not trade or trade.get("out_trade_no") != order_no:
+            skipped += 1
+            continue
+        trade_status = trade.get("trade_status")
 
         if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+            expected = str(getattr(job, "expected_amount", "") or "").strip()
+            if not expected and not batch_id:
+                # Older single-file orders predate expected_amount. Their
+                # historical flat price must not inherit the new repair price.
+                expected = os.environ.get("TRANSLATION_PRICE_CNY", "5.99").strip()
+            if not _amount_matches(trade.get("total_amount"), expected):
+                logger.warning("reconcile: paid amount mismatch", extra={"job_id": order_no})
+                skipped += 1
+                continue
+            record_event(job_store, order_no, "payment_succeeded", "verified_query")
+            _queue_paid_email(job, order_no, expected)
             if batch_id:
                 _handle_batch_paid(batch_id)
             else:
@@ -86,6 +105,31 @@ def reconcile_payments(self) -> dict:
     summary = {"checked": len(stale), "paid": paid, "closed": closed, "skipped": skipped}
     logger.info("reconcile_payments: done", extra=summary)
     return summary
+
+
+def _amount_matches(actual, expected: str) -> bool:
+    try:
+        received, frozen = Decimal(str(actual)), Decimal(expected)
+        return received.is_finite() and frozen.is_finite() and received > 0 and received == frozen
+    except (ValueError, InvalidOperation, TypeError):
+        return False
+
+
+def _queue_paid_email(job, order_no: str, amount: str) -> None:
+    """Persist a verified receipt; a mail failure must not block paid work."""
+    try:
+        from app.domain.payment_email_service import queue_paid_order_email
+        batch_id = getattr(job, "batch_id", "") or ""
+        list_batch = getattr(job_store, "list_jobs_by_batch_id", None)
+        jobs = (list_batch(batch_id) if batch_id and callable(list_batch) else [job]) or [job]
+        queue_paid_order_email(
+            order_no, amount,
+            "batch" if batch_id else ("translation" if job.enable_translation else "conversion"),
+            file_count=len(jobs) or 1,
+            is_test_order=any(getattr(item, "is_test_order", False) for item in jobs),
+        )
+    except Exception:
+        logger.warning("reconcile: payment email could not be queued", extra={"job_id": order_no})
 
 
 def _handle_paid(job_id: str) -> None:

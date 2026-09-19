@@ -8,13 +8,16 @@ REMOTE_DIR=${DEPLOY_REMOTE_DIR:-/home/ubuntu/epub-factory}
 PYTHON=${PYTHON:-python3}
 PACKAGE="$ROOT/epub-factory-deploy.zip"
 MODE=${1:-deploy}
+LEGACY_REPAIR_ID=''
 case "$MODE" in
   --help|-h)
     cat <<'HELP'
-Usage: bash deploy.sh [--package-only | --check | --help]
+Usage: bash deploy.sh [--package-only | --check | --preserve-legacy-repair JOB_ID | --help]
   default         Package, upload, back up server code, deploy and verify services.
   --package-only  Build epub-factory-deploy.zip without connecting to the server.
   --check         Check SSH, server prerequisites and active jobs; do not deploy.
+  --preserve-legacy-repair JOB_ID
+                  Preserve a confirmed normal 5.99 legacy repair before restart.
 Environment:
   DEPLOY_HOST        ubuntu@81.71.22.79 (or an SSH config alias)
   DEPLOY_PORT        22
@@ -26,6 +29,10 @@ See docs/DEPLOY.md for browser-terminal deployment and rollback instructions.
 HELP
     exit 0 ;;
   deploy|--package-only|--check) ;;
+  --preserve-legacy-repair)
+    [[ $# == 2 && "$2" =~ ^[0-9a-f]{32}$ ]] || { echo 'A confirmed legacy repair job ID is required.' >&2; exit 2; }
+    LEGACY_REPAIR_ID=$2
+    MODE=deploy ;;
   *) echo "Unknown option: $MODE" >&2; exit 2 ;;
 esac
 [[ "$PORT" =~ ^[0-9]+$ ]] || { echo 'Invalid DEPLOY_PORT' >&2; exit 2; }
@@ -61,7 +68,7 @@ REMOTE_PACKAGE="/tmp/epub-factory-$STAMP.zip"
 SCP_OPTS=(-P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o "ControlPath=$WORK/ssh")
 [[ -z "$KEY" ]] || SCP_OPTS+=(-i "$KEY")
 scp "${SCP_OPTS[@]}" "$PACKAGE" "$HOST:$REMOTE_PACKAGE"
-ssh "${SSH_OPTS[@]}" "$HOST" "bash -s -- '$REMOTE_PACKAGE' '$REMOTE_DIR'" < "$ROOT/scripts/deploy-server.sh"
+ssh "${SSH_OPTS[@]}" "$HOST" "bash -s -- '$REMOTE_PACKAGE' '$REMOTE_DIR' '$LEGACY_REPAIR_ID'" < "$ROOT/scripts/deploy-server.sh"
 PUBLIC_URL=${DEPLOY_PUBLIC_URL:-https://fixepub.com}
 curl --fail --silent --show-error --max-time 20 "${PUBLIC_URL%/}/api/healthz" | "$PYTHON" -c 'import json,sys; result=json.load(sys.stdin); assert result.get("status") == "ok", result; print("Public API health: ok")'
 echo

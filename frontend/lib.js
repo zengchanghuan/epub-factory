@@ -334,7 +334,7 @@ function glossaryToJson(text) {
 // ─── LocalStorage 历史记录 ────────────────────────────────────────────────
 
 const HISTORY_KEY = "epub_factory_history";
-const HISTORY_MAX = 5;
+const HISTORY_MAX = 20;
 
 /**
  * 构造一条历史记录条目
@@ -345,6 +345,8 @@ const HISTORY_MAX = 5;
 function buildHistoryEntry(job, apiBase) {
   return {
     jobId: job.job_id,
+    kind: "job",
+    status: job.status,
     traceId: job.trace_id,
     filename: job.source_filename,
     meta: formatJobMeta(job),
@@ -360,7 +362,8 @@ function buildHistoryEntry(job, apiBase) {
  */
 function loadHistory(storage) {
   try {
-    return JSON.parse(storage.getItem(HISTORY_KEY) || "[]");
+    const value = JSON.parse(storage.getItem(HISTORY_KEY) || "[]");
+    return Array.isArray(value) ? value.filter(entry => entry && typeof entry === "object") : [];
   } catch {
     return [];
   }
@@ -375,10 +378,10 @@ function loadHistory(storage) {
 function saveHistory(storage, entry) {
   let list = loadHistory(storage);
   // 去重：已有相同 jobId 时覆盖
-  list = list.filter(e => e.jobId !== entry.jobId);
+  list = list.filter(e => e.jobId !== entry.jobId || (e.kind || "job") !== (entry.kind || "job"));
   list.unshift(entry);
   if (list.length > HISTORY_MAX) list = list.slice(0, HISTORY_MAX);
-  storage.setItem(HISTORY_KEY, JSON.stringify(list));
+  try { storage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch (_) { /* storage may be restricted */ }
   return list;
 }
 
@@ -387,7 +390,7 @@ function saveHistory(storage, entry) {
  * @param {object} storage
  */
 function clearHistory(storage) {
-  storage.removeItem(HISTORY_KEY);
+  try { storage.removeItem(HISTORY_KEY); } catch (_) { /* storage may be restricted */ }
 }
 
 // ─── 导出（Node.js / browser 兼容） ───────────────────────────────────────

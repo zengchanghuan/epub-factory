@@ -109,6 +109,25 @@ class AdminTests(unittest.TestCase):
             self.assertEqual(self.store.get('a').status,JobStatus.failed)
         self.assertFalse(self.queued)
 
+    def test_payment_refresh_notifies_only_newly_verified_pending_order(self):
+        self.job(status=JobStatus.pending_payment)
+        self.login()
+        with patch('app.domain.payment_email_service.queue_paid_order_email') as notify:
+            response = self.client.post('/api/admin/orders/a/payment', json={})
+            self.assertEqual(response.status_code, 200)
+            notify.assert_called_once_with('a', '5.99', 'translation', file_count=1, is_test_order=False)
+        self.assertEqual(self.store.get('a').status, JobStatus.pending_payment)
+
+    def test_refresh_of_historical_or_wrong_amount_order_does_not_send_sale_mail(self):
+        self.job(status=JobStatus.success)
+        self.login()
+        with patch('app.domain.payment_email_service.queue_paid_order_email') as notify:
+            self.assertEqual(self.client.post('/api/admin/orders/a/payment', json={}).status_code, 200)
+            self.job('b', status=JobStatus.pending_payment)
+            self.trade.return_value = {'trade_status': 'TRADE_SUCCESS', 'total_amount': '0.01'}
+            self.assertEqual(self.client.post('/api/admin/orders/b/payment', json={}).status_code, 200)
+            notify.assert_not_called()
+
     def test_paid_retry_once_preserves_cost(self):
         self.job(translation_stats={'prompt_tokens':100,'completion_tokens':20,'cost_usd':0.1,'translation_attempt':2})
         self.login(); self.assertEqual(self.retry().status_code,200)

@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run frontend regression
+        run: |
+          for test in frontend/tests/test_*.js; do
+            node frontend/tests/runner.js "$(basename "$test")" || exit 1
+          done
+
   regression:
     runs-on: ubuntu-latest
     steps:
@@ -58,6 +71,12 @@ jobs:
                 test_d32_resource_repair
                 test_d32_source_warning_flow
                 test_d32_literal_code_preservation
+                test_d33_repair_pricing
+                test_d34_completion_email
+                test_d34_email_api
+                test_d35_payment_email
+                test_d35_payment_hooks
+                test_d35_payment_reconcile
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard
@@ -68,5 +87,8 @@ jobs:
                 echo "=== $t ==="
                 python "$t.py" || fail=1
               done
+              python ../scripts/test_configure_email.py || fail=1
+              python ../scripts/test_migrate_legacy_repair.py || fail=1
+              python ../scripts/test_deploy_legacy_gate.py || fail=1
               exit $fail
             '

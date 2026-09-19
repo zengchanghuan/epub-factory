@@ -184,6 +184,28 @@ class NotificationRecord(Base):
     created_at = Column(DateTime(timezone=True), nullable=False)
 
 
+class EmailSubscriptionRecord(Base):
+    """Private subscription and durable delivery state; never exposed as notifications."""
+    __tablename__ = "job_email_subscriptions"
+
+    job_id = Column(String(80), primary_key=True)
+    revision = Column(String(32), nullable=False)
+    data_json = Column(Text, nullable=False)
+
+
+class PaymentEmailRecord(Base):
+    """Private merchant receipt outbox, independent of customer subscriptions."""
+    __tablename__ = "payment_email_outbox"
+
+    order_no = Column(String(100), primary_key=True)
+    revision = Column(String(32), nullable=False)
+    status = Column(String(24), nullable=False, index=True)
+    next_attempt_at = Column(Float, nullable=False, default=0, index=True)
+    lease_until = Column(Float, nullable=False, default=0)
+    created_at = Column(Float, nullable=False)
+    data_json = Column(Text, nullable=False)
+
+
 # ─── 数据库连接工厂 ───────────────────────────────────────────────────────────
 
 def _make_engine():

@@ -44,6 +44,12 @@ D_SUITE = [
     "test_d28_media_text_translation.py",
     "test_d29_translation_performance.py",
     "test_d30_corpus_fixes.py",
+    "test_d33_repair_pricing.py",
+    "test_d34_completion_email.py",
+    "test_d34_email_api.py",
+    "test_d35_payment_email.py",
+    "test_d35_payment_hooks.py",
+    "test_d35_payment_reconcile.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

@@ -1,0 +1,17 @@
+.return-later-panel { margin: 0 0 24px; padding: 18px 20px; border: 1px solid #bfdbfe; border-radius: 12px; background: #f5f9ff; color: #334155; font-size: 13px; line-height: 1.75; }
+.return-later-panel > strong { color: #1e3a5f; font-size: 15px; }
+.return-later-panel p { margin: 6px 0; }
+.return-later-email { margin-top: 12px; }
+.return-later-email label { font-weight: 600; display: block; margin-bottom: 6px; }
+.return-later-email-row { display: flex; gap: 8px; max-width: 540px; }
+.return-later-email-row input { flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid #cbd5e1; border-radius: 7px; background: white; font: inherit; }
+.return-later-email-row button { padding: 9px 14px; border: 0; border-radius: 7px; background: #1e40af; color: white; font: inherit; cursor: pointer; }
+.return-later-email-row button:disabled { opacity: .5; cursor: default; }
+.return-later-privacy, #notificationEmailHint { font-size: 12px; color: #64748b; }
+.return-later-warning { color: #92400e; }
+#returnLaterRecent { border-top: 1px solid #dbeafe; margin-top: 12px; padding-top: 10px; }
+#returnLaterTaskList { list-style: none; padding: 0; margin: 5px 0 0; max-height: 210px; overflow: auto; }
+#returnLaterTaskList a { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 5px 0; color: #1e40af; text-decoration: none; overflow-wrap: anywhere; }
+#returnLaterTaskList a:hover { text-decoration: underline; }
+#returnLaterTaskList span { color: #64748b; font-size: 12px; white-space: nowrap; }
+@media (max-width: 480px) { .return-later-panel { padding: 14px; } #returnLaterTaskList a { flex-direction: column; gap: 0; } }

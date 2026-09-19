@@ -48,7 +48,8 @@ def test_notify_job_completed_adds_in_app():
     assert len(listed) >= 1
     n = next(x for x in listed if x.job_id == job_id and x.channel == CHANNEL_IN_APP)
     assert n.payload.get("status") == "success"
-    assert n.payload.get("output_path") == "/tmp/out.epub"
+    assert "output_path" not in n.payload
+    assert "source_filename" not in n.payload
     assert n.status == NotificationStatus.sent
 
 

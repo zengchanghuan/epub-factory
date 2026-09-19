@@ -57,6 +57,8 @@ epub-factory.zip
 # Local test fixtures
 # Reviewed book text and repair provenance are private local artifacts.
 /artifacts/translated-books/*.json
+# Private originals, customer-book diagnostics and local regression outputs.
+/artifacts/repair-regression-*/
 test.pdf
 test[0-9]*.pdf
 test_*/

@@ -1,4 +1,5 @@
 import hmac
+import logging
 import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -18,6 +19,8 @@ from ..models import JobStage, JobStatus, StageStatus
 from ..domain.translation_attempt import new_attempt_id
 from ..infra.alipay import query_verified_trade
 from ..order_events import milestones, record_event
+
+logger = logging.getLogger("epub_factory")
 
 
 class LoginBody(BaseModel):
@@ -90,6 +93,16 @@ def make_router(store, upload_dir, output_dir, enqueue):
             session.commit()
         if state == "paid":
             record_event(store, number, "payment_succeeded", "verified_query")
+            # A historical order refresh must not send a new-sale notification.
+            if job.status == JobStatus.pending_payment:
+                try:
+                    from ..domain.payment_email_service import queue_paid_order_email
+                    jobs = store.list_jobs_by_batch_id(job.batch_id) if job.batch_id else [job]
+                    queue_paid_order_email(number, amount,
+                        "batch" if job.batch_id else "translation" if job.enable_translation else "conversion",
+                        file_count=len(jobs), is_test_order=any(j.is_test_order for j in jobs))
+                except Exception:
+                    logger.warning("Paid order email could not be queued", extra={"job_id": number})
         return values
 
     @router.post("/login")

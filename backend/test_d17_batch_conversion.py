@@ -95,7 +95,7 @@ class BatchConversionTest(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["status"], "pending_payment")
         self.assertEqual(data["qr_code"], "alipay://batch-qr")
-        self.assertGreater(float(data["amount"]), 5.99)
+        self.assertEqual(data["amount"], "3.98")
         self.assertEqual(precreate.call_count, 1)
         self.assertEqual(precreate.call_args.args[0], f"batch_{data['batch_id']}")
 

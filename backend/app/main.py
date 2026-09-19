@@ -98,7 +98,7 @@ def _use_celery() -> bool:
 
 
 # ── 格式转换定价（元/次）────────────────────────────────────────────────────
-CONVERSION_PRICE_CNY: str = _os.environ.get("CONVERSION_PRICE_CNY", "5.99").strip() or "5.99"
+CONVERSION_PRICE_CNY: str = _os.environ.get("CONVERSION_PRICE_CNY", "1.99").strip() or "1.99"
 BATCH_MAX_FILES: int = max(2, int(_os.environ.get("BATCH_MAX_FILES", "10")))
 BATCH_MAX_TOTAL_MB: int = max(MAX_FILE_SIZE_MB, int(_os.environ.get("BATCH_MAX_TOTAL_MB", "200")))
 BATCH_MAX_TOTAL_BYTES: int = BATCH_MAX_TOTAL_MB * 1024 * 1024
@@ -114,7 +114,7 @@ TRANSLATION_MAX_PRICE: float = float(_os.environ.get("TRANSLATION_MAX_PRICE", "9
 # 兼容旧逻辑：若显式设置了 TRANSLATION_PRICE_CNY，优先使用固定价格（方便灰度切换）
 _TRANSLATION_FIXED_PRICE: str = _os.environ.get("TRANSLATION_PRICE_CNY", "").strip()
 # 历史变量名保留，部分地方仍引用
-TRANSLATION_PRICE_CNY: str = _TRANSLATION_FIXED_PRICE or CONVERSION_PRICE_CNY
+TRANSLATION_PRICE_CNY: str = _TRANSLATION_FIXED_PRICE or "5.99"
 
 TRANSLATION_MODEL_CHOICES = {
     "deepseek-flash": "DeepSeek V4.1 Flash",
@@ -1993,6 +1993,23 @@ def _release_batch(batch_id: str, background_tasks: BackgroundTasks | None = Non
     return True
 
 
+def _record_verified_payment(order_no, amount, order_kind, *, source="verified_webhook",
+                             file_count=1, is_test_order=False, notify_owner=True):
+    """Only call after verifying the payment identity and frozen order amount."""
+    record_event(job_store, order_no, "payment_succeeded", source)
+    if not notify_owner:
+        # A delayed callback for an order processed before mail was deployed
+        # must not turn an empty outbox into a new-sale notification.
+        return
+    try:
+        from .domain.payment_email_service import queue_paid_order_email
+        queue_paid_order_email(order_no, amount, order_kind,
+                               file_count=file_count, is_test_order=is_test_order)
+    except Exception:
+        # A mail outage must never undo a verified payment or stop book processing.
+        logger.warning("Paid order email could not be queued", extra={"job_id": order_no})
+
+
 @app.post("/api/v2/batches")
 async def create_batch_v2(
     request: Request,
@@ -2153,9 +2170,16 @@ def recover_batch_payment_v2(batch_id: str, request: Request, background_tasks: 
         raise HTTPException(status_code=403, detail="无权访问该批次")
     if _batch_status(jobs) != "pending_payment":
         return {**_batch_payload(batch_id, jobs), "recovered": False}
-    from .infra.alipay import query_alipay_trade
-    trade_status = query_alipay_trade(f"batch_{batch_id}")
-    recovered = trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and _release_batch(batch_id, background_tasks)
+    from .infra.alipay import query_verified_trade
+    order_no = f"batch_{batch_id}"
+    trade = query_verified_trade(order_no)
+    trade_status = (trade or {}).get("trade_status")
+    expected = (getattr(jobs[0], "expected_amount", "") or "").strip()
+    recovered = False
+    if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and expected and _amount_equal(str(trade.get("total_amount") or ""), expected):
+        _record_verified_payment(order_no, trade["total_amount"], "batch", source="verified_query",
+                                 file_count=len(jobs), is_test_order=any(j.is_test_order for j in jobs))
+        recovered = _release_batch(batch_id, background_tasks)
     return {**_batch_payload(batch_id), "recovered": recovered, "trade_status": trade_status}
 
 
@@ -3078,8 +3102,9 @@ def recover_job_payment(job_id: str, request: Request):
     if job.status != JobStatus.pending_payment:
         return {"job_id": job_id, "status": _job_to_v2_status(job), "recovered": False}
 
-    from .infra.alipay import query_alipay_trade
-    trade_status = query_alipay_trade(job_id)
+    from .infra.alipay import query_verified_trade
+    trade = query_verified_trade(job_id)
+    trade_status = (trade or {}).get("trade_status")
     logger.info(
         "recover_job_payment: trade query result",
         extra={"job_id": job_id, "trade_status": trade_status or "unknown"},
@@ -3092,6 +3117,14 @@ def recover_job_payment(job_id: str, request: Request):
             "recovered": False,
             "trade_status": trade_status,
         }
+
+    expected = (getattr(job, "expected_amount", "") or TRANSLATION_PRICE_CNY).strip()
+    if not _amount_equal(str(trade.get("total_amount") or ""), expected):
+        return {"job_id": job_id, "status": _job_to_v2_status(job), "recovered": False,
+                "trade_status": trade_status}
+    _record_verified_payment(job.id, trade["total_amount"],
+                             "translation" if job.enable_translation else "conversion",
+                             source="verified_query", is_test_order=job.is_test_order)
 
     try_mark = getattr(job_store, "try_mark_paid", None)
     won = bool(try_mark(job.id)) if callable(try_mark) else (
@@ -3368,7 +3401,7 @@ async def alipay_webhook(request: Request):
             logger.warning("Alipay webhook seller_id mismatch", extra={"job_id": out_trade_no or ""})
             return Response("fail")
         
-        if trade_status == "TRADE_SUCCESS" and out_trade_no:
+        if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and out_trade_no:
             # ── 修复订单（repair_ 前缀）────────────────────────────
             if out_trade_no.startswith("repair_"):
                 repair_job_id = out_trade_no[len("repair_"):]
@@ -3376,17 +3409,21 @@ async def alipay_webhook(request: Request):
                 if not repair_job:
                     logger.warning("Alipay webhook for unknown repair job", extra={"job_id": out_trade_no})
                     return Response("success")
-                expected = REPAIR_PRICE_CNY
+                expected = _repair_expected_amount(repair_job)
                 actual = str(total_amount or "").strip()
                 if not _amount_equal(actual, expected):
                     logger.warning("Alipay webhook repair amount mismatch", extra={"job_id": out_trade_no})
                     return Response("fail")
+                _record_verified_payment(out_trade_no, actual, "repair",
+                                         is_test_order=bool(repair_job.get("is_test_order")) or expected in {"0.01", "0.02"},
+                                         notify_owner=repair_job.get("status") == "pending_payment")
                 with _repair_jobs_lock:
                     if _repair_jobs.get(repair_job_id, {}).get("status") != "pending_payment":
                         return Response("success")
                     _repair_jobs[repair_job_id]["status"] = "paid"
+                    _repair_job_save_locked(repair_job_id)
                 logger.info("repair payment confirmed, starting repair", extra={"job_id": repair_job_id})
-                _threading.Thread(target=_do_repair_async, args=(repair_job_id,), daemon=True).start()
+                _ensure_repair_running(repair_job_id)
                 return Response("success")
 
             # ── 批量转换订单（batch_ 前缀）────────────────────────
@@ -3401,7 +3438,9 @@ async def alipay_webhook(request: Request):
                 if not expected or not _amount_equal(actual, expected):
                     logger.warning("Alipay webhook batch amount mismatch", extra={"job_id": out_trade_no})
                     return Response("fail")
-                record_event(job_store, out_trade_no, "payment_succeeded", "verified_webhook")
+                _record_verified_payment(out_trade_no, actual, "batch", file_count=len(batch_jobs),
+                                         is_test_order=any(j.is_test_order for j in batch_jobs),
+                                         notify_owner=batch_jobs[0].status == JobStatus.pending_payment)
                 if not _release_batch(batch_id):
                     logger.info("Alipay batch webhook ignored (already processed)", extra={"job_id": out_trade_no})
                 else:
@@ -3416,14 +3455,17 @@ async def alipay_webhook(request: Request):
                 return Response("success")
 
             # 订单金额二次校验：必须等于下单时落库的 expected_amount。
-            # 兼容旧数据：若 expected_amount 为空（老任务），回退到环境定价。
+            # 无落库金额的旧任务仍按原 5.99/显式翻译固定价验款，不能受新转换价影响。
             expected = (getattr(job, "expected_amount", "") or TRANSLATION_PRICE_CNY).strip()
             actual = str(total_amount or "").strip()
             if not _amount_equal(actual, expected):
                 logger.warning("Alipay webhook amount mismatch", extra={"job_id": out_trade_no})
                 return Response("fail")
 
-            record_event(job_store, out_trade_no, "payment_succeeded", "verified_webhook")
+            _record_verified_payment(out_trade_no, actual,
+                                     "translation" if job.enable_translation else "conversion",
+                                     is_test_order=job.is_test_order,
+                                     notify_owner=job.status == JobStatus.pending_payment)
 
             # 条件原子更新：只有"首次确认支付成功"的 webhook 会拿到 True，
             # 后续重试 / 并发回调一律返回 False，避免重复入队 → 重复消费 Token。
@@ -3623,24 +3665,88 @@ _REPAIR_UPLOAD_DIR = Path(os.environ.get("REPAIR_UPLOAD_DIR", "/tmp/epub-repair"
 _REPAIR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 修复单价（元）
-REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "5.99").strip() or "5.99"
+REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "0.99").strip() or "0.99"
 
-# 修复任务内存状态（轻量；不需持久化，重启后重新上传即可）
+# 修复任务元数据与源文件同目录持久化，确保进程重启后仍按下单金额验款。
 # {job_id: {"status": "pending_payment"|"paid"|"repaired"|"failed",
 #           "out_trade_no": str, "filename": str, "qr_code": str|None}}
 _repair_jobs: dict = {}
 _repair_jobs_lock = _threading.Lock()
+_repair_active_jobs: set[str] = set()
+
+
+def _repair_job_get_locked(job_id: str) -> Optional[dict]:
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return None
+    if job_id not in _repair_jobs:
+        metadata = _REPAIR_UPLOAD_DIR / job_id / "order.json"
+        try:
+            saved = json.loads(metadata.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(saved, dict):
+            return None
+        _repair_jobs[job_id] = saved
+    return _repair_jobs[job_id]
+
+
+def _repair_job_save_locked(job_id: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise ValueError("Invalid repair job id")
+    directory = _REPAIR_UPLOAD_DIR / job_id
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = directory / f".order-{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            temporary.chmod(0o600)
+            json.dump(_repair_jobs[job_id], handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(directory / "order.json")
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _repair_job_get(job_id: str) -> Optional[dict]:
     with _repair_jobs_lock:
-        return _repair_jobs.get(job_id)
+        return _repair_job_get_locked(job_id)
+
+
+def _repair_expected_amount(job: dict) -> str:
+    # Old in-memory orders were quoted at 5.99; a price change must not reprice them.
+    return str(job.get("expected_amount") or "5.99").strip()
 
 
 def _repair_job_set(job_id: str, **kwargs) -> None:
     with _repair_jobs_lock:
-        job = _repair_jobs.setdefault(job_id, {})
+        job = _repair_job_get_locked(job_id)
+        if job is None:
+            job = _repair_jobs.setdefault(job_id, {})
         job.update(kwargs)
+        _repair_job_save_locked(job_id)
+
+
+def _ensure_repair_running(job_id: str) -> None:
+    """Resume a confirmed local repair after restart, once per API process."""
+    with _repair_jobs_lock:
+        job = _repair_job_get_locked(job_id)
+        if not job or job.get("status") != "paid" or job_id in _repair_active_jobs:
+            return
+        _repair_active_jobs.add(job_id)
+
+    def run_and_release():
+        try:
+            _do_repair_async(job_id)
+        finally:
+            with _repair_jobs_lock:
+                _repair_active_jobs.discard(job_id)
+
+    try:
+        _threading.Thread(target=run_and_release, daemon=True).start()
+    except Exception:
+        with _repair_jobs_lock:
+            _repair_active_jobs.discard(job_id)
+        raise
 
 
 def _do_repair_async(job_id: str) -> None:
@@ -3656,12 +3762,27 @@ def _do_repair_async(job_id: str) -> None:
         output_path = job_dir / fixed_name
         if not output_path.exists():
             from .engine.epub_repairer import repair as do_repair
-            do_repair(str(input_path), str(output_path))
+            temporary_output = job_dir / (input_path.stem + "_fixed.pending.epub")
+            try:
+                do_repair(str(input_path), str(temporary_output))
+                temporary_output.replace(output_path)
+            finally:
+                temporary_output.unlink(missing_ok=True)
         _repair_job_set(job_id, status="repaired", download_filename=fixed_name)
+        _queue_repair_completion_email(job_id, "repaired")
         logger.info("epub_repair done", extra={"job_id": job_id})
     except Exception as e:
         logger.error("epub_repair async failed", exc_info=True, extra={"job_id": job_id})
         _repair_job_set(job_id, status="failed", error=str(e))
+        _queue_repair_completion_email(job_id, "failed")
+
+
+def _queue_repair_completion_email(job_id: str, status: str) -> None:
+    try:
+        from .domain.completion_email_service import queue_completion_email
+        queue_completion_email("repair:" + job_id, status)
+    except Exception:
+        logger.warning("Repair email notification could not be queued; task status unchanged", extra={"job_id": job_id})
 
 
 @app.post("/api/v2/repair/diagnose")
@@ -3691,7 +3812,7 @@ async def repair_diagnose(
     from .engine.epub_repairer import diagnose
     report = diagnose(str(input_path))
 
-    _repair_job_set(job_id, status="pending_payment", filename=safe_name)
+    _repair_job_set(job_id, status="pending_payment", filename=safe_name, quoted_amount=REPAIR_PRICE_CNY)
 
     return {
         "job_id": job_id,
@@ -3714,6 +3835,7 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
     if job.get("status") == "repaired":
         return {"job_id": job_id, "status": "repaired"}
     if job.get("status") == "paid":
+        _ensure_repair_running(job_id)
         return {"job_id": job_id, "status": "paid"}
 
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
@@ -3724,16 +3846,25 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
         _admin_secret and admin_key and
         _hmac.compare_digest((admin_key or "").strip(), _admin_secret)
     )
-    repair_price = "0.01" if _is_admin_test else REPAIR_PRICE_CNY
-
     if _skip_payment:
         # 开发模式：直接标记已付款并触发修复
         _repair_job_set(job_id, status="paid")
-        _threading.Thread(target=_do_repair_async, args=(job_id,), daemon=True).start()
+        _ensure_repair_running(job_id)
         return {"job_id": job_id, "status": "paid", "qr_code": None}
 
     from .infra.alipay import create_alipay_page_pay, create_alipay_precreate
     out_trade_no = f"repair_{job_id}"
+    # Freeze before contacting the gateway. Retrying the same merchant order must
+    # retain its amount even after a price/config change or a process restart.
+    with _repair_jobs_lock:
+        current = _repair_job_get_locked(job_id)
+        if current.get("expected_amount") or current.get("out_trade_no"):
+            repair_price = _repair_expected_amount(current)
+        else:
+            repair_price = "0.01" if _is_admin_test else str(current.get("quoted_amount") or REPAIR_PRICE_CNY)
+            current["is_test_order"] = _is_admin_test
+        current.update(expected_amount=repair_price, out_trade_no=out_trade_no)
+        _repair_job_save_locked(job_id)
     try:
         disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
         try:
@@ -3761,8 +3892,11 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
         logger.error("repair pay: alipay order failed", exc_info=True)
         raise HTTPException(status_code=502, detail=f"支付发起失败：{e}")
 
-    _repair_job_set(job_id, status="pending_payment", out_trade_no=out_trade_no, qr_code=qr_code, pay_url=pay_url)
-    return {"job_id": job_id, "status": "pending_payment", "qr_code": qr_code, "pay_url": pay_url}
+    # A verified callback can arrive before the gateway response; retain its
+    # paid/repaired status instead of downgrading the order to pending_payment.
+    _repair_job_set(job_id, out_trade_no=out_trade_no, qr_code=qr_code, pay_url=pay_url)
+    status = _repair_job_get(job_id).get("status", "pending_payment")
+    return {"job_id": job_id, "status": status, "qr_code": qr_code, "pay_url": pay_url, "price_cny": repair_price}
 
 
 @app.get("/api/v2/repair/{job_id}/status")
@@ -3774,6 +3908,7 @@ async def repair_status(job_id: str):
     return {
         "job_id": job_id,
         "status": job.get("status", "unknown"),
+        "price_cny": str(job.get("expected_amount") or job.get("quoted_amount") or "5.99").strip(),
         "download_filename": job.get("download_filename"),
         "error": job.get("error"),
     }
@@ -3791,24 +3926,34 @@ async def repair_recover_payment(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     if job.get("status") != "pending_payment":
+        if job.get("status") == "paid":
+            _ensure_repair_running(job_id)
         return {"job_id": job_id, "status": job.get("status"), "recovered": False}
 
     out_trade_no = job.get("out_trade_no") or f"repair_{job_id}"
-    from .infra.alipay import query_alipay_trade
-    trade_status = query_alipay_trade(out_trade_no)
+    from .infra.alipay import query_verified_trade
+    trade = query_verified_trade(out_trade_no)
+    trade_status = (trade or {}).get("trade_status")
     logger.info(
         "repair_recover_payment: trade query result",
         extra={"job_id": job_id, "trade_status": trade_status or "unknown"},
     )
     if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
         return {"job_id": job_id, "status": job.get("status"), "recovered": False, "trade_status": trade_status}
+    if not _amount_equal(str((trade or {}).get("total_amount") or ""), _repair_expected_amount(job)):
+        logger.warning("Repair payment recovery amount mismatch", extra={"job_id": job_id})
+        return {"job_id": job_id, "status": job.get("status"), "recovered": False, "trade_status": trade_status}
+
+    _record_verified_payment(out_trade_no, trade["total_amount"], "repair", source="verified_query",
+                             is_test_order=bool(job.get("is_test_order")) or _repair_expected_amount(job) in {"0.01", "0.02"})
 
     with _repair_jobs_lock:
         current = _repair_jobs.get(job_id, {})
         if current.get("status") != "pending_payment":
             return {"job_id": job_id, "status": current.get("status"), "recovered": False}
         _repair_jobs[job_id]["status"] = "paid"
-    _threading.Thread(target=_do_repair_async, args=(job_id,), daemon=True).start()
+        _repair_job_save_locked(job_id)
+    _ensure_repair_running(job_id)
     return {"job_id": job_id, "status": "paid", "recovered": True, "trade_status": trade_status}
 
 
@@ -3890,12 +4035,33 @@ from .admin.router import make_router as make_admin_router
 app.include_router(make_admin_router(job_store, UPLOAD_DIR, OUTPUT_DIR, _enqueue_conversion))
 app.include_router(make_event_router(job_store, _authorize_job_access))
 
+from .domain.completion_email_router import make_completion_email_router
+from .domain.completion_email_worker import CompletionEmailWorker
+from .domain.payment_email_worker import payment_email_worker
+
+app.include_router(make_completion_email_router(
+    job_store, _authorize_job_access, _list_batch_jobs, _authorize_batch_access, _repair_job_get,
+))
+_completion_email_worker = CompletionEmailWorker()
+
+
+@app.on_event("startup")
+def start_completion_email_worker():
+    _completion_email_worker.start()
+    payment_email_worker.start()
+
+
+@app.on_event("shutdown")
+def stop_completion_email_worker():
+    payment_email_worker.stop()
+    _completion_email_worker.stop()
+
 
 @app.middleware("http")
 async def admin_private_cache(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches")):
+    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches", "/api/v2/repair", "/api/v2/email-capabilities")):
         # A refresh must recover authoritative state and a newly signed download URL.
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
