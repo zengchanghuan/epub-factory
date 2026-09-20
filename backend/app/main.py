@@ -100,7 +100,8 @@ def _use_celery() -> bool:
 
 
 # ── 格式转换定价（元/次）────────────────────────────────────────────────────
-CONVERSION_PRICE_CNY: str = _os.environ.get("CONVERSION_PRICE_CNY", "1.99").strip() or "1.99"
+# 仅包含非 AI 的繁简转换、竖排改横排与阅读器适配；AI 精校另行计价。
+CONVERSION_PRICE_CNY: str = _os.environ.get("CONVERSION_PRICE_CNY", "0.99").strip() or "0.99"
 BATCH_MAX_FILES: int = max(2, int(_os.environ.get("BATCH_MAX_FILES", "10")))
 BATCH_MAX_TOTAL_MB: int = max(MAX_FILE_SIZE_MB, int(_os.environ.get("BATCH_MAX_TOTAL_MB", "200")))
 BATCH_MAX_TOTAL_BYTES: int = BATCH_MAX_TOTAL_MB * 1024 * 1024
@@ -1520,6 +1521,8 @@ async def create_job_v2(
 
     pricing_info = {}
     translation_preflight = None
+    conversion_base_amount = None
+    precision_polish_amount = None
     require_profile_confirmation = bool(
         enable_translation
         and profile_confirmation
@@ -1592,12 +1595,17 @@ async def create_job_v2(
                 # 格式转换：固定价格。优先尝试扫码支付；若支付宝应用未开通当面付，
                 # 回退到已审核通过的电脑网站支付，避免用户看到“支付渠道不可用”。
                 from .infra.alipay import create_alipay_precreate
-                base_amount = float(_TEST_PRICE) if _is_admin_test else float(CONVERSION_PRICE_CNY)
+                base_amount = Decimal(_TEST_PRICE) if _is_admin_test else Decimal(CONVERSION_PRICE_CNY)
+                conversion_base_amount = f"{base_amount:.2f}"
+                precision_polish_amount = "0.00"
                 if enable_precision_polish:
                     from .engine.cleaners.llm_polish import count_effective_chars, calculate_polish_price
                     char_count = count_effective_chars(str(input_path))
                     estimated_chars = char_count
-                    polish_price = calculate_polish_price(char_count) if not _is_admin_test else 0.01
+                    polish_price = Decimal(
+                        str(calculate_polish_price(char_count) if not _is_admin_test else _TEST_PRICE)
+                    )
+                    precision_polish_amount = f"{polish_price:.2f}"
                     base_amount += polish_price
                 expected_amount = f"{base_amount:.2f}"
                 subject = f"EPUB 格式转换服务 - {safe_name[:50]}"
@@ -1719,6 +1727,8 @@ async def create_job_v2(
         "pay_url": pay_url,
         "qr_code": qr_code,
         "amount": expected_amount,
+        "base_amount": conversion_base_amount,
+        "precision_polish_amount": precision_polish_amount,
         "estimated_chars": estimated_chars,
         "pricing": pricing_info or None,
         "translation_preflight": translation_preflight,

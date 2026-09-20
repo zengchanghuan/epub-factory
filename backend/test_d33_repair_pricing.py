@@ -43,13 +43,13 @@ class RepairPricingTests(unittest.TestCase):
 
     def test_translation_minimum_uses_new_standard_floor_and_polish_is_unchanged(self):
         from app.engine.cleaners.llm_polish import calculate_polish_price
-        self.assertEqual(main.CONVERSION_PRICE_CNY, '1.99')
+        self.assertEqual(main.CONVERSION_PRICE_CNY, '0.99')
         self.assertEqual(main.REPAIR_PRICE_CNY, '0.99')
         self.assertEqual(main._calc_translation_price(10), '3.99')
         self.assertEqual(main.TRANSLATION_PRICE_CNY, '5.99')
         self.assertEqual(calculate_polish_price(200000), 5.99)
 
-    def test_single_conversion_quotes_and_persists_199(self):
+    def test_single_conversion_quotes_and_persists_099(self):
         with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
             response = self.client.post('/api/v2/jobs',
                 files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')},
@@ -57,9 +57,55 @@ class RepairPricingTests(unittest.TestCase):
                 headers={'X-Client-Session': 'pricing-' + uuid.uuid4().hex})
         self.assertEqual(response.status_code, 200, response.text)
         result = response.json()
-        self.assertEqual(result['amount'], '1.99')
-        self.assertEqual(create.call_args.kwargs['total_amount'], '1.99')
-        self.assertEqual(main.job_store.get(result['job_id']).expected_amount, '1.99')
+        self.assertEqual(result['amount'], '0.99')
+        self.assertEqual(result['base_amount'], '0.99')
+        self.assertEqual(result['precision_polish_amount'], '0.00')
+        self.assertEqual(create.call_args.kwargs['total_amount'], '0.99')
+        self.assertEqual(main.job_store.get(result['job_id']).expected_amount, '0.99')
+
+    def test_precision_polish_is_a_separate_add_on(self):
+        with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create, patch(
+            'app.engine.cleaners.llm_polish.count_effective_chars', return_value=120_000
+        ):
+            response = self.client.post('/api/v2/jobs',
+                files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')},
+                data={'enable_translation': 'false', 'enable_precision_polish': 'true'},
+                headers={'X-Client-Session': 'pricing-polish-' + uuid.uuid4().hex})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result['base_amount'], '0.99')
+        self.assertEqual(result['precision_polish_amount'], '3.99')
+        self.assertEqual(result['amount'], '4.98')
+        self.assertEqual(create.call_args.kwargs['total_amount'], '4.98')
+        self.assertEqual(main.job_store.get(result['job_id']).expected_amount, '4.98')
+
+    def test_new_batch_uses_099_per_book(self):
+        book = minimal_epub_bytes()
+        with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
+            response = self.client.post('/api/v2/batches',
+                files=[
+                    ('files', ('first.epub', book, 'application/epub+zip')),
+                    ('files', ('second.epub', book, 'application/epub+zip')),
+                ],
+                data={'output_mode': 'simplified'},
+                headers={'X-Client-Session': 'pricing-batch-' + uuid.uuid4().hex})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result['amount'], '1.98')
+        self.assertEqual(create.call_args.args[1], '1.98')
+        jobs = main.job_store.list_jobs_by_batch_id(result['batch_id'])
+        self.assertEqual(jobs[0].expected_amount, '1.98')
+
+    def test_existing_199_conversion_keeps_frozen_amount(self):
+        job_id = uuid.uuid4().hex[:12]
+        main.job_store.add(Job(id=job_id, source_filename='fixture.epub', input_path='/tmp/not-read',
+            trace_id='offline', output_mode=OutputMode.simplified,
+            expected_amount='1.99', status=JobStatus.pending_payment))
+        with patch.object(main.job_store, 'try_mark_paid', return_value=False) as mark:
+            self.assertEqual(self.webhook(job_id, '0.99').text, 'fail')
+            mark.assert_not_called()
+            self.assertEqual(self.webhook(job_id, '1.99').text, 'success')
+            mark.assert_called_once_with(job_id)
 
     def test_old_single_orders_keep_saved_or_legacy_amount(self):
         for stored in ('5.99', ''):

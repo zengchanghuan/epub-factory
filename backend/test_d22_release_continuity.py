@@ -120,7 +120,7 @@ class RuntimeBackupTests(unittest.TestCase):
         updated = dotenv_values(self.env)
         for key in ['DATABASE_URL', 'OPENAI_API_KEY', 'DOWNLOAD_SIGN_SECRET']:
             self.assertEqual(updated[key], original[key])
-        self.assertEqual(updated['CONVERSION_PRICE_CNY'], '1.99')
+        self.assertEqual(updated['CONVERSION_PRICE_CNY'], '0.99')
         self.assertEqual(updated['REPAIR_PRICE_CNY'], '0.99')
         self.assertEqual(updated['TRANSLATION_PRICE_PER_1K'], '0.05')
         self.assertEqual(updated['TRANSLATION_PRICE_300K_TO_1M_PER_1K'], '0.035')
@@ -180,11 +180,11 @@ class RuntimeBackupTests(unittest.TestCase):
     def test_conversion_and_repair_migrate_only_their_approved_legacy_prices(self):
         base = self.env.read_text().replace('CONVERSION_PRICE_CNY=5.99\n', '')
         cases = (
-            (None, '1.99', '0.99'),
-            ('', '1.99', '0.99'),
-            ("'   '", '1.99', '0.99'),
-            ('5.99', '1.99', '0.99'),
-            ('1.99', '1.99', '0.99'),
+            (None, '0.99', '0.99'),
+            ('', '0.99', '0.99'),
+            ("'   '", '0.99', '0.99'),
+            ('5.99', '0.99', '0.99'),
+            ('1.99', '0.99', '0.99'),
             ('0.99', '0.99', '0.99'),
             ('0.02', '0.02', '0.02'),
             ('8.99', '8.99', '8.99'),

@@ -1616,9 +1616,9 @@
         <button id="confirmPreflightBtn" class="submit-btn" type="button">确认并生成支付订单</button>
       </div>
 
-      <!-- 价格提示（格式转换固定 ¥1.99） -->
+      <!-- 价格提示（格式转换固定 ¥0.99，AI 精校另计） -->
       <div id="conversionPriceHint" style="font-size:13px; color:var(--muted); margin:10px 0 0; display:none;">
-        格式转换服务：<strong style="color:var(--text);">¥1.99 / 次</strong>，支持繁简转换、竖排改横排、设备排版优化。
+        基础转换：<strong style="color:var(--text);">¥0.99 / 本</strong>，支持繁简转换、竖排改横排、设备排版优化；AI 精校另计。
       </div>
 
       <!-- 提交按钮 -->
@@ -1627,7 +1627,8 @@
       <!-- 格式转换扫码支付区 -->
       <div id="conversionPayArea" style="display:none; margin-top:16px; padding:20px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center;">
         <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px;">扫码支付完成后自动开始转换</div>
-        <div style="font-size:24px; font-weight:700; color:var(--text); margin-bottom:14px;" id="conversionPriceDisplay">¥1.99</div>
+        <div style="font-size:24px; font-weight:700; color:var(--text); margin-bottom:4px;" id="conversionPriceDisplay">¥0.99</div>
+        <div id="conversionPriceBreakdown" style="font-size:12px; color:var(--muted); margin-bottom:14px;">基础转换 ¥0.99</div>
         <img id="conversionQrImg" src="" alt="支付宝二维码" style="width:160px; height:160px; border:1px solid var(--border); border-radius:8px; background:#fff;" />
         <div style="font-size:12px; color:var(--muted); margin-top:8px;">使用支付宝 App 扫码 · 支付后自动处理</div>
       </div>
@@ -3378,8 +3379,8 @@
       const isTranslation = getTaskMode() === "translate";
       $("conversionPriceHint").style.display = (selectedFiles.length && !isTranslation) ? "block" : "none";
       $("conversionPriceHint").innerHTML = selectedFiles.length > 1
-        ? `批量转换：<strong style="color:var(--text);">¥1.99 × ${selectedFiles.length}</strong>，一次支付，分别处理，完成后可打包下载。`
-        : `格式转换服务：<strong style="color:var(--text);">¥1.99 / 次</strong>，支持繁简转换、竖排改横排、设备排版优化。`;
+        ? `批量转换：<strong style="color:var(--text);">¥0.99 × ${selectedFiles.length}</strong>，一次支付，分别处理，完成后可打包下载。`
+        : `基础转换：<strong style="color:var(--text);">¥0.99 / 本</strong>，支持繁简转换、竖排改横排、设备排版优化；AI 精校另计。`;
       // 重置支付区（避免上次残留）
       $("conversionPayArea").style.display = "none";
       $("translationPayArea").style.display = "none";
@@ -3728,7 +3729,12 @@
             // 格式转换：扫码支付
             const qrDataUrl = await QRCode.toDataURL(data.qr_code, { width: 200, margin: 1 });
             $("conversionQrImg").src = qrDataUrl;
-            $("conversionPriceDisplay").textContent = `¥${data.amount || "1.99"}`;
+            $("conversionPriceDisplay").textContent = `¥${data.amount || "0.99"}`;
+            const baseAmount = data.base_amount || data.amount || "0.99";
+            const polishAmount = parseFloat(data.precision_polish_amount || "0");
+            $("conversionPriceBreakdown").textContent = polishAmount > 0
+              ? `基础转换 ¥${baseAmount} + AI 精校 ¥${polishAmount.toFixed(2)}`
+              : `基础转换 ¥${baseAmount}`;
             $("conversionPayArea").style.display = "block";
             $("conversionPriceHint").style.display = "none";
             reportCheckoutEvent("quote_shown");
@@ -3738,6 +3744,13 @@
             $("translationPriceDisplay").textContent = `¥${amt}`;
 
             let charInfo = chars > 0 ? `约 ${(chars / 1000).toFixed(1)}K 字符` : "";
+            if (!isTranslationMode) {
+              const baseAmount = data.base_amount || data.amount || "0.99";
+              const polishAmount = parseFloat(data.precision_polish_amount || "0");
+              charInfo = polishAmount > 0
+                ? `基础转换 ¥${baseAmount} + AI 精校 ¥${polishAmount.toFixed(2)}`
+                : `基础转换 ¥${baseAmount}`;
+            }
 
             const p = data.pricing || null;
             if (p && p.hit_ratio > 0.01) {
