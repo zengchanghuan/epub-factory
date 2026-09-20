@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,7 @@ from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
 from .storage import job_store
 from .infra.execution_lease import execution_lease, ExecutionLeaseLost, ExecutionLeaseBusy
 from .infra.llm_errors import ProviderAccountUnavailable
+from .infra.llm_usage_ledger import usage_scope, AccountingError
 from .domain.translation_residual_policy import confirmed_preserved_terms
 
 logger = logging.getLogger("epub_factory")
@@ -353,34 +355,38 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
 
         fast_translation_enabled = os.environ.get("EPUB_FAST_TRANSLATION", "1").lower() not in ("0", "false", "no")
         check_cancelled()
-        if job.enable_translation and input_path.suffix.lower() == ".epub" and fast_translation_enabled:
-            from .domain.fast_translation_runner import run_fast_translation_job
-            result = run_fast_translation_job(
-                job=job,
-                input_path=input_path,
-                output_path=output_path,
-                progress_callback=on_progress,
-                stage_callback=on_stage,
-                cancel_check=is_cancelled,
-            )
-        else:
-            result = converter.convert_file_to_horizontal(
-                input_path,
-                output_path,
-                job.output_mode,
-                enable_translation=job.enable_translation,
-                target_lang=job.target_lang,
-                device=job.device.value,
-                bilingual=job.bilingual,
-                glossary=job.glossary or None,
-                temperature=getattr(job, "temperature", None),
-                translation_model=getattr(job, "translation_model", None),
-                traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
-                lexicon_domains=getattr(job, "lexicon_domains", None),
-                enable_proper_noun=getattr(job, "enable_proper_noun", True),
-                progress_callback=on_progress,
-                stage_callback=on_stage,
-            )
+        accounting = usage_scope(job.id, attempt_id or "conversion", engine=getattr(job_store, "_engine", None),
+                                 existing_stats=job.translation_stats) if (
+                                     job.enable_translation or getattr(job, "enable_precision_polish", False)) else nullcontext()
+        with accounting:
+            if job.enable_translation and input_path.suffix.lower() == ".epub" and fast_translation_enabled:
+                from .domain.fast_translation_runner import run_fast_translation_job
+                result = run_fast_translation_job(
+                    job=job,
+                    input_path=input_path,
+                    output_path=output_path,
+                    progress_callback=on_progress,
+                    stage_callback=on_stage,
+                    cancel_check=is_cancelled,
+                )
+            else:
+                result = converter.convert_file_to_horizontal(
+                    input_path,
+                    output_path,
+                    job.output_mode,
+                    enable_translation=job.enable_translation,
+                    target_lang=job.target_lang,
+                    device=job.device.value,
+                    bilingual=job.bilingual,
+                    glossary=job.glossary or None,
+                    temperature=getattr(job, "temperature", None),
+                    translation_model=getattr(job, "translation_model", None),
+                    traditional_variant=getattr(job, "traditional_variant", "auto") or "auto",
+                    lexicon_domains=getattr(job, "lexicon_domains", None),
+                    enable_proper_noun=getattr(job, "enable_proper_noun", True),
+                    progress_callback=on_progress,
+                    stage_callback=on_stage,
+                )
         check_cancelled()
         if job.enable_translation:
             current_attempt_stats = dict(job.translation_stats or {})
@@ -500,7 +506,7 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             source_filename=job.source_filename,
         )
         logger.info("job cancelled", extra={"trace_id": job.trace_id, "job_id": job.id})
-    except Exception as exc:
+    except (AccountingError, Exception) as exc:
         current = job_store.get(job.id)
         if attempt_id and current and attempt_id_from_stats(current.translation_stats) != attempt_id:
             if attempt_scoped_output and output_path:
@@ -515,6 +521,8 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             output_path.unlink(missing_ok=True)
         error_code = ErrorCode.CONVERT_FAILED
         failure_stats = None
+        if isinstance(exc, AccountingError):
+            error_code = ErrorCode.TRANSLATION_FAILED
         if isinstance(exc, ProviderAccountUnavailable):
             error_code = ErrorCode.TRANSLATION_PROVIDER_UNAVAILABLE
             failure_stats = dict(getattr(current, "translation_stats", {}) or job.translation_stats or {})

@@ -16,6 +16,8 @@ from app.domain.translation_quality_audit import audit_translation_chunk
 from app.engine.unpacker import EpubUnpacker
 from app.models import ChapterKind, ChunkStatus, JobChunk
 from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult
+from app.infra.llm_usage_ledger import usage_scope
+from app.domain.translation_attempt import attempt_id_from_stats
 
 
 @dataclass
@@ -236,4 +238,10 @@ def translate_chapter(job_id: str, chapter_id: str) -> ChapterTranslationResult:
     同步入口：翻译指定章节内所有 chunk（章节内并发）。
     供 Celery 任务或单测调用。
     """
+    job = job_store.get(job_id)
+    if job and job.enable_translation:
+        with usage_scope(job_id, attempt_id_from_stats(job.translation_stats) or "chapter_pipeline",
+                         engine=getattr(job_store, "_engine", None),
+                         existing_stats=job.translation_stats):
+            return asyncio.run(_translate_chapter_async(job_id, chapter_id))
     return asyncio.run(_translate_chapter_async(job_id, chapter_id))

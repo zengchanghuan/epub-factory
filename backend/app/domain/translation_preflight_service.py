@@ -16,6 +16,7 @@ from app.domain.translation_strategy import (
 )
 from app.engine.glossary_service import build_consistent_glossary
 from app.models import ChapterKind
+from app.infra.llm_usage_ledger import usage_scope
 
 
 PREFLIGHT_SCHEMA_VERSION = 1
@@ -96,6 +97,17 @@ def _chapters(manifest: dict[str, Any], default_strategy: str) -> list[dict[str,
 
 
 def build_translation_preflight(
+    *, epub_path: str | Path, job_id: str, target_lang: str, translation_model: str,
+    requested_strategy: str, user_glossary: dict[str, str] | None = None, billing_engine=None,
+) -> dict[str, Any]:
+    # Runs in a worker thread before a Job row exists. Carry its allocated id.
+    with usage_scope(job_id, "preflight", engine=billing_engine):
+        return _build_translation_preflight(epub_path=epub_path, job_id=job_id, target_lang=target_lang,
+                                            translation_model=translation_model, requested_strategy=requested_strategy,
+                                            user_glossary=user_glossary)
+
+
+def _build_translation_preflight(
     *,
     epub_path: str | Path,
     job_id: str,

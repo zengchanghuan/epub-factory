@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>订单管理 · FixEpub</title>
-<link rel="stylesheet" href="/orders-admin.css"><script src="/orders-admin.js" defer></script>
+<link rel="stylesheet" href="/orders-admin.css"><script src="/lib.js" defer></script><script src="/orders-admin.js" defer></script>
 </head>
 <body>
 <header><a href="/" class="brand">FixEpub <span>管理后台</span></a><div id="identity" hidden><span id="username"></span><button id="logout" class="secondary">退出登录</button></div></header>
@@ -13,7 +13,7 @@
 <p id="error" role="alert" hidden></p>
 <section id="dashboard" hidden>
 <div class="heading"><div><div class="eyebrow">ORDER MANAGEMENT</div><h1>订单看板</h1><p class="muted">从支付到交付，跟进订单的每一步。</p></div><button id="refresh" class="secondary">刷新订单</button></div>
-<div class="notice">列表仅显示 2026-06-24（UTC）起的订单，并排除管理员测试订单及 0.01 元、0.02 元订单。支付状态来自手动核验的支付宝记录，首次显示“未核验”。Token 成本为 USD 估算，缺失记录显示未知。批量订单展示整批价格。日期筛选使用 UTC。</div>
+<div class="notice">列表仅显示 2026-06-24（UTC）起的订单，并排除管理员测试订单及 0.01 元、0.02 元订单。支付状态来自手动核验的支付宝记录，首次显示“未核验”。Token 成本来自逐请求用量与留存价目，不等于实际扣款；待核实及历史缺口不按 0 元处理，不同币种分别展示。批量订单展示整批价格。日期筛选使用 UTC。</div>
 <form id="filters" class="card filters">
 <label class="search">搜索<input name="q" placeholder="书名、任务 ID 或商户订单号" maxlength="200"></label>
 <label>任务状态<select name="status"><option value="">全部状态</option><option value="pending_payment">等待支付</option><option value="pending">排队中</option><option value="running">处理中</option><option value="success">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label>
@@ -23,7 +23,7 @@
 <div class="filter-actions"><button>查询</button><button type="reset" class="secondary">重置</button></div>
 </form>
 <section class="card table-card"><div class="table-heading"><h2>订单列表 <span id="total" class="muted"></span></h2><span class="muted">点击“详情”查看文件与失败记录</span></div>
-<div class="table-scroll"><table><thead><tr><th>文件 / 订单</th><th>创建时间</th><th>任务状态</th><th>价格 · CNY</th><th>支付状态</th><th>付款进度</th><th>Token 成本 · USD</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="table-scroll"><table><thead><tr><th>文件 / 订单</th><th>创建时间</th><th>任务状态</th><th>价格 · CNY</th><th>支付状态</th><th>付款进度</th><th>Token 成本</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="pagination"><span id="page-info"></span><div><button id="previous" class="secondary">上一页</button><button id="next" class="secondary">下一页</button></div></div></section>
 <p class="muted footnote">范围：数据库中保存的翻译与转换任务（含批量子任务）。独立 EPUB 修复工具的旧内存订单未持久保存，不包含在此列表。</p>
 </section>

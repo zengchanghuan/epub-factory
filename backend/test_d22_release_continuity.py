@@ -122,6 +122,13 @@ class RuntimeBackupTests(unittest.TestCase):
             self.assertEqual(updated[key], original[key])
         self.assertEqual(updated['CONVERSION_PRICE_CNY'], '1.99')
         self.assertEqual(updated['REPAIR_PRICE_CNY'], '0.99')
+        self.assertEqual(updated['TRANSLATION_PRICE_PER_1K'], '0.05')
+        self.assertEqual(updated['TRANSLATION_PRICE_300K_TO_1M_PER_1K'], '0.035')
+        self.assertEqual(updated['TRANSLATION_PRICE_OVER_1M_PER_1K'], '0.025')
+        self.assertEqual(updated['TRANSLATION_MIN_PRICE'], '3.99')
+        self.assertEqual(updated['TRANSLATION_HIGH_QUALITY_MULTIPLIER'], '1.5')
+        self.assertEqual(updated['TRANSLATION_LITERARY_MULTIPLIER'], '2')
+        self.assertEqual(updated['TRANSLATION_PRO_MODEL_MULTIPLIER'], '3.4')
         self.assertEqual(dotenv_values(self.backup / 'production.env'), original)
         self.assertEqual(updated['OPENAI_MODEL'], 'deepseek-flash')
         for name in ['jobs.sqlite3', 'translation-cache.sqlite3']:
@@ -137,14 +144,38 @@ class RuntimeBackupTests(unittest.TestCase):
         self.assertNotEqual(self.run_backup().returncode, 0)
         self.assertEqual(self.env.read_bytes(), before)
 
-    def test_custom_non_ai_prices_and_translation_prices_are_preserved(self):
+    def test_custom_prices_and_fixed_translation_override_are_preserved(self):
         self.env.write_text(self.env.read_text().replace('CONVERSION_PRICE_CNY=5.99', 'CONVERSION_PRICE_CNY=0.02')
-                            + 'REPAIR_PRICE_CNY=8.99\nTRANSLATION_MIN_PRICE=5.99\nTRANSLATION_PRICE_CNY=5.99\n')
+                            + 'REPAIR_PRICE_CNY=8.99\nTRANSLATION_PRICE_PER_1K=0.07\n'
+                            + 'TRANSLATION_PRICE_300K_TO_1M_PER_1K=0.04\n'
+                            + 'TRANSLATION_MIN_PRICE=4.49\nTRANSLATION_PRICE_CNY=5.99\n')
         self.assertEqual(self.run_backup().returncode, 0)
         values = dotenv_values(self.env)
         for key, expected in [('CONVERSION_PRICE_CNY', '0.02'), ('REPAIR_PRICE_CNY', '8.99'),
-                              ('TRANSLATION_MIN_PRICE', '5.99'), ('TRANSLATION_PRICE_CNY', '5.99')]:
+                              ('TRANSLATION_PRICE_PER_1K', '0.07'),
+                              ('TRANSLATION_PRICE_300K_TO_1M_PER_1K', '0.04'),
+                              ('TRANSLATION_MIN_PRICE', '4.49'), ('TRANSLATION_PRICE_CNY', '5.99')]:
             self.assertEqual(values[key], expected)
+
+    def test_translation_migrates_only_approved_legacy_defaults(self):
+        base = self.env.read_text()
+        cases = (
+            ('0.10', '5.99', '0.05', '3.99'),
+            ('0.05', '3.99', '0.05', '3.99'),
+            ('0.07', '4.49', '0.07', '4.49'),
+            ('0.100', '5.990', '0.100', '5.990'),
+        )
+        for index, (rate, minimum, expected_rate, expected_minimum) in enumerate(cases):
+            with self.subTest(rate=rate, minimum=minimum):
+                self.env.write_text(base + f'TRANSLATION_PRICE_PER_1K={rate}\nTRANSLATION_MIN_PRICE={minimum}\n')
+                self.backup = self.root / f'translation-price-backup-{index}'
+                result = self.run_backup()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                updated = dotenv_values(self.env)
+                self.assertEqual(updated['TRANSLATION_PRICE_PER_1K'], expected_rate)
+                self.assertEqual(updated['TRANSLATION_MIN_PRICE'], expected_minimum)
+                self.assertEqual(updated['TRANSLATION_PRICE_300K_TO_1M_PER_1K'], '0.035')
+                self.assertEqual(updated['TRANSLATION_PRICE_OVER_1M_PER_1K'], '0.025')
 
     def test_conversion_and_repair_migrate_only_their_approved_legacy_prices(self):
         base = self.env.read_text().replace('CONVERSION_PRICE_CNY=5.99\n', '')

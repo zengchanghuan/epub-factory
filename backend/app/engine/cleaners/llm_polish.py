@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .lexicon_matcher import LexiconMatcher
+from app.infra.llm_usage_ledger import accounted_call
 
 logger = logging.getLogger("epub_factory.l4")
 
@@ -153,11 +154,10 @@ class LLMPolisher:
                 "max_tokens": min(_MAX_TOKENS_PER_PARAGRAPH, 4096),
             }
             with httpx.Client(timeout=_API_TIMEOUT) as client:
-                resp = client.post(
-                    f"{_DEEPSEEK_BASE_URL}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
+                resp = accounted_call(lambda: client.post(
+                    f"{_DEEPSEEK_BASE_URL}/chat/completions", headers=headers, json=payload,
+                ), model=_DEEPSEEK_MODEL, base_url=_DEEPSEEK_BASE_URL,
+                    response_usage=lambda response: response.json(), stage="precision_polish")
             if resp.status_code != 200:
                 logger.warning("L4: DeepSeek API error %s: %s", resp.status_code, resp.text[:200])
                 return None

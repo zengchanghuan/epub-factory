@@ -19,6 +19,7 @@ from ..models import JobStage, JobStatus, StageStatus
 from ..domain.translation_attempt import new_attempt_id
 from ..infra.alipay import query_verified_trade
 from ..order_events import milestones, record_event
+from ..infra.llm_usage_ledger import get_ledger
 
 logger = logging.getLogger("epub_factory")
 
@@ -37,6 +38,7 @@ def make_router(store, upload_dir, output_dir, enqueue):
     engine = getattr(store, "_engine", None)
     if engine is not None:
         AdminBase.metadata.create_all(engine)
+    ledger = get_ledger(engine) if engine is not None else None
 
     def available():
         if engine is None:
@@ -64,6 +66,7 @@ def make_router(store, upload_dir, output_dir, enqueue):
         with engine.connect() as conn:
             payment = conn.execute(select(PaymentCheck).where(PaymentCheck.order_no == number)).mappings().first()
         result = order_view(job, dict(payment) if payment else None, upload_dir, output_dir, expected=expected)
+        result["cost"]["ledger"] = ledger.summary(job.id, job.translation_stats)
         result["checkout"] = milestones(store, number)
         return result
 
@@ -180,6 +183,15 @@ def make_router(store, upload_dir, output_dir, enqueue):
             rows = query.order_by(JobRecord.created_at.desc(), JobRecord.id.desc()).offset((page - 1) * size).limit(size).all()
             items = [view(_record_to_job(row)) for row in rows]
         return {"items": items, "total": total, "page": page, "size": size}
+
+    @router.get("/orders/{job_id}/usage")
+    def usage_detail(job_id: str, request: Request, page: int = Query(1, ge=1),
+                     page_size: int = Query(50, ge=1, le=100)):
+        authorize(request)
+        job = get_job(job_id)
+        return {"summary": ledger.summary(job.id, job.translation_stats),
+                "page": page, "page_size": page_size,
+                "items": ledger.requests(job.id, page, page_size)}
 
     @router.get("/orders/{job_id}")
     def detail(job_id: str, request: Request):

@@ -8,7 +8,7 @@
  * 4. 大数字 tokens 有千分位分隔符
  * 5. costUsd 保留 4 位小数
  * 6. totalTokens 缺失时显示 "0"
- * 7. costUsd 缺失时显示 "$0.0000"
+ * 7. costUsd 缺失时显示费用待核实
  */
 
 const { formatTranslationCost } = require("../lib");
@@ -44,7 +44,7 @@ test("6. totalTokens 缺失显示 '0 tokens'", () => {
   assert.ok(result.startsWith("0 tokens"), `实际: ${result}`);
 });
 
-test("7. costUsd 缺失显示 '$0.0000'", () => {
+test("7. costUsd 缺失显示费用待核实", () => {
   const result = formatTranslationCost({ totalTokens: 500 });
-  assert.ok(result.includes("$0.0000"), `实际: ${result}`);
+  assert.ok(result.includes("费用待核实"), `实际: ${result}`);
 });

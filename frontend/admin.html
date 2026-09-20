@@ -101,11 +101,11 @@
     <div class="card">
       <h2>Token 用量 &amp; 费用</h2>
       <div class="row" id="tokenSummary" style="display:none;">
-        <div class="stat"><label>总 Prompt Tokens</label><span id="totalPrompt">0</span></div>
-        <div class="stat"><label>总 Completion Tokens</label><span id="totalCompletion">0</span></div>
-        <div class="stat"><label>总 Tokens</label><span id="totalTokens">0</span></div>
-        <div class="stat"><label>预估费用 (USD)</label><span id="totalCost">0</span></div>
-        <div class="stat"><label>约合 (CNY)</label><span id="totalCostCny">0</span></div>
+        <div class="stat"><label>已记录 Prompt Tokens</label><span id="totalPrompt">0</span></div>
+        <div class="stat"><label>已记录 Completion Tokens</label><span id="totalCompletion">0</span></div>
+        <div class="stat"><label>已记录 Tokens</label><span id="totalTokens">0</span></div>
+        <div class="stat"><label>已记录价目成本 (USD)</label><span id="totalCost">未知</span></div>
+        <div class="stat"><label>已记录价目成本 (CNY)</label><span id="totalCostCny">未知</span></div>
         <div class="stat"><label>任务数</label><span id="jobsCount">0</span></div>
       </div>
       <p class="hint">数据来自 /api/v2/admin/translation-stats，仅统计含翻译结果的任务。汇率按 1 USD ≈ 7.2 CNY 估算。</p>
@@ -120,7 +120,7 @@
               <th>任务 ID</th><th>文件名</th><th>创建时间</th>
               <th class="num">Prompt</th><th class="num">Completion</th><th class="num">Total</th>
               <th class="num">缓存命中</th>
-              <th class="num">费用 (USD)</th><th class="num">约合 (CNY)</th>
+              <th class="num">价目成本 (USD)</th><th class="num">价目成本 (CNY)</th>
             </tr>
           </thead>
           <tbody id="tokenTableBody"></tbody>
@@ -237,7 +237,6 @@
     function getKey() { return document.getElementById("adminKey").value.trim(); }
     function fetchOpts(key) { return key ? { headers: { "X-Admin-Key": key } } : {}; }
 
-    const USD_TO_CNY = 7.2;
 
     // ─── 余额查询 ─────────────────────────────────────────
     async function loadBalance() {
@@ -282,8 +281,8 @@
         document.getElementById("totalPrompt").textContent = data.total_prompt_tokens.toLocaleString();
         document.getElementById("totalCompletion").textContent = data.total_completion_tokens.toLocaleString();
         document.getElementById("totalTokens").textContent = data.total_tokens.toLocaleString();
-        document.getElementById("totalCost").textContent = "$" + data.total_cost_usd.toFixed(4);
-        document.getElementById("totalCostCny").textContent = "¥" + (data.total_cost_usd * USD_TO_CNY).toFixed(3);
+        document.getElementById("totalCost").textContent = data.calculated_totals?.USD != null ? '$'+data.calculated_totals.USD : 'USD 未知';
+        document.getElementById("totalCostCny").textContent = (data.calculated_totals?.CNY != null ? 'CNY '+data.calculated_totals.CNY : 'CNY 未知') + (data.incomplete_jobs ? `（${data.incomplete_jobs} 本待核实）` : '');
         document.getElementById("jobsCount").textContent = data.jobs_count;
         document.getElementById("tokenSummary").style.display = "flex";
 
@@ -292,7 +291,9 @@
         if (data.by_job && data.by_job.length) {
           document.getElementById("tokenTableCard").style.display = "block";
           data.by_job.forEach(function (row) {
-            const cny = row.cost_usd != null ? (row.cost_usd * USD_TO_CNY).toFixed(4) : "";
+            const cny = row.billing?.calculated_totals?.CNY;
+            const usd = row.billing?.calculated_totals?.USD;
+            const tokenText = value => row.billing?.tokens_complete ? value.toLocaleString() : value ? value.toLocaleString()+'（部分）' : '未知';
             const ratio = row.cache_hit_ratio != null ? (row.cache_hit_ratio * 100).toFixed(1) + "%" : "—";
             const ratioStyle = row.cache_hit_ratio >= 0.5 ? "color:var(--ok);" : (row.cache_hit_ratio >= 0.2 ? "color:var(--warn);" : "");
             const ratioCell = "<span style='" + ratioStyle + "'>" + ratio + "</span>"
@@ -302,12 +303,12 @@
               "<td style='font-family:monospace;font-size:12px;'>" + (row.job_id || "") + "</td>" +
               "<td title=\"" + esc(row.source_filename || "") + "\">" + trunc(row.source_filename, 32) + "</td>" +
               "<td style='font-size:12px;white-space:nowrap;'>" + fmtDate(row.created_at) + "</td>" +
-              "<td class=\"num\">" + (row.prompt_tokens || 0).toLocaleString() + "</td>" +
-              "<td class=\"num\">" + (row.completion_tokens || 0).toLocaleString() + "</td>" +
-              "<td class=\"num\">" + (row.total_tokens || 0).toLocaleString() + "</td>" +
+              "<td class=\"num\">" + tokenText(row.prompt_tokens) + "</td>" +
+              "<td class=\"num\">" + tokenText(row.completion_tokens) + "</td>" +
+              "<td class=\"num\">" + tokenText(row.total_tokens) + "</td>" +
               "<td class=\"num\">" + ratioCell + "</td>" +
-              "<td class=\"num\">" + (row.cost_usd != null ? "$" + row.cost_usd.toFixed(4) : "—") + "</td>" +
-              "<td class=\"num\">" + (cny ? "¥" + cny : "—") + "</td>";
+              "<td class=\"num\">" + (usd != null ? "$"+esc(usd)+(row.billing.coverage==='complete'?'':'（部分）') : "待核实") + "</td>" +
+              "<td class=\"num\">" + (cny != null ? "¥" + esc(cny) + (row.billing.coverage==='complete'?'':'（部分）') : "待核实") + "</td>";
             tbody.appendChild(tr);
           });
         } else {

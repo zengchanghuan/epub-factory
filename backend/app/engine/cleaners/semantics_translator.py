@@ -36,6 +36,7 @@ from app.infra.llm_token_bucket import (
 from app.infra.llm_route_health import DistributedRouteHealth
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
 from app.infra.async_requests import bounded_request, gather_cancel_on_error as _gather_cancel_on_error
+from app.infra.llm_usage_ledger import accounted_request, billing_stage
 from app.domain.translation_residual_policy import confirmed_preserved_terms, residual_category
 from ..translation_cache import TranslationCache
 
@@ -139,14 +140,19 @@ class TranslationStats:
     def elapsed_seconds(self) -> float:
         return time.time() - self.start_time
 
-    def estimate_cost(self, model: str) -> float:
-        prices = PRICING.get(model, {"input": 0.0, "output": 0.0})
+    def estimate_cost(self, model: str) -> float | None:
+        # Legacy approximation only; the request ledger distinguishes vendor,
+        # cache pricing and tariff time bands.
+        prices = PRICING.get(model)
+        if prices is None:
+            return None
         input_cost = (self.prompt_tokens / 1_000_000) * prices["input"]
         output_cost = (self.completion_tokens / 1_000_000) * prices["output"]
         return input_cost + output_cost
 
     def summary(self, model: str) -> str:
         cost = self.estimate_cost(model)
+        cost_label = f"${cost:.4f} USD（旧版粗估）" if cost is not None else "待核实（见逐请求费用账本）"
         return (
             f"\n{'=' * 50}\n"
             f"📊 翻译统计报告\n"
@@ -162,7 +168,7 @@ class TranslationStats:
             f"  Completion Tokens: {self.completion_tokens:,}\n"
             f"  Total Tokens:      {self.total_tokens:,}\n"
             f"  ─────────────────────\n"
-            f"  预估费用: ${cost:.4f} USD\n"
+            f"  预估费用: {cost_label}\n"
             f"  耗时: {self.elapsed_seconds:.1f}s\n"
             f"{'=' * 50}"
         )
@@ -1221,6 +1227,7 @@ class SemanticsTranslator:
             "请翻译自然语言；数学变量、公式片段、编号和标点保持原样。"
         )
 
+    @billing_stage("rescue")
     async def _translate_text_segments_rescue(
         self,
         original_inner: str,
@@ -1365,6 +1372,13 @@ class SemanticsTranslator:
         started_call = time.monotonic()
         request_count = 0
 
+        def observe_usage(usage):
+            # Rejected responses and invalid JSON can still be billable.
+            if usage["usage_status"] == "complete":
+                self.stats.prompt_tokens += usage["prompt_tokens"]
+                self.stats.completion_tokens += usage["completion_tokens"]
+                self.stats.total_tokens += usage["total_tokens"]
+
         def reserve_checkpoint():
             nonlocal request_count
             request_count += 1
@@ -1426,7 +1440,8 @@ class SemanticsTranslator:
                     self.stats.api_calls += 1
                     reserve_checkpoint()
                     response = await bounded_request(
-                        self._get_client(base_url).chat.completions.create(**kwargs),
+                        accounted_request(self._get_client(base_url).chat.completions.create(**kwargs),
+                                          model=model, base_url=base_url, usage_observer=observe_usage),
                         timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
                     )
                 except (JobCancelled, SoftTimeLimitExceeded, ProviderAccountUnavailable):
@@ -1447,7 +1462,8 @@ class SemanticsTranslator:
                     self.stats.api_calls += 1
                     reserve_checkpoint()
                     response = await bounded_request(
-                        self._get_client(base_url).chat.completions.create(**kwargs),
+                        accounted_request(self._get_client(base_url).chat.completions.create(**kwargs),
+                                          model=model, base_url=base_url, usage_observer=observe_usage),
                         timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
                     )
                 raw = (response.choices[0].message.content or "").strip()
@@ -1562,10 +1578,6 @@ class SemanticsTranslator:
         usage = response.usage if response else None
         prompt_tokens = getattr(usage, "prompt_tokens", None) or 0
         completion_tokens = getattr(usage, "completion_tokens", None) or 0
-        if usage:
-            self.stats.prompt_tokens += prompt_tokens
-            self.stats.completion_tokens += completion_tokens
-            self.stats.total_tokens += getattr(usage, "total_tokens", None) or (prompt_tokens + completion_tokens)
         await self.distributed_rate_limiter.reconcile(
             lease,
             actual_tokens=(
@@ -2314,6 +2326,7 @@ class SemanticsTranslator:
             for i, r in enumerate(results)
         ]
 
+    @billing_stage("semantic_review")
     async def review_many_chunks_async(
         self,
         source_html_chunks: list[str],
@@ -2453,6 +2466,7 @@ class SemanticsTranslator:
         await _gather_cancel_on_error(*(run_review_batch(batch) for batch in batches))
         return reviewed
 
+    @billing_stage("style_guide")
     async def build_style_guide_async(
         self,
         *,
@@ -2528,6 +2542,7 @@ class SemanticsTranslator:
             batches.append(current)
         return batches
 
+    @billing_stage("literary_polish")
     async def polish_literary_chapter_async(
         self,
         source_html_chunks: list[str],
@@ -2630,6 +2645,7 @@ class SemanticsTranslator:
         await _gather_cancel_on_error(*(run_batch(batch) for batch in batches))
         return polished
 
+    @billing_stage("literary_verify")
     async def verify_literary_chapter_async(
         self,
         source_html_chunks: list[str],

@@ -104,7 +104,7 @@ def restarted_translation_stats(
         "delivery_gate_failed": False,
         "deliverable": None,
         "elapsed_seconds": 0,
-        "cost_usd": 0,
+        "cost_usd": None,
         "live": False,
     }
     # Preserve available cost evidence while resetting per-attempt counters.

@@ -298,7 +298,11 @@ def validate_epub_resources(stream):
     position = stream.tell()
     try:
         stream.seek(0)
-        with zipfile.ZipFile(stream) as archive:
+        # Some ASGI multipart implementations expose seek/tell but not the
+        # ``seekable`` attribute expected by Python 3.10's ZipFile internals.
+        # The upload size gate already ran; copy only that compatibility case.
+        source = stream if hasattr(stream, 'seekable') else io.BytesIO(stream.read())
+        with zipfile.ZipFile(source) as archive:
             members = _checked_members(archive)
             for name in ('META-INF/container.xml',):
                 if name not in members:

@@ -10,6 +10,7 @@
 调用者负责把产出的 {src: dst} 字典注入 SemanticsTranslator 的 glossary 字段。
 """
 from __future__ import annotations
+from app.infra.llm_usage_ledger import accounted_request
 
 import asyncio
 import json
@@ -353,7 +354,7 @@ async def translate_glossary(
                 user_msg = json.dumps(batch, ensure_ascii=False)
                 batch_terms = {item["term"] for item in batch}
                 stats["llm_api_calls"] += 1
-                resp = await bounded_request(client.chat.completions.create(
+                resp = await bounded_request(accounted_request(client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
@@ -361,7 +362,7 @@ async def translate_glossary(
                     ],
                     temperature=0.2,  # 术语翻译要稳定，温度调低
                     response_format={"type": "json_object"} if "gpt" in model.lower() else None,
-                ), timeout=request_timeout, cancel_check=cancel_check)
+                ), model=model, base_url=base_url, stage="glossary"), timeout=request_timeout, cancel_check=cancel_check)
                 raw = (resp.choices[0].message.content or "").strip()
                 # 处理 markdown 包裹
                 if raw.startswith("```"):

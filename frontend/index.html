@@ -1446,7 +1446,7 @@
         <input type="checkbox" id="enableTranslation" style="display:none;" />
         <div id="translationOptions">
           <div class="pricing-notice">
-            AI 翻译按实际字符数计费（¥0.10 / 1,000 字符），上传文件后自动估算费用，最低 ¥5.99。<br/>
+            标准 AI 翻译 ¥3.99 起，按字符阶梯计费，长书自动享受更低单价；高质量、文学和 Pro 模式按所选档位报价。<br/>
             费用在支付完成后才会扣除，本次任务不会二次扣费。
           </div>
 
@@ -2924,7 +2924,7 @@
               $("qualityCard").classList.add("visible");
             }
             if (data.translation_stats) {
-              $("costText").textContent = formatTranslationCost({ totalTokens: data.translation_stats.total_tokens, costUsd: data.translation_stats.cost_usd });
+              $("costText").textContent = formatTranslationCost({ totalTokens: data.translation_stats.total_tokens, costUsd: data.translation_stats.cost_usd, ledger: data.translation_stats.billing });
               $("costSummary").style.display = "block";
             }
             clearInterval(pollTimer);
@@ -3599,6 +3599,7 @@
             $("costText").textContent = formatTranslationCost({
               totalTokens: data.translation_stats.total_tokens,
               costUsd: data.translation_stats.cost_usd,
+              ledger: data.translation_stats.billing,
             });
             $("costSummary").style.display = "block";
           }
@@ -4040,7 +4041,7 @@
       </details>
       <details class="faq-item">
         <summary>AI 翻译功能支持双语对照吗？翻译质量如何？</summary>
-        <p>开启「AI 翻译」后，您可以选择「双语并排」模式。系统将使用最先进的 LLM 模型（如 GPT-4 或 Claude 级别），结合深度语境分析，将英文原著翻译为优雅的中文。相比传统翻译软件，我们的 AI 能够识别文学修辞与专业术语，并保持 <strong>可重排布局 (Reflowable Layout)</strong> 的灵活性。AI 翻译按实际字符数计费（¥0.10 / 1,000 字符），最低 ¥5.99，上传后显示报价。</p>
+        <p>开启「AI 翻译」后，您可以选择「双语并排」模式。系统会结合全书语境、文体和术语信息生成中文译文，并保持 <strong>可重排布局 (Reflowable Layout)</strong>。标准模式 ¥3.99 起，前 30 万字符按 ¥0.05 / 1,000 字符计费，长书超出部分自动采用更低阶梯单价；高质量、文学和 Pro 模式按所选档位报价，上传后显示最终金额。</p>
       </details>
       <details class="faq-item">
         <summary>上传的文件安全吗？</summary>

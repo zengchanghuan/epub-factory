@@ -127,6 +127,9 @@ class EmailDeliveryIntegrationTests(unittest.TestCase):
             store.add(job)
             stack.enter_context(patch.object(service, 'job_store', store))
             stack.enter_context(patch.object(main_module, 'job_store', store))
+            # main resolves the signing secret at import time; isolate the
+            # offline app explicitly instead of depending on process env order.
+            stack.enter_context(patch.object(main_module, 'DOWNLOAD_SIGN_SECRET', 'offline-signing'))
             smtp_class = stack.enter_context(patch.object(service.smtplib, 'SMTP_SSL'))
             smtp = smtp_class.return_value.__enter__.return_value
             smtp.send_message.return_value = {}

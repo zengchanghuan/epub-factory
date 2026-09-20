@@ -40,7 +40,7 @@ def cost_view(stats):
         cost = money(item.get("cost_usd"))
         # Reset counters and empty attempts are not evidence of a free request.
         tokens = (item.get("prompt_tokens") or 0) + (item.get("completion_tokens") or 0)
-        if cost is not None and tokens > 0:
+        if cost is not None and cost > 0 and tokens > 0:
             known.append(cost)
     return {
         "estimated_usd": str(sum(known)) if known else None,

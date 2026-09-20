@@ -40,6 +40,7 @@ from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_residual_policy import confirmed_preserved_terms
 from app.infra.llm_errors import ProviderAccountUnavailable
 from app.infra.async_requests import gather_cancel_on_error
+from app.infra.llm_usage_ledger import billing_stage
 from app.domain.translation_consistency_audit import audit_book_consistency
 from app.domain.term_highlight_service import highlight_confirmed_terms
 from app.domain.translation_qa_service import attach_translation_qa_report
@@ -220,6 +221,7 @@ def _extract_book_title(epub_path: str) -> str:
     return str(getattr(book, "title", "") or "").strip()
 
 
+@billing_stage("book_title")
 async def _translate_book_title_async(
     *,
     title: str,

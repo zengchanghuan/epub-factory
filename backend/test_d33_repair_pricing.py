@@ -41,11 +41,11 @@ class RepairPricingTests(unittest.TestCase):
         main._repair_job_set(job_id, status='pending_payment', filename='fixture.epub', **values)
         return job_id
 
-    def test_translation_minimum_and_polish_tiers_remain_unchanged(self):
+    def test_translation_minimum_uses_new_standard_floor_and_polish_is_unchanged(self):
         from app.engine.cleaners.llm_polish import calculate_polish_price
         self.assertEqual(main.CONVERSION_PRICE_CNY, '1.99')
         self.assertEqual(main.REPAIR_PRICE_CNY, '0.99')
-        self.assertEqual(main._calc_translation_price(10), '5.99')
+        self.assertEqual(main._calc_translation_price(10), '3.99')
         self.assertEqual(main.TRANSLATION_PRICE_CNY, '5.99')
         self.assertEqual(calculate_polish_price(200000), 5.99)
 

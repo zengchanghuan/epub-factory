@@ -6,6 +6,7 @@
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -44,12 +45,20 @@ D_SUITE = [
     "test_d28_media_text_translation.py",
     "test_d29_translation_performance.py",
     "test_d30_corpus_fixes.py",
+    "test_d31_epub_validation.py",
+    "test_d31_input_integrity.py",
+    "test_d31_llm_usage_ledger.py",
+    "test_d31_reduce_index.py",
+    "test_d32_literal_code_preservation.py",
+    "test_d32_resource_repair.py",
+    "test_d32_source_warning_flow.py",
     "test_d33_repair_pricing.py",
     "test_d34_completion_email.py",
     "test_d34_email_api.py",
     "test_d35_payment_email.py",
     "test_d35_payment_hooks.py",
     "test_d35_payment_reconcile.py",
+    "test_d36_translation_pricing.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",
@@ -71,6 +80,11 @@ def run_one(script: str) -> tuple[bool, str]:
         capture_output=True,
         text=True,
         timeout=120,
+        # Regression fixtures must never inherit a live model credential from
+        # the developer shell or backend/.env. Individual tests can replace
+        # these with explicit fake values alongside mocked clients.
+        env={**os.environ, "OPENAI_API_KEY": "dummy", "DEEPSEEK_API_KEY": "dummy",
+             "DASHSCOPE_API_KEY": "dummy", "GEMINI_API_KEY": "dummy"},
     )
     if r.returncode == 0:
         return True, ""

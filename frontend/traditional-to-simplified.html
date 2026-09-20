@@ -1249,7 +1249,7 @@
               $("qualityCard").classList.add("visible");
             }
             if (data.translation_stats) {
-              $("costText").textContent = formatTranslationCost({ totalTokens: data.translation_stats.total_tokens, costUsd: data.translation_stats.cost_usd });
+              $("costText").textContent = formatTranslationCost({ totalTokens: data.translation_stats.total_tokens, costUsd: data.translation_stats.cost_usd, ledger: data.translation_stats.billing });
               $("costSummary").style.display = "block";
             }
             clearInterval(pollTimer);
@@ -1533,6 +1533,7 @@
             $("costText").textContent = formatTranslationCost({
               totalTokens: data.translation_stats.total_tokens,
               costUsd: data.translation_stats.cost_usd,
+              ledger: data.translation_stats.billing,
             });
             $("costSummary").style.display = "block";
           }

@@ -1,0 +1,9 @@
+const {formatLedgerCost,formatTranslationCost}=require('../lib');
+test('历史未知不能显示 0 元',()=>assert.strictEqual(formatLedgerCost({coverage:'historical_unknown'}),'历史费用未知'));
+test('不同币种分别展示，不做固定汇率换算',()=>assert.strictEqual(formatLedgerCost({coverage:'complete',requests:2,calculated_totals:{CNY:'0.0002832',USD:'0.00021'}}),'CNY 0.0002832 + USD 0.00021（价目计算）'));
+test('缺失用量必须提示部分金额',()=>assert.ok(formatLedgerCost({coverage:'incomplete',calculated_totals:{CNY:'1'}}).includes('部分，待核实')));
+test('全本地缓存明确零新增请求',()=>assert.ok(formatLedgerCost({coverage:'complete',requests:0,calculated_totals:{}}).includes('无新增模型请求')));
+test('账本优先于旧的错误零美元估算',()=>assert.ok(formatTranslationCost({costUsd:0,totalTokens:20,ledger:{coverage:'incomplete',calculated_totals:{},tokens_complete:false}}).includes('待核实')));
+test('未知金额不是免费',()=>assert.ok(formatTranslationCost({costUsd:null}).includes('费用待核实')));
+test('非法金额不可显示为有效费用',()=>{for(const value of [NaN,Infinity,-1])assert.ok(formatTranslationCost({costUsd:value}).includes('费用待核实'));});
+test('已记录完整 Token 可跨尝试累计展示',()=>assert.ok(formatTranslationCost({totalTokens:1,ledger:{coverage:'complete',requests:1,tokens_complete:true,prompt_tokens:100,completion_tokens:30,calculated_totals:{CNY:'0.0002832'}}}).startsWith('130 tokens')));

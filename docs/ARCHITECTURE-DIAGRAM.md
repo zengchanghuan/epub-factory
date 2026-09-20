@@ -1,6 +1,6 @@
 # EPUB Factory 当前架构
 
-> 更新时间：2026-07-27
+> 更新时间：2026-09-18（新增模型费用账本）
 >
 > 状态：`current`
 >
@@ -235,6 +235,12 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 - 输出仍受 EPUBCheck、目录目标、正文提取与原子发布门禁约束；能够打包并不等于通过交付验收。
 
 ## 6. 可观测性与数据
+
+### 模型用量与费用账本
+
+`infra/llm_usage_ledger.py` 在真实模型请求发出前、响应返回后独立落盘，与任务共用 `DATABASE_URL` 的 `llm_usage_attempts` / `llm_usage_requests` 表。支付前分析、正式翻译、补译和审校统一携带图书与 attempt 身份；返回错误 JSON 或质检不通过也记录已消耗的 usage。缓存复用不会生成新的模型请求费用。
+
+`infra/llm_pricing.py` 按供应商主机名、实际模型、缓存输入拆分、币种、峰谷时间和版本价目计算 Decimal 金额。未知用量/价格、跨计价边界与历史缺口不按 0 元处理。登录订单看板提供全书汇总及鉴权的逐请求分页明细；供应商原始账单导入金额独立展示，不将价目计算成本冒充实际扣款。详细口径、供应商配置及持久化见 [LLM-COST-LEDGER.md](LLM-COST-LEDGER.md)。
 
 - `jobs`：任务身份、输入输出、状态、错误、整体统计；批量转换额外使用 `batch_id / batch_index / batch_size` 关联子任务，不另建批次表。
 - `jobs.translation_strategy`：用户提交的 `auto` 或人工锁定策略；支付前画像、确认版本、术语目录、角色集及章节覆盖保存在当前 attempt 的 `translation_stats.translation_preflight`。

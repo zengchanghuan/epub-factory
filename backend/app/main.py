@@ -9,6 +9,7 @@ import html as html_lib
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
@@ -38,6 +39,7 @@ from .domain.translation_qa_service import build_translation_qa_report, max_free
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
 from .domain.translation_strategy import TRANSLATION_STRATEGY_CHOICES
 from .domain.translation_preflight_service import build_translation_preflight
+from .infra.llm_usage_ledger import AccountingError, get_ledger, add_amount
 from .domain.book_preview_service import build_book_preview
 from .domain.feedback_service import FEEDBACK_TYPES, feedback_limiter, persist_feedback
 from .domain.input_formats import validate_filename, is_pdf_header, PDF_DISABLED_MESSAGE
@@ -103,13 +105,28 @@ BATCH_MAX_FILES: int = max(2, int(_os.environ.get("BATCH_MAX_FILES", "10")))
 BATCH_MAX_TOTAL_MB: int = max(MAX_FILE_SIZE_MB, int(_os.environ.get("BATCH_MAX_TOTAL_MB", "200")))
 BATCH_MAX_TOTAL_BYTES: int = BATCH_MAX_TOTAL_MB * 1024 * 1024
 
-# ── AI 翻译 Token 计费参数 ───────────────────────────────────────────────────
-# 每 1000 字符（约等于 1000 token）收取的费用（元）
-TRANSLATION_PRICE_PER_1K: float = float(_os.environ.get("TRANSLATION_PRICE_PER_1K", "0.10"))
-# 单次最低收费
-TRANSLATION_MIN_PRICE: float = float(_os.environ.get("TRANSLATION_MIN_PRICE", "5.99"))
+# ── AI 翻译字符阶梯计费参数 ─────────────────────────────────────────────────
+# 前 30 万、30-100 万、100 万以上分别计价；Decimal 避免支付金额浮点误差。
+TRANSLATION_PRICE_PER_1K = Decimal(_os.environ.get("TRANSLATION_PRICE_PER_1K", "0.05"))
+TRANSLATION_PRICE_300K_TO_1M_PER_1K = Decimal(
+    _os.environ.get("TRANSLATION_PRICE_300K_TO_1M_PER_1K", "0.035")
+)
+TRANSLATION_PRICE_OVER_1M_PER_1K = Decimal(
+    _os.environ.get("TRANSLATION_PRICE_OVER_1M_PER_1K", "0.025")
+)
+# 单次最低收费；高质量、文学和 Pro 的最低价同步乘以对应倍率。
+TRANSLATION_MIN_PRICE = Decimal(_os.environ.get("TRANSLATION_MIN_PRICE", "3.99"))
 # 单次最高收费（默认不封顶，防止超大文集亏损；如需限制可在 .env 设置）
-TRANSLATION_MAX_PRICE: float = float(_os.environ.get("TRANSLATION_MAX_PRICE", "99999"))
+TRANSLATION_MAX_PRICE = Decimal(_os.environ.get("TRANSLATION_MAX_PRICE", "99999"))
+TRANSLATION_HIGH_QUALITY_MULTIPLIER = Decimal(
+    _os.environ.get("TRANSLATION_HIGH_QUALITY_MULTIPLIER", "1.5")
+)
+TRANSLATION_LITERARY_MULTIPLIER = Decimal(
+    _os.environ.get("TRANSLATION_LITERARY_MULTIPLIER", "2")
+)
+TRANSLATION_PRO_MODEL_MULTIPLIER = Decimal(
+    _os.environ.get("TRANSLATION_PRO_MODEL_MULTIPLIER", "3.4")
+)
 
 # 兼容旧逻辑：若显式设置了 TRANSLATION_PRICE_CNY，优先使用固定价格（方便灰度切换）
 _TRANSLATION_FIXED_PRICE: str = _os.environ.get("TRANSLATION_PRICE_CNY", "").strip()
@@ -214,16 +231,55 @@ def _estimate_epub_chars(epub_path: str) -> int:
     return total
 
 
-def _calc_translation_price(char_count: int) -> str:
-    """根据字符数计算翻译费用，返回两位小数字符串（如 '12.80'）。"""
+def _translation_price_multiplier(translation_quality: str, translation_model: Optional[str]) -> Decimal:
+    quality = (translation_quality or "standard").strip().lower()
+    quality_multiplier = {
+        "standard": Decimal("1"),
+        "high": TRANSLATION_HIGH_QUALITY_MULTIPLIER,
+        "literary": TRANSLATION_LITERARY_MULTIPLIER,
+    }.get(quality, Decimal("1"))
+    model_multiplier = (
+        TRANSLATION_PRO_MODEL_MULTIPLIER
+        if (translation_model or "").strip() == "deepseek-v4-pro"
+        else Decimal("1")
+    )
+    return quality_multiplier * model_multiplier
+
+
+def _tiered_translation_base(char_count: int) -> Decimal:
+    chars = max(0, int(char_count or 0))
+    first = min(chars, 300_000)
+    second = min(max(chars - 300_000, 0), 700_000)
+    remaining = max(chars - 1_000_000, 0)
+    return (
+        Decimal(first) / Decimal(1000) * TRANSLATION_PRICE_PER_1K
+        + Decimal(second) / Decimal(1000) * TRANSLATION_PRICE_300K_TO_1M_PER_1K
+        + Decimal(remaining) / Decimal(1000) * TRANSLATION_PRICE_OVER_1M_PER_1K
+    )
+
+
+def _calc_translation_price(
+    char_count: int,
+    translation_quality: str = "standard",
+    translation_model: Optional[str] = None,
+) -> str:
+    """按字符阶梯、质量档位和模型计算新订单报价。"""
     if _TRANSLATION_FIXED_PRICE:
         return _TRANSLATION_FIXED_PRICE
-    price = char_count / 1000.0 * TRANSLATION_PRICE_PER_1K
-    price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, price))
-    return f"{price:.2f}"
+    multiplier = _translation_price_multiplier(translation_quality, translation_model)
+    price = max(TRANSLATION_MIN_PRICE * multiplier, _tiered_translation_base(char_count) * multiplier)
+    price = min(TRANSLATION_MAX_PRICE, price)
+    return str(price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def _estimate_translation_pricing(epub_path: str, target_lang: str, glossary: Optional[dict] = None) -> dict:
+def _estimate_translation_pricing(
+    epub_path: str,
+    target_lang: str,
+    glossary: Optional[dict] = None,
+    *,
+    translation_quality: str = "standard",
+    translation_model: Optional[str] = None,
+) -> dict:
     """
     估算 EPUB 翻译总字符数 + 缓存命中字符数 + 按命中率折扣后的最终价格。
 
@@ -278,13 +334,14 @@ def _estimate_translation_pricing(epub_path: str, target_lang: str, glossary: Op
                 except Exception:
                     continue
     except Exception:
+        fallback = _calc_translation_price(0, translation_quality, translation_model)
         return {
             "total_chars": 0,
             "cached_chars": 0,
             "hit_ratio": 0.0,
             "billable_chars": 0,
-            "price_cny": TRANSLATION_PRICE_CNY,
-            "raw_price_cny": TRANSLATION_PRICE_CNY,
+            "price_cny": fallback,
+            "raw_price_cny": fallback,
         }
 
     billable_chars = max(0, total_chars - cached_chars)
@@ -293,20 +350,20 @@ def _estimate_translation_pricing(epub_path: str, target_lang: str, glossary: Op
     if _TRANSLATION_FIXED_PRICE:
         raw_price = float(_TRANSLATION_FIXED_PRICE)
         price = raw_price * (1 - hit_ratio)
-        price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, price))
+        price = max(float(TRANSLATION_MIN_PRICE), min(float(TRANSLATION_MAX_PRICE), price))
+        raw_price_text = f"{raw_price:.2f}"
+        price_text = f"{price:.2f}"
     else:
-        raw_price_unbounded = total_chars / 1000.0 * TRANSLATION_PRICE_PER_1K
-        billable_price = billable_chars / 1000.0 * TRANSLATION_PRICE_PER_1K
-        raw_price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, raw_price_unbounded))
-        price = max(TRANSLATION_MIN_PRICE, min(TRANSLATION_MAX_PRICE, billable_price))
+        raw_price_text = _calc_translation_price(total_chars, translation_quality, translation_model)
+        price_text = _calc_translation_price(billable_chars, translation_quality, translation_model)
 
     return {
         "total_chars": total_chars,
         "cached_chars": cached_chars,
         "hit_ratio": round(hit_ratio, 3),
         "billable_chars": billable_chars,
-        "price_cny": f"{price:.2f}",
-        "raw_price_cny": f"{raw_price:.2f}",
+        "price_cny": price_text,
+        "raw_price_cny": raw_price_text,
     }
 
 # access_token 默认有效期（天），过期后必须重新发起任务才能继续查询/下载。
@@ -835,7 +892,7 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
             "prompt": prompt_tokens,
             "completion": completion_tokens,
             "total": total_tokens,
-            "cost_usd": _metric_number(stats.get("cost_usd"), 0.0),
+            "cost_usd": _metric_number(stats.get("cost_usd"), 0.0) if stats.get("cost_usd") is not None else None,
         },
         "optimization_counters": optimization_counters,
         "stage_timings": [
@@ -852,10 +909,22 @@ def _job_translation_timing(job: Job) -> Optional[dict]:
     }
 
 
+def _job_usage_summary(job: Job) -> dict:
+    try:
+        return get_ledger(getattr(job_store, "_engine", None)).summary(job.id, job.translation_stats)
+    except Exception:
+        logger.warning("model usage ledger unavailable", extra={"job_id": job.id})
+        return {"source": "request_ledger", "coverage": "incomplete", "calculated_totals": {},
+                "pending_reasons": {"accounting_unavailable": 1}, "tokens_complete": False,
+                "cache_tokens_complete": False, "note": "费用账本暂时不可用，不能按 0 元处理"}
+
+
 def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     """构建 v2 任务详情响应。"""
     download_url = _attach_download_sig(job.id, download_url_path) if _job_can_download(job) else None
     public_translation_stats = dict(job.translation_stats or {})
+    if job.enable_translation or getattr(job, "enable_precision_polish", False):
+        public_translation_stats["billing"] = _job_usage_summary(job)
     translation_preflight = public_translation_stats.pop("translation_preflight", None)
     source_warnings = public_translation_stats.get("source_warnings") or (
         translation_preflight.get("source_warnings", [])
@@ -1281,7 +1350,8 @@ def get_job(job_id: str, request: Request):
         "message": job.message,
         "error_code": job.error_code,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
-        "translation_stats": job.translation_stats or None,
+        "translation_stats": ({**(job.translation_stats or {}), "billing": _job_usage_summary(job)}
+                              if job.enable_translation else job.translation_stats or None),
         "metrics_summary": job.metrics_summary or None,
         "download_url": _attach_download_sig(job.id, f"/api/v1/jobs/{job.id}/download") if _job_can_download(job) else None,
         "created_at": job.created_at.isoformat(),
@@ -1461,6 +1531,7 @@ async def create_job_v2(
                 build_translation_preflight,
                 epub_path=input_path,
                 job_id=job_id,
+                billing_engine=getattr(job_store, "_engine", None),
                 target_lang=target_lang,
                 translation_model=translation_model,
                 requested_strategy=translation_strategy,
@@ -1470,6 +1541,8 @@ async def create_job_v2(
                 str(input_path),
                 target_lang,
                 glossary,
+                translation_quality=translation_quality,
+                translation_model=translation_model,
             )
             estimated_chars = pricing_info.get("total_chars", 0)
             expected_amount = (
@@ -1477,11 +1550,11 @@ async def create_job_v2(
                 if _is_admin_test
                 else pricing_info.get(
                     "price_cny",
-                    _calc_translation_price(estimated_chars),
+                    _calc_translation_price(estimated_chars, translation_quality, translation_model),
                 )
             )
             job_status = JobStatus.awaiting_confirmation
-        except Exception as exc:
+        except (AccountingError, Exception) as exc:
             input_path.unlink(missing_ok=True)
             logger.error(
                 "Failed to build translation preflight: %s",
@@ -1496,9 +1569,18 @@ async def create_job_v2(
         try:
             if enable_translation:
                 # 翻译：按 Token 动态定价 + 缓存命中率折扣
-                pricing_info = _estimate_translation_pricing(str(input_path), target_lang, glossary)
+                pricing_info = _estimate_translation_pricing(
+                    str(input_path),
+                    target_lang,
+                    glossary,
+                    translation_quality=translation_quality,
+                    translation_model=translation_model,
+                )
                 estimated_chars = pricing_info.get("total_chars", 0)
-                expected_amount = _TEST_PRICE if _is_admin_test else pricing_info.get("price_cny", _calc_translation_price(estimated_chars))
+                expected_amount = _TEST_PRICE if _is_admin_test else pricing_info.get(
+                    "price_cny",
+                    _calc_translation_price(estimated_chars, translation_quality, translation_model),
+                )
                 subject = f"EPUB AI 翻译服务 - {safe_name[:50]}"
                 pay_url = create_alipay_page_pay(
                     out_trade_no=job_id,
@@ -2374,7 +2456,7 @@ def _v2_job_stats(job_id: str) -> dict:
         "chunks_cached": 0,
         "chunks_failed": 0,
         "tokens_total": 0,
-        "cost_usd": 0.0,
+        "cost_usd": None,
     }
     if list_chapters:
         chapters = list_chapters(job_id)
@@ -2392,7 +2474,8 @@ def _v2_job_stats(job_id: str) -> dict:
         summary["chunks_failed"] = sum(1 for c in chunks if c.status == ChunkStatus.failed)
     if job.translation_stats:
         summary["tokens_total"] = job.translation_stats.get("total_tokens") or 0
-        summary["cost_usd"] = float(job.translation_stats.get("cost_usd") or 0)
+        summary["cost_usd"] = job.translation_stats.get("cost_usd")
+        summary["billing"] = _job_usage_summary(job)
     return {"job_id": job_id, "summary": summary}
 
 
@@ -3232,25 +3315,31 @@ def get_admin_translation_stats(
     _require_admin(request, x_admin_key)
     list_fn = getattr(job_store, "list_jobs", None)
     if not list_fn:
-        return {"total_prompt_tokens": 0, "total_completion_tokens": 0, "total_tokens": 0, "total_cost_usd": 0.0, "jobs_count": 0, "by_job": []}
+        return {"total_prompt_tokens": 0, "total_completion_tokens": 0, "total_tokens": 0,
+                "total_cost_usd": None, "calculated_totals": {}, "incomplete_jobs": 0, "jobs_count": 0, "by_job": []}
     jobs = list_fn(limit=500)
     total_prompt = 0
     total_completion = 0
-    total_cost = 0.0
+    calculated_totals = {}
+    incomplete_jobs = 0
     by_job = []
     for job in jobs:
         st = getattr(job, "translation_stats", None) or {}
         if not st:
             continue
-        pt = int(st.get("prompt_tokens") or 0)
-        ct = int(st.get("completion_tokens") or 0)
-        cost = float(st.get("cost_usd") or 0)
+        ledger = _job_usage_summary(job)
+        pt = int(ledger.get("prompt_tokens") or 0)
+        ct = int(ledger.get("completion_tokens") or 0)
+        complete = ledger.get("coverage") == "complete"
+        incomplete_jobs += not complete
+        for currency, amount in ledger.get("calculated_totals", {}).items():
+            add_amount(calculated_totals, currency, amount)
+        cost = ledger.get("calculated_totals", {}).get("USD") if complete else None
         total_chunks = int(st.get("total_chunks") or 0)
         cached_chunks = int(st.get("cached_chunks") or 0)
         hit_ratio = (cached_chunks / total_chunks) if total_chunks else 0.0
         total_prompt += pt
         total_completion += ct
-        total_cost += cost
         by_job.append({
             "job_id": job.id,
             "source_filename": job.source_filename,
@@ -3258,7 +3347,8 @@ def get_admin_translation_stats(
             "prompt_tokens": pt,
             "completion_tokens": ct,
             "total_tokens": pt + ct,
-            "cost_usd": round(cost, 4),
+            "cost_usd": float(cost) if cost is not None else None,
+            "billing": ledger,
             "total_chunks": total_chunks,
             "cached_chunks": cached_chunks,
             "cache_hit_ratio": round(hit_ratio, 3),
@@ -3267,7 +3357,9 @@ def get_admin_translation_stats(
         "total_prompt_tokens": total_prompt,
         "total_completion_tokens": total_completion,
         "total_tokens": total_prompt + total_completion,
-        "total_cost_usd": round(total_cost, 4),
+        "total_cost_usd": None,  # Deprecated: currencies must not be converted or silently summed.
+        "calculated_totals": {currency: format(amount, "f") for currency, amount in calculated_totals.items()},
+        "incomplete_jobs": incomplete_jobs,
         "jobs_count": len(by_job),
         "by_job": by_job,
     }

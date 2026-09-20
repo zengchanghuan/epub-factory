@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
+from app.infra.llm_usage_ledger import accounted_request, billing_stage
 
 from app.engine.unpacker import EpubUnpacker
 from .translation_strategy import (
@@ -387,6 +388,7 @@ def _provider_label(base_url: str) -> str:
     return host or "configured_provider"
 
 
+@billing_stage("book_profile")
 async def profile_book_async(
     *,
     epub_path: str,
@@ -462,12 +464,12 @@ async def profile_book_async(
         if os.environ.get("OPENAI_DISABLE_JSON_RESPONSE_FORMAT", "").lower() not in {"1", "true", "yes"}:
             kwargs["response_format"] = {"type": "json_object"}
         try:
-            response = await client.chat.completions.create(**kwargs)
+            response = await accounted_request(client.chat.completions.create(**kwargs), model=profiler_model, base_url=base_url)
         except Exception as exc:
             if "response_format" not in str(exc).lower():
                 raise
             kwargs.pop("response_format", None)
-            response = await client.chat.completions.create(**kwargs)
+            response = await accounted_request(client.chat.completions.create(**kwargs), model=profiler_model, base_url=base_url)
         profile = _normalize_profile(_extract_json(response.choices[0].message.content or ""))
         usage = getattr(response, "usage", None)
         profile["usage"] = {

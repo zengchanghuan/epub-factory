@@ -232,11 +232,25 @@ function parseTotalMs(summaryText) {
  * @returns {string}
  */
 function formatTranslationCost(stats) {
+  if (stats.ledger) {
+    const tokens = stats.ledger.tokens_complete ? stats.ledger.prompt_tokens + stats.ledger.completion_tokens : stats.totalTokens;
+    return `${tokens?.toLocaleString() ?? '未知'} tokens · ${formatLedgerCost(stats.ledger)}`;
+  }
   const tokens = stats.totalTokens?.toLocaleString() ?? "0";
   const cost = typeof stats.costUsd === "number"
+    && Number.isFinite(stats.costUsd) && stats.costUsd >= 0
     ? `$${stats.costUsd.toFixed(4)}`
-    : "$0.0000";
-  return `${tokens} tokens · ${cost} USD`;
+    : "费用待核实";
+  return `${tokens} tokens · ${cost}${cost.startsWith('$') ? ' USD' : ''}`;
+}
+
+/** Keep supplier currencies separate. Missing usage is never free. */
+function formatLedgerCost(ledger) {
+  if (!ledger || ledger.coverage === 'historical_unknown') return '历史费用未知';
+  const amounts = Object.entries(ledger.calculated_totals || {})
+    .map(([currency, amount]) => `${currency} ${amount}`);
+  const known = amounts.length ? amounts.join(' + ') : ledger.coverage === 'complete' && ledger.requests === 0 ? '0（无新增模型请求）' : '已知部分暂无金额';
+  return known + (ledger.coverage === 'complete' ? '（价目计算）' : '（部分，待核实）');
 }
 
 // ─── SafeMode 检测 ─────────────────────────────────────────────────────────
@@ -410,6 +424,7 @@ if (typeof module !== "undefined" && module.exports) {
     parseMetricsSummary,
     parseTotalMs,
     formatTranslationCost,
+    formatLedgerCost,
     isSafeMode,
     formatErrorCode,
     buildHistoryEntry,

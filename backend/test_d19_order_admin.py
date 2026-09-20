@@ -16,6 +16,7 @@ from app.admin.router import make_router
 from app.domain.translation_attempt import restarted_translation_stats
 from app.models import Job, JobStatus, OutputMode
 from app.storage_db import Base, PersistentJobStore
+from app.infra.llm_usage_ledger import get_ledger, usage_scope
 
 
 class AdminTests(unittest.TestCase):
@@ -196,12 +197,31 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(self.queued,['a'])
 
     def test_unknown_cost_not_zero(self):
-        for stats in [{},{'cost_usd':0,'prompt_tokens':0},{'cost_usd':'NaN','prompt_tokens':10}]:
+        for stats in [{},{'cost_usd':0,'prompt_tokens':0},{'cost_usd':0,'prompt_tokens':100},{'cost_usd':'NaN','prompt_tokens':10}]:
             self.assertIsNone(cost_view(stats)['estimated_usd'])
         old={'cost_usd':0.2,'prompt_tokens':100,'translation_attempt':31}
         new=restarted_translation_stats(old,attempt_id='new')
         self.assertEqual(cost_view(new)['known_attempts'],1)
         self.assertEqual(cost_view(new)['attempts'],32)
+
+    def test_private_usage_route_and_summary_never_expose_book_or_credentials(self):
+        self.job(translation_stats={'attempt_id':'one','translation_attempt':1})
+        self.assertEqual(self.client.get('/api/admin/orders/a/usage').status_code,401)
+        ledger=get_ledger(self.engine)
+        with usage_scope('a','one',engine=self.engine):
+            reservation=ledger.begin('a','one','book_title','https://user:key@api.deepseek.com/v1?key=secret','deepseek-flash')
+            ledger.finish(reservation,{'id':'response-1','model':'deepseek-flash','usage':{'prompt_tokens':100,'completion_tokens':30,'total_tokens':130,'prompt_cache_hit_tokens':80,'prompt_cache_miss_tokens':20},'choices':[{'message':{'content':'private book content'}}]})
+        self.login()
+        result=self.client.get('/api/admin/orders/a/usage?page_size=1')
+        self.assertEqual(result.status_code,200,result.text)
+        for secret in ['must-not-leak','private book content','key=secret','user:key',str(self.root)]:self.assertNotIn(secret,result.text)
+        self.assertEqual(result.json()['items'][0]['stage'],'book_title')
+        self.assertEqual(result.json()['summary']['requests'],1)
+        self.assertEqual(self.client.get('/api/admin/orders/a/usage?page_size=101').status_code,422)
+        self.assertEqual(self.client.get('/api/admin/orders/no-such-book/usage').status_code,404)
+        detail=self.client.get('/api/admin/orders/a').json()
+        self.assertEqual(detail['cost']['ledger']['requests'],1)
+        self.assertEqual(detail['cost']['ledger']['coverage'],'complete')
 
     def test_password_setup_preserves_config_and_hides_secret(self):
         import importlib.util
