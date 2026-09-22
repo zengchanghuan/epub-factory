@@ -59,6 +59,8 @@ D_SUITE = [
     "test_d35_payment_hooks.py",
     "test_d35_payment_reconcile.py",
     "test_d36_translation_pricing.py",
+    "test_d36_alipay_verification.py",
+    "test_d36_repair_checkout.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

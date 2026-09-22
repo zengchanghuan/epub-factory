@@ -12,3 +12,12 @@ def minimal_epub_bytes() -> bytes:
         archive.writestr('EPUB/chapter.xhtml', '''<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter</title></head><body><h1 id="start">Chapter</h1><p>A short original sentence for an offline test.</p></body></html>''')
         archive.writestr('EPUB/nav.xhtml', '''<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml#start">Chapter</a></li></ol></nav></body></html>''')
     return stream.getvalue()
+
+
+def repairable_epub_bytes() -> bytes:
+    """A complete readable EPUB with a genuinely repairable compressed mimetype."""
+    stream = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(minimal_epub_bytes())) as source, zipfile.ZipFile(stream, 'w') as output:
+        for entry in source.infolist():
+            output.writestr(entry.filename, source.read(entry.filename), compress_type=zipfile.ZIP_DEFLATED)
+    return stream.getvalue()

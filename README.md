@@ -208,6 +208,7 @@ node runner.js test_f6_history.js
 - [ ] **Dark / Light 模式**：前端适配暗黑模式，提升夜间使用体验。
 
 ### 核心功能 (P2)
+- [ ] **PDF 翻译（方案待审核，入口仍关闭）**：文本／扫描／混合 PDF，MinerU 免费 API 与 DeepSeek Flash OCR 双通道，输出 EPUB＋原页码对照；详见 [PDF 翻译技术架构](docs/PDF-TRANSLATION-ARCHITECTURE.md)。
 - [ ] 幽灵目录 AI 语义提取（LLM 推断无标签章节）
 - [ ] AI 生成图片 Alt 文本（ADA/A11y 合规）
 - [ ] 图片像素文字 OCR 翻译（可选 OCR、术语表复用、安全重绘/回退、独立 QA 与成本统计）

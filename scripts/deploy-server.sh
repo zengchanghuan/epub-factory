@@ -218,7 +218,7 @@ for name, path in paths:
 # approved legacy defaults; already-created orders keep their frozen amounts.
 for key, legacy_values, price in (
     ('CONVERSION_PRICE_CNY', ('', '5.99', '1.99'), '0.99'),
-    ('REPAIR_PRICE_CNY', ('', '5.99', '1.99'), '0.99'),
+    ('REPAIR_PRICE_CNY', ('', '5.99', '1.99', '0.99'), '2.99'),
     ('TRANSLATION_PRICE_PER_1K', ('', '0.10'), '0.05'),
     ('TRANSLATION_PRICE_300K_TO_1M_PER_1K', ('',), '0.035'),
     ('TRANSLATION_PRICE_OVER_1M_PER_1K', ('',), '0.025'),

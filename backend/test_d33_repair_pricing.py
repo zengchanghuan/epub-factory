@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 import app.main as main
 from app.models import Job, JobStatus, OutputMode
-from test_epub_fixture import minimal_epub_bytes
+from test_epub_fixture import minimal_epub_bytes, repairable_epub_bytes
 
 
 class RepairPricingTests(unittest.TestCase):
@@ -26,6 +26,7 @@ class RepairPricingTests(unittest.TestCase):
         self.stack.enter_context(patch.object(main, '_REPAIR_UPLOAD_DIR', Path(self.runtime.name)))
         self.stack.enter_context(patch.object(main, '_repair_jobs', {}))
         self.stack.enter_context(patch.object(main, '_repair_active_jobs', set()))
+        self.stack.enter_context(patch.object(main, '_repair_last_gateway_check', 0))
         self.thread = Mock()
         self.stack.enter_context(patch.object(main, '_threading', types.SimpleNamespace(Thread=self.thread)))
         self.client = self.stack.enter_context(TestClient(main.app))
@@ -39,12 +40,13 @@ class RepairPricingTests(unittest.TestCase):
     def repair_job(self, **values):
         job_id = uuid.uuid4().hex
         main._repair_job_set(job_id, status='pending_payment', filename='fixture.epub', **values)
+        (Path(self.runtime.name) / job_id / 'fixture.epub').write_bytes(repairable_epub_bytes())
         return job_id
 
     def test_translation_minimum_uses_new_standard_floor_and_polish_is_unchanged(self):
         from app.engine.cleaners.llm_polish import calculate_polish_price
         self.assertEqual(main.CONVERSION_PRICE_CNY, '0.99')
-        self.assertEqual(main.REPAIR_PRICE_CNY, '0.99')
+        self.assertEqual(main.REPAIR_PRICE_CNY, '2.99')
         self.assertEqual(main._calc_translation_price(10), '3.99')
         self.assertEqual(main.TRANSLATION_PRICE_CNY, '5.99')
         self.assertEqual(calculate_polish_price(200000), 5.99)
@@ -123,8 +125,8 @@ class RepairPricingTests(unittest.TestCase):
         response = self.client.post('/api/v2/repair/diagnose',
             files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()['price_cny'], '0.99')
-        self.assertEqual(main._repair_job_get(response.json()['job_id'])['quoted_amount'], '0.99')
+        self.assertEqual(response.json()['price_cny'], '2.99')
+        self.assertEqual(main._repair_job_get(response.json()['job_id'])['quoted_amount'], '2.99')
 
     def test_old_batch_keeps_original_aggregate_price(self):
         batch_id = uuid.uuid4().hex[:12]
@@ -183,19 +185,19 @@ class RepairPricingTests(unittest.TestCase):
         self.assertEqual(self.thread.call_count, 1)
 
     def test_old_repair_amounts_survive_restart_and_reject_new_price(self):
-        for amount in ('5.99', '1.99'):
+        for amount in ('5.99', '1.99', '0.99'):
             with self.subTest(amount=amount):
                 job_id = self.repair_job(expected_amount=amount)
                 main._repair_jobs.clear()
                 with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
                     self.assertEqual(self.client.post(f'/api/v2/repair/{job_id}/pay').json()['price_cny'], amount)
                 self.assertEqual(create.call_args.kwargs['total_amount'], amount)
-                self.assertEqual(self.webhook(f'repair_{job_id}', '0.99').text, 'fail')
+                self.assertEqual(self.webhook(f'repair_{job_id}', '2.99').text, 'fail')
                 self.assertEqual(main._repair_job_get(job_id)['status'], 'pending_payment')
                 self.assertEqual(self.webhook(f'repair_{job_id}', amount).text, 'success')
 
     def test_existing_unpaid_quote_keeps_price_after_restart(self):
-        for amount in ('5.99', '1.99'):
+        for amount in ('5.99', '1.99', '0.99'):
             with self.subTest(amount=amount):
                 job_id = self.repair_job(quoted_amount=amount)
                 main._repair_jobs.clear()
@@ -205,8 +207,9 @@ class RepairPricingTests(unittest.TestCase):
                 self.assertEqual(create.call_args.kwargs['total_amount'], amount)
 
     def test_legacy_in_memory_repair_has_original_599_amount(self):
-        job_id = uuid.uuid4().hex
-        main._repair_jobs[job_id] = {'status': 'pending_payment', 'out_trade_no': f'repair_{job_id}'}
+        job_id = self.repair_job()
+        main._repair_jobs[job_id] = {'status': 'pending_payment', 'filename': 'fixture.epub',
+                                   'out_trade_no': f'repair_{job_id}'}
         with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline'):
             self.assertEqual(self.client.post(f'/api/v2/repair/{job_id}/pay').json()['price_cny'], '5.99')
         self.assertEqual(self.webhook(f'repair_{job_id}', '1.99').text, 'fail')
@@ -224,12 +227,18 @@ class RepairPricingTests(unittest.TestCase):
 
     def test_recovery_requires_verified_matching_amount(self):
         job_id = self.repair_job(expected_amount='5.99')
-        for trade in (None, {'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}):
+        for trade in (None, {'out_trade_no': f'repair_{job_id}',
+                             'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}):
+            main._repair_job_set(job_id, next_payment_check_at=0)
+            main._repair_last_gateway_check = 0
             with patch('app.infra.alipay.query_verified_trade', return_value=trade):
                 response = self.client.post(f'/api/v2/repair/{job_id}/recover')
             self.assertFalse(response.json()['recovered'])
             self.assertEqual(main._repair_job_get(job_id)['status'], 'pending_payment')
+        main._repair_job_set(job_id, next_payment_check_at=0)
+        main._repair_last_gateway_check = 0
         with patch('app.infra.alipay.query_verified_trade', return_value={
+                'out_trade_no': f'repair_{job_id}',
                 'trade_status': 'TRADE_SUCCESS', 'total_amount': '5.99'}):
             response = self.client.post(f'/api/v2/repair/{job_id}/recover')
         self.assertTrue(response.json()['recovered'])

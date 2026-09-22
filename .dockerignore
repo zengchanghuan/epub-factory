@@ -21,6 +21,8 @@ backend/celerybeat-schedule*
 
 # 密钥与敏感文件（绝不进镜像；运行时用 env_file/environment 注入）
 backend/.env
+**/.config-backups
+.deploy.lock
 *.env
 *.pem
 *.key

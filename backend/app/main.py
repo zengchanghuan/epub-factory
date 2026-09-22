@@ -33,7 +33,7 @@ from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_not
 from .job_runner import run_job
 from .models import DeviceProfile, ErrorCode, Job, JobStage, JobStatus, OutputMode, StageStatus, TraditionalVariant
 from .storage import job_store
-from .order_events import record_event, make_event_router
+from .order_events import BrowserEvent, record_event, make_event_router
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
@@ -3516,16 +3516,7 @@ async def alipay_webhook(request: Request):
                 if not _amount_equal(actual, expected):
                     logger.warning("Alipay webhook repair amount mismatch", extra={"job_id": out_trade_no})
                     return Response("fail")
-                _record_verified_payment(out_trade_no, actual, "repair",
-                                         is_test_order=bool(repair_job.get("is_test_order")) or expected in {"0.01", "0.02"},
-                                         notify_owner=repair_job.get("status") == "pending_payment")
-                with _repair_jobs_lock:
-                    if _repair_jobs.get(repair_job_id, {}).get("status") != "pending_payment":
-                        return Response("success")
-                    _repair_jobs[repair_job_id]["status"] = "paid"
-                    _repair_job_save_locked(repair_job_id)
-                logger.info("repair payment confirmed, starting repair", extra={"job_id": repair_job_id})
-                _ensure_repair_running(repair_job_id)
+                _repair_confirm_payment(repair_job_id, actual, "verified_webhook")
                 return Response("success")
 
             # ── 批量转换订单（batch_ 前缀）────────────────────────
@@ -3767,7 +3758,7 @@ _REPAIR_UPLOAD_DIR = Path(os.environ.get("REPAIR_UPLOAD_DIR", "/tmp/epub-repair"
 _REPAIR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 修复单价（元）
-REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "0.99").strip() or "0.99"
+REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "2.99").strip() or "2.99"
 
 # 修复任务元数据与源文件同目录持久化，确保进程重启后仍按下单金额验款。
 # {job_id: {"status": "pending_payment"|"paid"|"repaired"|"failed",
@@ -3775,6 +3766,267 @@ REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "0.99").strip() or "0
 _repair_jobs: dict = {}
 _repair_jobs_lock = _threading.Lock()
 _repair_active_jobs: set[str] = set()
+_repair_payment_query_lock = _threading.Lock()
+_repair_last_gateway_check = 0.0
+_REPAIR_CHECK_WINDOW = 48 * 60 * 60
+_REPAIR_CHECK_DELAYS = (15, 30, 60, 120, 300, 600, 1800, 3600)
+
+
+def _repair_now() -> float:
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _repair_source_path(job_id: str, job: dict) -> Optional[Path]:
+    directory = _REPAIR_UPLOAD_DIR / job_id
+    filename = job.get("filename")
+    if filename and Path(filename).name == filename:
+        candidate = directory / filename
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    # Old memory-only tasks may have no filename. Never guess among multiple files.
+    sources = [p for p in directory.glob("*.epub")
+               if "_fixed" not in p.stem and not p.is_symlink() and p.is_file()]
+    return sources[0] if len(sources) == 1 else None
+
+
+def _repair_diagnosis(job_id: str, job: dict, *, refresh=False) -> tuple[dict, bool]:
+    """Read only, including legacy source validation. Caller decides persistence."""
+    path = _repair_source_path(job_id, job)
+    fingerprint = None
+    if path:
+        stat = path.stat()
+        fingerprint = [stat.st_size, stat.st_mtime_ns]
+    if (not refresh and fingerprint and job.get("diagnosis_source") == fingerprint
+            and isinstance(job.get("report"), dict)):
+        report = job["report"]
+    else:
+        from .engine.epub_repairer import diagnose
+        try:
+            if not path:
+                raise EpubInputError("原始文件不存在，请重新上传")
+            with path.open("rb") as source:
+                # Keeps readable partial books; rejects arbitrary ZIPs and unsafe archives.
+                source_warnings = validate_epub_resources(source)
+            with zipfile.ZipFile(path) as archive:
+                if archive.testzip() is not None:
+                    raise EpubInputError("EPUB 压缩内容损坏，请重新上传完整文件")
+            report = diagnose(str(path)).to_dict()
+            report["source_warnings"] = source_warnings
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            message = str(exc) if isinstance(exc, EpubInputError) else "EPUB 文件无法安全修复，请重新上传完整文件"
+            report = {"total_issues": 1, "fixable_count": 0, "unfixable_count": 1,
+                      "epub_version": "unknown", "issues": [{"code": "INPUT-INVALID",
+                      "severity": "error", "message": message, "file": "", "fixable": False}]}
+    fatal = any(not issue.get("fixable", False) and issue.get("severity") != "warning"
+                for issue in report.get("issues", []))
+    can_pay = bool(report.get("fixable_count", 0) > 0 and not fatal)
+    return {"report": report, "diagnosis_source": fingerprint}, can_pay
+
+
+def _repair_record_click(job_id: str) -> None:
+    record_event(job_store, f"repair_{job_id}", "payment_clicked", "pay_request")
+
+
+def _repair_check_response(job_id: str, payment_check: str, *, recovered=False,
+                           trade_status=None, retry_after_seconds=0) -> dict:
+    job = _repair_job_get(job_id) or {}
+    if job.get("status") in {"paid", "repaired"}:
+        payment_check = "verified_paid"
+    return {"job_id": job_id, "status": job.get("status", "unknown"),
+            "recovered": recovered, "payment_check": payment_check,
+            "trade_status": trade_status, "retry_after_seconds": retry_after_seconds}
+
+
+def _repair_store_check(job_id: str, state: str) -> None:
+    with _repair_jobs_lock:
+        job = _repair_job_get_locked(job_id)
+        if job and job.get("status") == "pending_payment":
+            job["payment_check"] = state
+            _repair_job_save_locked(job_id)
+
+
+def _repair_publish_confirmation(job_id: str) -> None:
+    """Retry only confirmations explicitly marked by the new payment path."""
+    with _repair_jobs_lock:
+        job = _repair_job_get_locked(job_id)
+        now = _repair_now()
+        if (not job or not job.get("payment_confirmation_pending")
+                or float(job.get("next_confirmation_attempt_at") or 0) > now):
+            return
+        attempts = int(job.get("confirmation_attempts") or 0)
+        if attempts >= 8:
+            return
+        job.update(confirmation_attempts=attempts + 1,
+                   next_confirmation_attempt_at=now + min(300, 30 * 2 ** attempts))
+        _repair_job_save_locked(job_id)
+        snapshot = dict(job)
+    order_no = f"repair_{job_id}"
+    try:
+        event_saved = record_event(job_store, order_no, "payment_succeeded",
+                                   snapshot.get("payment_confirmed_source", "verified_query"))
+    except Exception:
+        event_saved = False
+    test_order = bool(snapshot.get("is_test_order")) or _repair_expected_amount(snapshot) in {"0.01", "0.02"}
+    mail_enabled = _os.environ.get("OWNER_PAYMENT_EMAIL_ENABLED", "1").lower() in {"1", "true", "yes"}
+    receipt_saved = test_order or not mail_enabled
+    if not receipt_saved:
+        try:
+            from .domain.payment_email_service import queue_paid_order_email
+            from .domain.payment_email_repository import PaymentEmailRepository
+            receipt_saved = bool(queue_paid_order_email(order_no, _repair_expected_amount(snapshot), "repair",
+                paid_at=datetime.fromtimestamp(snapshot["payment_confirmed_at"], timezone.utc)))
+            if not receipt_saved:
+                # False also means the unique receipt already exists; do not
+                # confuse a duplicate callback with a persistence failure.
+                receipt_saved = PaymentEmailRepository(job_store).get(order_no) is not None
+        except Exception:
+            receipt_saved = False
+    with _repair_jobs_lock:
+        current = _repair_job_get_locked(job_id)
+        if event_saved and receipt_saved:
+            current.update(payment_confirmation_pending=False,
+                           confirmation_delivery="not_required" if test_order or not mail_enabled else "queued")
+        elif attempts + 1 >= 8:
+            current.update(payment_confirmation_pending=False, confirmation_delivery="attention_required")
+            logger.warning("Repair payment notification persistence needs attention", extra={"job_id": job_id})
+        else:
+            current["confirmation_delivery"] = "retry"
+        _repair_job_save_locked(job_id)
+
+
+def _repair_confirm_payment(job_id: str, amount: str, source: str) -> bool:
+    """Serialize confirmation and keep receipt retries independent of repair work."""
+    with _repair_jobs_lock:
+        current = _repair_job_get_locked(job_id)
+        if not current or not _amount_equal(amount, _repair_expected_amount(current)):
+            return False
+        first = current.get("status") == "pending_payment"
+        if first:
+            # Persist proof and the notification intent together before dispatch.
+            # An outbox outage must neither lose the receipt intent nor undo payment.
+            current.update(status="paid", payment_confirmed_at=_repair_now(), payment_check="verified_paid",
+                           payment_confirmed_source=source, payment_confirmation_pending=True,
+                           confirmation_attempts=0, next_confirmation_attempt_at=0)
+            _repair_job_save_locked(job_id)
+    if first:
+        try:
+            _repair_publish_confirmation(job_id)
+        except Exception:
+            logger.warning("Repair receipt deferred; verified payment retained", extra={"job_id": job_id})
+        finally:
+            _ensure_repair_running(job_id)
+    else:
+        # Delayed historical callbacks may restore a milestone, never a new-sale mail.
+        record_event(job_store, f"repair_{job_id}", "payment_succeeded", source)
+    return first
+
+
+def _repair_check_payment(job_id: str, *, background=False) -> dict:
+    """One strictly verified, rate-limited gateway read; no browser dependency."""
+    job = _repair_job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if job.get("status") != "pending_payment":
+        if job.get("status") == "paid":
+            _ensure_repair_running(job_id)
+        return _repair_check_response(job_id, "verified_paid" if job.get("status") in {"paid", "repaired"} else "not_started")
+    if not (job.get("out_trade_no") or job.get("expected_amount")):
+        return _repair_check_response(job_id, "not_started")
+    if background and not job.get("checkout_started_at"):
+        return _repair_check_response(job_id, "not_started")
+    if background and not _repair_gateway_available():
+        return _repair_check_response(job_id, "unavailable")
+    now = _repair_now()
+    if background and now - float(job["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
+        return _repair_check_response(job_id, "manual_review_required")
+    retry = max(0, int(float(job.get("next_payment_check_at") or 0) - now + 1))
+    if retry:
+        return _repair_check_response(job_id, "throttled", retry_after_seconds=retry)
+    if not _repair_payment_query_lock.acquire(blocking=False):
+        return _repair_check_response(job_id, "throttled", retry_after_seconds=5)
+    try:
+        global _repair_last_gateway_check
+        now = _repair_now()
+        # All manual requests and the dispatcher share this process-wide budget.
+        if now - _repair_last_gateway_check < 1:
+            return _repair_check_response(job_id, "throttled", retry_after_seconds=2)
+        with _repair_jobs_lock:
+            current = _repair_job_get_locked(job_id)
+            if current.get("status") != "pending_payment":
+                return {"job_id": job_id, "status": current.get("status"), "recovered": False,
+                        "payment_check": "verified_paid", "retry_after_seconds": 0}
+            retry = max(0, int(float(current.get("next_payment_check_at") or 0) - now + 1))
+            if retry:
+                return {"job_id": job_id, "status": current["status"], "recovered": False,
+                        "payment_check": "throttled", "retry_after_seconds": retry}
+            attempts = int(current.get("payment_check_attempts") or 0)
+            delay = _REPAIR_CHECK_DELAYS[min(attempts, len(_REPAIR_CHECK_DELAYS) - 1)]
+            current.update(payment_check_attempts=attempts + 1, last_payment_check_at=now,
+                           next_payment_check_at=now + delay)
+            _repair_job_save_locked(job_id)
+            order_no = current.get("out_trade_no") or f"repair_{job_id}"
+            expected = _repair_expected_amount(current)
+        _repair_last_gateway_check = now
+        from .infra.alipay import query_verified_trade
+        try:
+            trade = query_verified_trade(order_no)
+        except Exception:
+            trade = None
+        # The adapter verifies SDK signature and exact merchant identity; defend
+        # the boundary again so mocks/adapters can never substitute another order.
+        if not trade or trade.get("out_trade_no") != order_no:
+            _repair_store_check(job_id, "unavailable")
+            return _repair_check_response(job_id, "unavailable", retry_after_seconds=delay)
+        trade_status = trade.get("trade_status")
+        if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+            checked = "pending" if trade_status in {"WAIT_BUYER_PAY", "TRADE_CLOSED"} else "unavailable"
+            _repair_store_check(job_id, checked)
+            return _repair_check_response(job_id, checked, trade_status=trade_status, retry_after_seconds=delay)
+        if not _amount_equal(str(trade.get("total_amount") or ""), expected):
+            _repair_store_check(job_id, "unavailable")
+            logger.warning("Repair payment recovery amount mismatch", extra={"job_id": job_id})
+            return _repair_check_response(job_id, "unavailable", retry_after_seconds=delay)
+        first = _repair_confirm_payment(job_id, str(trade["total_amount"]), "verified_query")
+        return _repair_check_response(job_id, "verified_paid", recovered=first, trade_status=trade_status)
+    finally:
+        _repair_payment_query_lock.release()
+
+
+def _repair_gateway_available() -> bool:
+    from .infra import alipay
+    return alipay._alipay_client is not None
+
+
+def _repair_payment_tick() -> None:
+    """Bounded sweep: old quotations are not opted in merely by having an ID."""
+    now = _repair_now()
+    candidates = []
+    gateway_available = _repair_gateway_available()
+    resumed = 0
+    for metadata in _REPAIR_UPLOAD_DIR.glob("*/order.json"):
+        job_id = metadata.parent.name
+        job = _repair_job_get(job_id)
+        if not job:
+            continue
+        if job.get("payment_confirmation_pending"):
+            try:
+                _repair_publish_confirmation(job_id)
+            except Exception:
+                logger.warning("Repair receipt retry deferred", extra={"job_id": job_id})
+        if job.get("status") == "paid" and resumed < 3:
+            _ensure_repair_running(job_id)
+            resumed += 1
+        elif gateway_available and job.get("status") == "pending_payment" and job.get("checkout_started_at"):
+            if now - float(job["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
+                if job.get("payment_check") != "manual_review_required":
+                    _repair_store_check(job_id, "manual_review_required")
+                continue
+            if float(job.get("next_payment_check_at") or 0) <= now:
+                candidates.append((float(job.get("next_payment_check_at") or 0), job_id))
+    # One gateway read per tick (5 s) globally, persisted per-order exponential backoff.
+    if candidates:
+        _repair_check_payment(min(candidates)[1], background=True)
+
 
 
 def _repair_job_get_locked(job_id: str) -> Optional[dict]:
@@ -3855,11 +4107,10 @@ def _do_repair_async(job_id: str) -> None:
     """后台线程：执行实际修复，完成后更新状态。"""
     job_dir = _REPAIR_UPLOAD_DIR / job_id
     try:
-        epub_files = [f for f in job_dir.glob("*.epub") if "_fixed" not in f.stem]
-        if not epub_files:
+        input_path = _repair_source_path(job_id, _repair_job_get(job_id) or {})
+        if not input_path:
             _repair_job_set(job_id, status="failed", error="原始文件不存在")
             return
-        input_path = epub_files[0]
         fixed_name = input_path.stem + "_fixed.epub"
         output_path = job_dir / fixed_name
         if not output_path.exists():
@@ -3911,15 +4162,15 @@ async def repair_diagnose(
     input_path = job_dir / safe_name
     input_path.write_bytes(content)
 
-    from .engine.epub_repairer import diagnose
-    report = diagnose(str(input_path))
-
-    _repair_job_set(job_id, status="pending_payment", filename=safe_name, quoted_amount=REPAIR_PRICE_CNY)
+    diagnosis, can_pay = await asyncio.to_thread(_repair_diagnosis, job_id, {"filename": safe_name})
+    _repair_job_set(job_id, status="pending_payment", filename=safe_name, quoted_amount=REPAIR_PRICE_CNY,
+                    can_pay=can_pay, **diagnosis)
 
     return {
         "job_id": job_id,
         "filename": safe_name,
-        "report": report.to_dict(),
+        "report": diagnosis["report"],
+        "can_pay": can_pay,
         "price_cny": REPAIR_PRICE_CNY,
     }
 
@@ -3939,6 +4190,18 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
     if job.get("status") == "paid":
         _ensure_repair_running(job_id)
         return {"job_id": job_id, "status": "paid"}
+
+    _repair_record_click(job_id)
+    diagnosis, can_pay = await asyncio.to_thread(_repair_diagnosis, job_id, job, refresh=True)
+    _repair_job_set(job_id, can_pay=can_pay, **diagnosis)
+    # A callback can complete while the local source check is running.
+    latest = _repair_job_get(job_id)
+    if latest.get("status") in {"paid", "repaired"}:
+        if latest.get("status") == "paid":
+            _ensure_repair_running(job_id)
+        return {"job_id": job_id, "status": latest["status"]}
+    if not can_pay:
+        raise HTTPException(status_code=409, detail="该文件没有可付费修复的问题，或文件已损坏；请查看诊断报告")
 
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
 
@@ -3965,6 +4228,9 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
         else:
             repair_price = "0.01" if _is_admin_test else str(current.get("quoted_amount") or REPAIR_PRICE_CNY)
             current["is_test_order"] = _is_admin_test
+        now = _repair_now()
+        if not current.get("checkout_started_at") or now - float(current["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
+            current.update(checkout_started_at=now, next_payment_check_at=now + 10, payment_check_attempts=0)
         current.update(expected_amount=repair_price, out_trade_no=out_trade_no)
         _repair_job_save_locked(job_id)
     try:
@@ -3981,7 +4247,7 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
         except Exception as precreate_exc:
             logger.warning(
                 "repair pay: precreate unavailable, fallback to page pay",
-                extra={"job_id": job_id, "error": str(precreate_exc)},
+                extra={"job_id": job_id, "error_type": type(precreate_exc).__name__},
             )
             qr_code = None
             pay_url = create_alipay_page_pay(
@@ -3991,8 +4257,8 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
                 return_url=f"https://fixepub.com/epub-repair.html?job_id={job_id}",
             )
     except Exception as e:
-        logger.error("repair pay: alipay order failed", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"支付发起失败：{e}")
+        logger.warning("repair pay: alipay order unavailable", extra={"job_id": job_id, "error_type": type(e).__name__})
+        raise HTTPException(status_code=502, detail="支付服务暂不可用，请稍后重试或联系客服") from None
 
     # A verified callback can arrive before the gateway response; retain its
     # paid/repaired status instead of downgrading the order to pending_payment.
@@ -4001,62 +4267,42 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
     return {"job_id": job_id, "status": status, "qr_code": qr_code, "pay_url": pay_url, "price_cny": repair_price}
 
 
+@app.post("/api/v2/repair/{job_id}/checkout-events")
+def repair_checkout_event(job_id: str, body: BrowserEvent):
+    if not _repair_job_get(job_id):
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    recorded = record_event(job_store, f"repair_{job_id}", body.event, "browser")
+    if not recorded:
+        raise HTTPException(status_code=503, detail="记录暂时不可用")
+    return {"recorded": True}
+
+
 @app.get("/api/v2/repair/{job_id}/status")
 async def repair_status(job_id: str):
-    """轮询修复进度。"""
+    """Read-only status. Legacy files are locally diagnosed without a charge."""
     job = _repair_job_get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    pending = job.get("status") == "pending_payment"
+    diagnosis, can_pay = (await asyncio.to_thread(_repair_diagnosis, job_id, job)
+                          if pending else ({"report": job.get("report")}, False))
+    pending = job.get("status") == "pending_payment"
     return {
         "job_id": job_id,
         "status": job.get("status", "unknown"),
         "price_cny": str(job.get("expected_amount") or job.get("quoted_amount") or "5.99").strip(),
         "download_filename": job.get("download_filename"),
         "error": job.get("error"),
+        "report": diagnosis["report"],
+        "can_pay": can_pay and pending,
+        "payment_started": bool(job.get("checkout_started_at") or job.get("out_trade_no")),
+        "payment_check": job.get("payment_check"),
     }
 
 
 @app.post("/api/v2/repair/{job_id}/recover")
 async def repair_recover_payment(job_id: str):
-    """
-    修复任务的支付兜底：用户付完款回到页面时，前端立刻调这个接口。
-
-    与 /api/v2/jobs/{id}/recover 完全同源——主动调支付宝查单，
-    如果 TRADE_SUCCESS 但本地仍是 pending_payment，立刻补发 _do_repair_async。
-    """
-    job = _repair_job_get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="任务不存在或已过期")
-    if job.get("status") != "pending_payment":
-        if job.get("status") == "paid":
-            _ensure_repair_running(job_id)
-        return {"job_id": job_id, "status": job.get("status"), "recovered": False}
-
-    out_trade_no = job.get("out_trade_no") or f"repair_{job_id}"
-    from .infra.alipay import query_verified_trade
-    trade = query_verified_trade(out_trade_no)
-    trade_status = (trade or {}).get("trade_status")
-    logger.info(
-        "repair_recover_payment: trade query result",
-        extra={"job_id": job_id, "trade_status": trade_status or "unknown"},
-    )
-    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
-        return {"job_id": job_id, "status": job.get("status"), "recovered": False, "trade_status": trade_status}
-    if not _amount_equal(str((trade or {}).get("total_amount") or ""), _repair_expected_amount(job)):
-        logger.warning("Repair payment recovery amount mismatch", extra={"job_id": job_id})
-        return {"job_id": job_id, "status": job.get("status"), "recovered": False, "trade_status": trade_status}
-
-    _record_verified_payment(out_trade_no, trade["total_amount"], "repair", source="verified_query",
-                             is_test_order=bool(job.get("is_test_order")) or _repair_expected_amount(job) in {"0.01", "0.02"})
-
-    with _repair_jobs_lock:
-        current = _repair_jobs.get(job_id, {})
-        if current.get("status") != "pending_payment":
-            return {"job_id": job_id, "status": current.get("status"), "recovered": False}
-        _repair_jobs[job_id]["status"] = "paid"
-        _repair_job_save_locked(job_id)
-    _ensure_repair_running(job_id)
-    return {"job_id": job_id, "status": "paid", "recovered": True, "trade_status": trade_status}
+    return await asyncio.to_thread(_repair_check_payment, job_id)
 
 
 @app.get("/api/v2/repair/{job_id}/download")
@@ -4145,16 +4391,20 @@ app.include_router(make_completion_email_router(
     job_store, _authorize_job_access, _list_batch_jobs, _authorize_batch_access, _repair_job_get,
 ))
 _completion_email_worker = CompletionEmailWorker()
+from .domain.repair_payment_worker import RepairPaymentWorker
+_repair_payment_worker = RepairPaymentWorker(_repair_payment_tick)
 
 
 @app.on_event("startup")
 def start_completion_email_worker():
     _completion_email_worker.start()
     payment_email_worker.start()
+    _repair_payment_worker.start()
 
 
 @app.on_event("shutdown")
 def stop_completion_email_worker():
+    _repair_payment_worker.stop()
     payment_email_worker.stop()
     _completion_email_worker.stop()
 

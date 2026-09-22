@@ -6,6 +6,8 @@
 >
 > 本文以当前代码为准，描述已经接入主任务入口的真实架构。历史设计与演进方案见 `AI-TRANSLATION-DESIGN.md`。
 
+> 2026-09-21 规划补充：PDF 翻译尚未实现，详见 [PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md)。该方案定义文本／扫描分流、MinerU 免费 API、超限转 DeepSeek Flash、OCR 性能与密钥安全；不属于下图的已上线功能。
+
 ## 1. 系统边界
 
 ```mermaid

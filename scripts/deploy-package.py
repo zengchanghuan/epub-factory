@@ -19,7 +19,8 @@ def included(name):
         return True
     if p.suffix not in SOURCE_SUFFIXES:
         return False
-    return (name.startswith(('frontend/', 'docs/', 'scripts/', 'backend/app/', 'backend/data/'))
+    return (name == 'backend/scripts/import_llm_bill.py'
+            or name.startswith(('frontend/', 'docs/', 'scripts/', 'backend/app/', 'backend/data/'))
             or (len(p.parts) == 2 and p.parts[0] == 'backend'
                 and (p.name.startswith('test_') or p.name in {'requirements.txt', 'requirements.lock', 'run_regression.py'})))
 

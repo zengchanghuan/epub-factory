@@ -77,6 +77,8 @@ jobs:
                 test_d35_payment_email
                 test_d35_payment_hooks
                 test_d35_payment_reconcile
+                test_d36_alipay_verification
+                test_d36_repair_checkout
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard
@@ -88,6 +90,7 @@ jobs:
                 python "$t.py" || fail=1
               done
               python ../scripts/test_configure_email.py || fail=1
+              python ../scripts/test_configure_alipay_public_key.py || fail=1
               python ../scripts/test_migrate_legacy_repair.py || fail=1
               python ../scripts/test_deploy_legacy_gate.py || fail=1
               exit $fail

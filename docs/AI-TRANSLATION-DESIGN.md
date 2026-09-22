@@ -11,6 +11,8 @@ merged_from:
 
 # EPUB Fixer AI 翻译模块设计
 
+> PDF／OCR 方案（2026-09-21，待审核）统一见 [PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md)：MinerU 免费 API，超限或高优先级额度不足直接走 DeepSeek Flash 独立 OCR，再接入翻译。当前 PDF 功能仍未实现；EPUB 图片像素重绘仍是独立的后续能力。
+
 > 在完成核心引擎 `ExtremeCompiler` 的排版清洗之后，AI 翻译是最有商业价值但技术挑战最大的功能。
 > 核心目标：**保留排版（HTML 结构、标签、属性）的前提下完成全书翻译**。
 

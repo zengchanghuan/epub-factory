@@ -16,6 +16,8 @@ backend/temp/
 backend/failed_chunks/
 backend/failed_chunks_remote/
 backend/.env
+**/.config-backups/
+.deploy.lock
 backend/translation_cache.db
 epub_jobs.db
 epub_jobs.db-shm

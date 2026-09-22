@@ -11,6 +11,8 @@ merged_from:
 
 # EPUB Fixer 核心引擎技术设计
 
+> PDF 扩展方案（2026-09-21，待审核）：[PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md)。文本与扫描 PDF 共用翻译及 EPUB 输出；解析采用 MinerU 免费 API／DeepSeek Flash 双通道。本文已有功能矩阵不因此变更为“PDF 已支持”。
+
 > **核心定位**：把引擎从"语法解析器（Syntax Parser）"升级为"语义编译器（Semantic Compiler）"。
 > 引用 LLVM/GCC 的类比：同一个源文件，针对不同目标设备编译出最优解。
 

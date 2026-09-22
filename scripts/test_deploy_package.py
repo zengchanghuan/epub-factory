@@ -19,7 +19,8 @@ class ReleasePackageTests(unittest.TestCase):
                      'backend/uploads/book.html', 'backend/failed_chunks/private.json',
                      'backend/reduce_work/chapter.xhtml', 'fix_epub.pem', 'deploy.local.env',
                      'scripts/secret-config.json', 'frontend/.env.production', '.git/config',
-                     'translation_cache.db', 'backend/app/__pycache__/main.pyc']:
+                     'translation_cache.db', 'backend/app/__pycache__/main.pyc',
+                     'backend/scripts/matches.json', 'backend/scripts/original-provider-bill.json']:
             with self.subTest(name=name):
                 self.assertFalse(package.included(name))
 
@@ -28,7 +29,8 @@ class ReleasePackageTests(unittest.TestCase):
             root = Path(tmp)
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
             sources = ['deploy.sh', 'scripts/deploy-server.sh', 'backend/app/main.py',
-                       'frontend/index.html', 'backend/requirements.txt', 'backend/app/new_fix.py']
+                       'frontend/index.html', 'backend/requirements.txt', 'backend/app/new_fix.py',
+                       'backend/scripts/import_llm_bill.py']
             for name in sources + ['backend/.env', 'backend/outputs/private.epub']:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)

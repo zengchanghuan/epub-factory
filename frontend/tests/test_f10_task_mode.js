@@ -14,6 +14,8 @@ const repairHtml = fs.readFileSync(
   "utf-8"
 );
 
+const repairCheckout = fs.readFileSync(path.resolve(__dirname, "../repair-checkout.js"), "utf-8");
+
 test("F10-1 使用任务模式二选一入口", () => {
   assert.ok(html.includes('name="taskMode" value="convert"'), "应有转换模式");
   assert.ok(html.includes('name="taskMode" value="translate"'), "应有 AI 翻译模式");
@@ -78,11 +80,11 @@ test("F10-6 支付宝付款在独立小窗口打开", () => {
     "主页面确认付款后应关闭支付小窗口"
   );
   assert.ok(
-    repairHtml.includes('target="fixepub-alipay"') && repairHtml.includes("alipay-popup-link"),
+    repairHtml.includes('target="fixepub-alipay"') && repairCheckout.includes("win.open(url, 'fixepub-alipay'"),
     "修复页支付链接也应使用命名支付小窗口"
   );
   assert.ok(
-    repairHtml.includes("closeAlipayPopup()"),
+    repairCheckout.includes("closePopup()") && repairCheckout.includes("popup.close()"),
     "修复页确认付款后应关闭支付小窗口"
   );
 });
