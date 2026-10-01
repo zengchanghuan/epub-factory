@@ -2,7 +2,7 @@
 title: EPUB Factory 当前代码架构
 status: current
 updated: 2026-10-01
-code_revision: 332ab09043b13acf9744f9bd1439fbdcdadd5cfe plus local R11
+code_revision: R12 delivery based on 9c8cac6da75aa0a77ed7e99a241e2f1e09b27562
 scope: local-code-and-offline-verification
 ---
 
@@ -10,7 +10,7 @@ scope: local-code-and-offline-verification
 
 本文依据上述提交的本地代码与离线核验，描述实际接通的调用链，不代表已经核验生产配置或部署版本。历史设计见 [AI 翻译设计](AI-TRANSLATION-DESIGN.md)，本轮缺陷与改进顺序见 [架构审查：2026-10-01](ARCHITECTURE-REVIEW-2026-10-01.md)。
 
-R1–R10 及历史导航/表格兼容修复已提交并推送至 `332ab09`，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、旧执行器写入和成品保护、书籍与维护任务分队列，以及独立修复的跨进程文件事务、有界执行器和 owner 成品发布。以下主链路另包含本地 R11：三个工具介绍页收口到主页的统一上传、支付与恢复流程；最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
+R1–R11 及历史导航/表格兼容修复已提交并推送至 `9c8cac6`，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、旧执行器写入和成品保护、书籍与维护任务分队列、独立修复的跨进程隔离，以及三个工具页复用主页统一结账。以下主链路另包含本次交付的 R12：所有模型阶段统一实际请求边界、持久预分析预算与去重；最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
 
 当前形态是**模块化单体 API + 整本 Celery 任务 + Worker 内章节并发**；独立 EPUB 修复仍在 API 进程内执行。图中的虚线表示条件启用或旁路调用，不表示已经完成分布式改造。
 
@@ -80,7 +80,7 @@ FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本�
 | 高质量复核、文学编辑与原文语义回查 | 上述支持的翻译格式统一进入原快路径；R4 已通过离线/历史门禁，未部署 |
 | HTML caption、解释型脚注/尾注 | 已接翻译；纯引用按规则保留 |
 | 翻译缓存、检查点、费用账本、成品 QA | 已实现；恢复和交付的已知缺口见本轮审查 |
-| 全局 Redis RPM/TPM 与健康路由 | 显式配置才启用，默认关闭；预分析部分调用绕过该层 |
+| 全局 Redis RPM/TPM 与健康路由 | 所有实际模型请求共用调用边界；Redis 配额仍需显式启用，默认关闭；启用后的配额故障默认拒绝新增请求 |
 | 转换附加 AI 精校 | 基线只有报价开关；工作区 R3 已接独立 domain 步骤、权益及交付门禁，历史和专项验收通过，尚未部署 |
 | 付款到主任务队列的可靠投递 | 工作区 R5：状态与投递意图同事务，独立分发器补发；需持久库与 Broker，不包含独立修复产品流 |
 | 超时关闭与迟到付款 | 工作区 R6：有网关关闭证据才本地关闭；实付到期单恢复，用户取消转可见人工处理，不自动退款 |
@@ -343,7 +343,7 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 
 ### 3.2 翻译执行与救援
 
-- `Book Profiler` 在正式翻译前读取有界的 OPF 元数据、TOC、前言/首章和全书分布式样本，输出带 Schema、证据、置信度、人物设定和抽样哈希的任务画像。默认复用当前翻译供应商；解析或调用失败时使用低置信度本地规则并继续任务。
+- `Book Profiler` 在正式翻译前读取有界的 OPF 元数据、TOC、前言/首章和全书分布式样本，输出带 Schema、证据、置信度、人物设定和抽样哈希的任务画像。默认复用当前翻译供应商；普通解析/调用失败可使用低置信度本地规则，取消、软时限、账本/预算/配额拒绝不得被回退吞掉。
 - 前端翻译上传显式请求二阶段确认。后端先保存 `awaiting_confirmation` 任务并返回可编辑画像；用户确认前不创建支付宝订单、不入队。确认接口原子保存版本化快照，重复点击不会重复下单。
 - 确认面板可修订全书策略、术语、角色译名/身份、双语模式、术语标记及章节策略。章节覆盖策略会改变该章实际 System Prompt、缓存上下文和文学润色权限。
 - 策略只能从 `neutral_faithful / literary_narrative / academic_rigorous / mirror_fidelity / practical_technical` 五个版本化资产中选择。前端可在提交前锁定策略，用户选择优先于探针；`mirror_fidelity`、学术和技术策略不会进入强文学润色。
@@ -356,8 +356,10 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 - 画像中的人物只有带原文证据才会保留；可靠人物译名合并进术语表，每个请求只注入当前段落命中的人物子集。任务统计保存可审计的术语目录、角色集、画像和策略来源。
 - 普通 chunk 走自适应 JSON batch：稳定时在上限内扩大批次，批量失败时递归拆分；解释型脚注走结构化文本节点策略。
 - 单本书的模型请求由自适应并发限制器控制：失败时逐级降并发，连续成功后逐步恢复；复杂单段默认不主动升级 Pro，实际失败才进入有界质量兜底。请求还有绝对时限和取消检查，路由排序综合近期失败、冷却和延迟。
-- 可选 Redis 令牌桶按供应商和模型共享 RPM/TPM，调用前预留估算 Token，成功后按真实用量修正。该能力默认关闭，只有显式配置 `EPUB_LLM_RATE_LIMITER_ENABLED=1` 及正数 RPM/TPM 后生效；Redis 故障时回退现有进程内限制器。
+- 画像、术语、正文、补译、语义复核、文学编辑和同步 L4 精校均走 `infra/llm_gateway.py`。每次实际请求（含 JSON 兼容重发）独立校验模型、取得配额、检查预算/检查点、预记费用账本，再调用模型；网关自身不重试、不选择兜底模型，不解析业务 JSON。
+- 可选 Redis 令牌桶按主机名和模型共享 RPM/TPM，Flash 兼容别名共桶，但账本保留真实请求模型。调用前预留工程估算，完整用量才幂等对账；失败/未知用量不退还，超 TPM 请求直接拒绝而非压低估算。默认关闭；显式启用须提供 Redis 与正数 RPM/TPM，配置缺失/Redis 故障默认停止新请求，仅 `EPUB_LLM_RATE_LIMIT_FAIL_OPEN=1` 允许应急绕过，不永久关闭 limiter。
 - 可选 Redis 全局健康路由共享供应商/模型失败、冷却和延迟状态；通过 `EPUB_LLM_GLOBAL_HEALTH_ENABLED=1` 启用，故障时继续使用进程内健康排序。
+- 付款前预分析在订单数据库中维护按用户、可信 IP、原书 SHA 和 UTC 日的原子预算；配置/会话变化不重置同书预算。缓存另按用户/匿名会话、原书与配置隔离，成功缓存默认 1 小时；运行中的重复分析返回 409，崩溃未知状态不按 TTL 抢占。工程请求数/字节加输出上限不是实际 token 账单；真实费用只来自费用账本。
 - Chunk QA 增加保守的句子结构对齐信号；全章完成后聚合跨章节标准术语和角色译名漂移。两者用于定位人工复核，不单独阻断交付。
 - 用户显式开启时，Reduce 前根据已确认术语表确定性插入 `epub-term` 标签及原文映射；默认关闭，不让模型改写或生成标签。
 - 模型返回需通过空结果、错误样式、疑似未翻译、HTML 结构等检查。
@@ -365,6 +367,28 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 - 每章初轮结束即释放章节并发位，`failed_chunk_rescue` 在共享上限内立即补译未耗尽预算的失败段落，与其余章节重叠，不等待全书结束。
 - 术语请求默认 2 并发；成功准备结果和 chunk 检查点保存在原缓存数据库，续跑必须匹配书稿、配置与上下文并通过当前 QA，详情见 [翻译卡点修复](TRANSLATION-PERFORMANCE-2026-09-18.md)。
 - 每个 chunk 的模型、base URL、Token、耗时、重试次数、错误和 QA 结果会写入 Store。
+
+### 3.3 统一模型请求边界（R12）
+
+```mermaid
+flowchart LR
+    P[付款前画像 / 术语] --> G[进程内 Gateway]
+    W[正文 / 补译 / 语义与文学编辑] --> G
+    L[同步 L4 精校] --> G
+    G --> A[取消检查 / 模型白名单]
+    A --> Q[可选共享 Redis RPM/TPM]
+    Q --> B[持久预分析预算 / chunk 检查点]
+    B --> R[费用账本预记请求]
+    R --> API[一次实际模型请求]
+    API --> U[记录真实用量与费用状态]
+    U --> H[共享传输健康 / 配额幂等对账]
+    H --> C[回到原调用方进行 JSON / 内容 QA]
+    Q -. 配额拒绝 .-> Stop[停止新增调用 / API 或任务显式失败]
+    B -. 预算拒绝 .-> Stop
+    R -. 记账失败 .-> Stop
+```
+
+Gateway 是单体内的共享模块，不是额外网络服务；重试由原业务层决定，但每次重试仍必须重新经过整条链路。未知用量不会被当作零用量退款。Redis 健康信息仅为路由排序的辅助信号，不代替配额准入；同步精校在连接时限内完成/失败，不启动可失控的后台请求线程。
 
 ## 4. 交付质量门禁
 
@@ -502,7 +526,9 @@ API 与 Worker 多进程能使用同一数据库，不意味着当前工程已�
 | `backend/app/domain/book_reduce_service.py` | 全书 Reduce、书名同步、TOC 重建与打包 |
 | `backend/app/domain/translation_attempt.py` | attempt 身份与重启统计重置 |
 | `backend/app/domain/translation_qa_service.py` | 最终 EPUB 残留扫描和 QA 报告 |
-| `backend/app/infra/llm_token_bucket.py` | 可选 Redis 跨 Worker RPM/TPM 令牌桶 |
+| `backend/app/infra/llm_gateway.py` | 异步/同步实际模型请求的共享白名单、配额、预算、记账与健康边界 |
+| `backend/app/infra/llm_token_bucket.py` | 可选 Redis 跨 Worker RPM/TPM 令牌桶、唯一租约与幂等用量对账 |
+| `backend/app/domain/preflight_admission.py` | 付款前持久预算、上传者隔离缓存和在途去重 |
 | `backend/app/infra/llm_route_health.py` | 可选 Redis 跨 Worker 模型路由健康状态 |
 | `backend/app/storage.py` / `storage_db.py` | 内存/持久化 Store |
 | `backend/app/tasks/job_pipeline.py` | Celery 整本任务入口 |

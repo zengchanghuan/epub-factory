@@ -42,6 +42,7 @@ from .domain.payment_entitlement import (
 )
 from .domain.translation_strategy import TRANSLATION_STRATEGY_CHOICES
 from .domain.translation_preflight_service import build_translation_preflight
+from .infra.llm_gateway import GatewayControlError
 from .infra.llm_usage_ledger import AccountingError, get_ledger, add_amount
 from .domain.book_preview_service import build_book_preview
 from .domain.feedback_service import FEEDBACK_TYPES, feedback_limiter, persist_feedback
@@ -1389,7 +1390,8 @@ def download_result(
 
 def _prepare_translation_request(*, input_path, source_name, job_id, target_lang,
                                  translation_model, translation_quality,
-                                 translation_strategy, glossary, profile_confirmation):
+                                 translation_strategy, glossary, profile_confirmation,
+                                 budget_principal="internal", budget_subjects=None):
     """One normalized input for the quote and optional pre-payment analysis."""
     from .domain.translation_input import normalized_translation_input, TranslationInputError
 
@@ -1407,6 +1409,8 @@ def _prepare_translation_request(*, input_path, source_name, job_id, target_lang
                 billing_engine=getattr(job_store, "_engine", None),
                 target_lang=target_lang, translation_model=translation_model,
                 requested_strategy=translation_strategy, user_glossary=glossary,
+                source_sha256=normalized.source_sha256,
+                budget_principal=budget_principal, budget_subjects=budget_subjects,
             )
         identity = {"version": normalized.normalization_version, "adapter": normalized.adapter,
                     "source_sha256": normalized.source_sha256}
@@ -1603,6 +1607,8 @@ async def create_job_v2(
                 job_id=job_id, target_lang=target_lang, translation_model=translation_model,
                 translation_quality=translation_quality, translation_strategy=translation_strategy,
                 glossary=glossary, profile_confirmation=require_profile_confirmation,
+                budget_principal=(f"user:{current_user.id}" if current_user else f"anonymous:{client_ip}:{client_session}"),
+                budget_subjects=([f"user:{current_user.id}", f"ip:{client_ip}"] if current_user else [f"ip:{client_ip}"]),
             )
             source_warnings = list(dict.fromkeys([*source_warnings, *input_warnings]))
             estimated_chars = pricing_info.get("total_chars", 0)
@@ -1619,6 +1625,9 @@ async def create_job_v2(
         except TranslationInputError as exc:
             input_path.unlink(missing_ok=True)
             raise _translation_input_http_error(exc) from None
+        except GatewayControlError as exc:
+            input_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=getattr(exc, "status_code", 503), detail=str(exc)) from None
         except (AccountingError, Exception) as exc:
             input_path.unlink(missing_ok=True)
             logger.error(

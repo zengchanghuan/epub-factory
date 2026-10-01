@@ -520,6 +520,20 @@ class PrecisionContractTests(unittest.TestCase):
         download = self.client.get("/jobs/" + job.id + "/download", headers={"X-Job-Token": job.access_token})
         self.assertEqual(download.status_code, 400, download.text)
 
+    def test_governor_refusal_preserves_audit_flags_and_refund_contract(self):
+        from app.infra.llm_gateway import GatewayControlError
+        job = self.authorize(self.job_from(self.create()))
+        def refuse(*_args, **_kwargs):
+            raise GatewayControlError('controlled quota refusal')
+        failed, _, polisher = self.execute(job, service_effect=refuse)
+        self.assertEqual(polisher.call_count, 1)
+        self.assertEqual(failed.status, self.JobStatus.failed)
+        self.assertEqual(failed.error_code, 'PRECISION_POLISH_FAILED')
+        self.assertTrue(failed.translation_stats['model_governor_blocked'])
+        self.assertFalse(failed.translation_stats['deliverable'])
+        self.assertTrue(failed.translation_stats['precision_polish']['refund_required'])
+        self.assertIsNone(self.detail(failed)['download_url'])
+
     def test_failed_base_validation_never_invokes_paid_polisher(self):
         job = self.authorize(self.job_from(self.create()))
         failed, converter, polisher = self.execute(job, valid_conversion=False)

@@ -17,6 +17,7 @@ from app.domain.translation_strategy import (
 from app.engine.glossary_service import build_consistent_glossary
 from app.models import ChapterKind
 from app.infra.llm_usage_ledger import usage_scope
+from app.domain.preflight_admission import admitted_preflight, fingerprint
 
 
 PREFLIGHT_SCHEMA_VERSION = 1
@@ -99,12 +100,33 @@ def _chapters(manifest: dict[str, Any], default_strategy: str) -> list[dict[str,
 def build_translation_preflight(
     *, epub_path: str | Path, job_id: str, target_lang: str, translation_model: str,
     requested_strategy: str, user_glossary: dict[str, str] | None = None, billing_engine=None,
+    source_sha256: str | None = None, budget_principal: str = "internal",
+    budget_subjects: list[str] | None = None,
 ) -> dict[str, Any]:
     # Runs in a worker thread before a Job row exists. Carry its allocated id.
+    from app.domain.book_profile_service import BOOK_PROFILER_VERSION
+    from app.domain.translation_input import NORMALIZATION_VERSION
+    from app.engine.glossary_service import load_global_glossary
+    source, config = fingerprint(epub_path, source_sha256=source_sha256, options={
+        "target_lang": target_lang, "model": translation_model, "strategy": requested_strategy,
+        "user_glossary": user_glossary or {}, "global_glossary": load_global_glossary(target_lang),
+        "schema_version": PREFLIGHT_SCHEMA_VERSION, "profiler_version": BOOK_PROFILER_VERSION,
+        "normalization_version": NORMALIZATION_VERSION,
+    })
     with usage_scope(job_id, "preflight", engine=billing_engine):
-        return _build_translation_preflight(epub_path=epub_path, job_id=job_id, target_lang=target_lang,
-                                            translation_model=translation_model, requested_strategy=requested_strategy,
-                                            user_glossary=user_glossary)
+        with admitted_preflight(engine=billing_engine, source_sha256=source, config_hash=config,
+                                principal=budget_principal, budget_subjects=budget_subjects or [budget_principal]) as admission:
+            if admission.cached is not None:
+                result = admission.cached
+                result["preflight_cache"] = {"hit": True, "new_model_requests": 0}
+                result["created_at"] = datetime.now(timezone.utc).isoformat()
+                return result
+            result = _build_translation_preflight(epub_path=epub_path, job_id=job_id, target_lang=target_lang,
+                                                 translation_model=translation_model, requested_strategy=requested_strategy,
+                                                 user_glossary=user_glossary)
+            result["preflight_cache"] = {"hit": False}
+            admission.finish(result)
+            return result
 
 
 def _build_translation_preflight(

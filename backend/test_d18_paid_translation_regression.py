@@ -98,7 +98,7 @@ class TestPaidTranslationRegression(unittest.TestCase):
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=request)))
         payload = [{"id": 0, "html": ENGLISH}]
         with patch.object(translator, '_get_client', return_value=client), \
-             patch.object(translator, '_candidate_routes', return_value=[('https://mock.invalid', 'mock')]), \
+             patch.object(translator, '_candidate_routes', return_value=[('https://mock.invalid', 'deepseek-flash')]), \
              patch('app.engine.cleaners.semantics_translator.asyncio.sleep', new=AsyncMock()):
             with self.assertRaises(TimeoutError):
                 asyncio.run(translator._call_llm_json_batch(payload))

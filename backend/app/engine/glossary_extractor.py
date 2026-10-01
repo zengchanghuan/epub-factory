@@ -10,7 +10,7 @@
 调用者负责把产出的 {src: dst} 字典注入 SemanticsTranslator 的 glossary 字段。
 """
 from __future__ import annotations
-from app.infra.llm_usage_ledger import accounted_request
+from app.infra.llm_gateway import governed_request, preflight_output_limit
 
 import asyncio
 import json
@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 from urllib.parse import urlsplit
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
-from app.infra.async_requests import bounded_request
 from app.cancellation import JobCancelled, raise_if_cancelled
 from billiard.exceptions import SoftTimeLimitExceeded
 
@@ -329,6 +328,7 @@ async def translate_glossary(
     # 显式传入自建 http_client：避免 openai SDK 内部向新版 httpx(>=0.28) 传递已被
     # 移除的 proxies 参数而抛 TypeError（与 SemanticsTranslator 的构造方式保持一致）。
     import httpx
+    output_limit = preflight_output_limit()
     request_timeout = max(1.0, float(os.environ.get("EPUB_GLOSSARY_REQUEST_TIMEOUT", "300")))
     http_client = httpx.AsyncClient(timeout=min(60, request_timeout))
     client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0, http_client=http_client)
@@ -353,16 +353,19 @@ async def translate_glossary(
             try:
                 user_msg = json.dumps(batch, ensure_ascii=False)
                 batch_terms = {item["term"] for item in batch}
-                stats["llm_api_calls"] += 1
-                resp = await bounded_request(accounted_request(client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"目标语言：{target_lang}\n候选术语：{user_msg}"},
-                    ],
+                messages = [
+                    {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"目标语言：{target_lang}\n候选术语：{user_msg}"},
+                ]
+                def before_dispatch():
+                    stats["llm_api_calls"] += 1
+                resp = await governed_request(lambda: client.chat.completions.create(
+                    model=model, messages=messages, max_tokens=output_limit,
                     temperature=0.2,  # 术语翻译要稳定，温度调低
                     response_format={"type": "json_object"} if "gpt" in model.lower() else None,
-                ), model=model, base_url=base_url, stage="glossary"), timeout=request_timeout, cancel_check=cancel_check)
+                ), model=model, base_url=base_url, messages=messages, stage="glossary",
+                    max_output_tokens=output_limit, timeout=request_timeout,
+                    cancel_check=cancel_check, before_dispatch=before_dispatch)
                 raw = (resp.choices[0].message.content or "").strip()
                 # 处理 markdown 包裹
                 if raw.startswith("```"):

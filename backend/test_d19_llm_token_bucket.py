@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from app.infra.llm_token_bucket import (
     DistributedLLMTokenBucket,
+    GatewayConfigurationError,
     estimate_request_tokens,
 )
 
@@ -34,7 +35,7 @@ def test_limiter_is_safe_noop_without_explicit_enable():
     assert lease.waited_ms == 0
 
 
-def test_incomplete_configuration_disables_limiter():
+def test_incomplete_configuration_fails_closed():
     names = (
         "EPUB_LLM_RATE_LIMITER_ENABLED",
         "EPUB_LLM_RPM",
@@ -50,7 +51,14 @@ def test_incomplete_configuration_disables_limiter():
         os.environ.pop("REDIS_URL", None)
         os.environ.pop("CELERY_BROKER_URL", None)
         limiter = DistributedLLMTokenBucket()
-        assert limiter.enabled is False
+        assert limiter.enabled is True
+        try:
+            asyncio.run(limiter.acquire(provider="deepseek", model="deepseek-flash", estimated_tokens=1000))
+        except GatewayConfigurationError:
+            pass
+        else:
+            raise AssertionError("explicitly enabled incomplete limits must stop dispatch")
+        assert limiter._redis is None
     finally:
         for name, value in previous.items():
             if value is None:
@@ -69,7 +77,7 @@ def test_token_estimate_grows_with_request_size():
 if __name__ == "__main__":
     tests = [
         test_limiter_is_safe_noop_without_explicit_enable,
-        test_incomplete_configuration_disables_limiter,
+        test_incomplete_configuration_fails_closed,
         test_token_estimate_grows_with_request_size,
     ]
     for test_fn in tests:

@@ -273,7 +273,7 @@ class TestDeliveryRecovery(unittest.TestCase):
         request = AsyncMock(side_effect=BalanceError('Insufficient Balance'))
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=request)))
         with patch.object(t, '_get_client', return_value=client), \
-             patch.object(t, '_candidate_routes', return_value=[('https://mock.invalid', 'a'), ('https://mock.invalid', 'b')]):
+             patch.object(t, '_candidate_routes', return_value=[('https://mock.invalid', 'deepseek-flash'), ('https://mock.invalid', 'deepseek-chat')]):
             with self.assertRaises(ProviderAccountUnavailable):
                 asyncio.run(t.translate_many_chunks_async([TITLE_HTML] * 10))
             self.assertEqual(request.await_count, 1)
@@ -293,7 +293,7 @@ class TestDeliveryRecovery(unittest.TestCase):
         long_html = '<p>' + ('This long paragraph describes the trading strategy in detail. ' * 40) + '</p>'
         with patch.dict(os.environ, {'OPENAI_CONCURRENCY': '1'}), \
              patch.object(t, '_get_client', return_value=client), \
-             patch.object(t, '_candidate_routes', return_value=[('https://mock.invalid', 'a')]):
+             patch.object(t, '_candidate_routes', return_value=[('https://mock.invalid', 'deepseek-flash')]):
             with self.assertRaises(ProviderAccountUnavailable):
                 asyncio.run(t.translate_many_chunks_async([TITLE_HTML, long_html]))
         self.assertEqual(request.await_count, 2)
@@ -313,7 +313,7 @@ class TestDeliveryRecovery(unittest.TestCase):
             return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
                 create=failed if base == primary else success)))
         with patch.object(t, '_get_client', side_effect=client), \
-             patch.object(t, '_candidate_routes', return_value=[(primary, 'a'), (primary, 'b'), (backup, 'a')]):
+             patch.object(t, '_candidate_routes', return_value=[(primary, 'deepseek-flash'), (primary, 'deepseek-chat'), (backup, 'deepseek-flash')]):
             result = asyncio.run(t.translate_many_chunks_async([TITLE_HTML]))[0]
         self.assertIsNone(result.error)
         self.assertEqual(failed.await_count, 1)

@@ -1370,6 +1370,7 @@ def run_fast_translation_job(
                     book_title=original_book_title,
                     model=getattr(job, "translation_model", None) or None,
                     target_lang=job.target_lang,
+                    cancel_check=cancel_check,
                 )
                 if book_profile.get("status") == "ok":
                     raise_if_cancelled(cancel_check)

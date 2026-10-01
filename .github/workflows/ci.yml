@@ -125,6 +125,10 @@ jobs:
                 test_d48_repair_repository
                 test_d48_repair_executor
                 test_d48_repair_contract
+                test_d50_llm_gateway
+                test_d50_llm_limiter
+                test_d50_llm_callers
+                test_d50_preflight_admission
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard

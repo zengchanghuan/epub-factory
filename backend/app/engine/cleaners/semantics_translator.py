@@ -29,14 +29,12 @@ from app.domain.translation_strategy import (
     strategy_allows_literary_polish,
     strategy_prompt,
 )
-from app.infra.llm_token_bucket import (
-    DistributedLLMTokenBucket,
-    estimate_request_tokens,
-)
+from app.infra.llm_token_bucket import DistributedLLMTokenBucket
 from app.infra.llm_route_health import DistributedRouteHealth
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
-from app.infra.async_requests import bounded_request, gather_cancel_on_error as _gather_cancel_on_error
-from app.infra.llm_usage_ledger import accounted_request, billing_stage
+from app.infra.async_requests import gather_cancel_on_error as _gather_cancel_on_error
+from app.infra.llm_usage_ledger import billing_stage
+from app.infra.llm_gateway import governed_request
 from app.domain.translation_residual_policy import confirmed_preserved_terms, residual_category
 from ..translation_cache import TranslationCache
 
@@ -44,6 +42,22 @@ from ..translation_cache import TranslationCache
 # Per-coroutine budget: concurrent chunks must not share mutable retry counts.
 _request_budget: ContextVar[dict | None] = ContextVar("translation_request_budget", default=None)
 _request_observer: ContextVar = ContextVar("translation_request_observer", default=None)
+
+
+class _ObservedRouteHealth:
+    """Count real shared-health writes without confusing JSON QA with transport."""
+    def __init__(self, translator):
+        self.translator = translator
+
+    def record_failure(self, route):
+        written = self.translator.distributed_route_health.record_failure(route)
+        self.translator.stats.global_route_health_writes += int(bool(written))
+        return written
+
+    def record_success(self, route, latency_ms):
+        written = self.translator.distributed_route_health.record_success(route, latency_ms)
+        self.translator.stats.global_route_health_writes += int(bool(written))
+        return written
 
 
 async def _within_request_budget(limit, operation, on_request=None):
@@ -618,8 +632,6 @@ class SemanticsTranslator:
         health["failures"] = failures
         health["cooldown_until"] = time.monotonic() + min(60.0, failures * 5.0)
         self._ROUTE_HEALTH[route] = health
-        if self.distributed_route_health.record_failure(route):
-            self.stats.global_route_health_writes += 1
 
     def _record_route_success(self, route: tuple[str, str], latency_ms: int) -> None:
         health = dict(self._ROUTE_HEALTH.get(route) or {})
@@ -628,8 +640,6 @@ class SemanticsTranslator:
         health["failures"] = max(0.0, float(health.get("failures") or 0) - 1)
         health["cooldown_until"] = 0.0
         self._ROUTE_HEALTH[route] = health
-        if self.distributed_route_health.record_success(route, latency_ms):
-            self.stats.global_route_health_writes += 1
 
     def _quality_retry_preferred_model(self, failed_quality_retries: int) -> str | None:
         if self.pro_fallback_after_retries <= 0:
@@ -1361,7 +1371,6 @@ class SemanticsTranslator:
             protected_payload.append(protected_item)
             protected_replacements[item_id] = replacements
         user_content = json.dumps(protected_payload, ensure_ascii=False)
-        estimated_request_tokens = estimate_request_tokens(system_prompt, user_content)
         last_error = None
         routes = self._candidate_routes(preferred_model)
         max_attempts = max(self.max_retries, len(routes))
@@ -1390,6 +1399,39 @@ class SemanticsTranslator:
                 budget = _request_budget.get()
                 observer(budget["used"] if budget is not None else request_count)
 
+        def before_dispatch():
+            self._raise_if_cancelled()
+            blocked = self._blocked_accounts.get(self._account_key(base_url))
+            if blocked:
+                raise blocked
+            budget = _request_budget.get()
+            if budget is not None:
+                if budget["remaining"] <= 0:
+                    raise RuntimeError("chunk retry budget exhausted")
+                budget["remaining"] -= 1
+                budget["used"] += 1
+            self.stats.api_calls += 1
+            reserve_checkpoint()
+
+        def on_lease(lease):
+            if lease.enabled:
+                self.stats.global_rate_limit_acquisitions += 1
+                self.stats.global_rate_limit_wait_ms += lease.waited_ms
+            if lease.waited_ms >= 500:
+                self._emit_progress(
+                    f"全局模型配额平滑等待 {lease.waited_ms / 1000:.1f} 秒后继续"
+                )
+
+        async def dispatch(kwargs):
+            return await governed_request(
+                lambda: self._get_client(base_url).chat.completions.create(**kwargs),
+                model=model, base_url=base_url, messages=kwargs["messages"],
+                usage_observer=observe_usage, before_dispatch=before_dispatch,
+                on_lease=on_lease, limiter=self.distributed_rate_limiter,
+                route_health=_ObservedRouteHealth(self),
+                timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
+            )
+
         attempt = 0
         while attempt < max_attempts:
             attempt += 1
@@ -1401,19 +1443,6 @@ class SemanticsTranslator:
             provider = self._provider_for_base_url(base_url)
             route = (base_url, model)
             route_started = time.monotonic()
-            lease = await self.distributed_rate_limiter.acquire(
-                provider=provider,
-                model=model,
-                estimated_tokens=estimated_request_tokens,
-                cancel_check=self.cancel_check,
-            )
-            if lease.enabled:
-                self.stats.global_rate_limit_acquisitions += 1
-                self.stats.global_rate_limit_wait_ms += lease.waited_ms
-            if lease.waited_ms >= 500:
-                self._emit_progress(
-                    f"全局模型配额平滑等待 {lease.waited_ms / 1000:.1f} 秒后继续"
-                )
             try:
                 kwargs = {
                     "model": model,
@@ -1427,45 +1456,14 @@ class SemanticsTranslator:
                 if os.environ.get("OPENAI_DISABLE_JSON_RESPONSE_FORMAT", "").lower() not in ("1", "true", "yes"):
                     kwargs["response_format"] = {"type": "json_object"}
                 try:
-                    self._raise_if_cancelled()
-                    blocked = self._blocked_accounts.get(self._account_key(base_url))
-                    if blocked:
-                        raise blocked
-                    budget = _request_budget.get()
-                    if budget is not None:
-                        if budget["remaining"] <= 0:
-                            raise RuntimeError("chunk retry budget exhausted")
-                        budget["remaining"] -= 1
-                        budget["used"] += 1
-                    self.stats.api_calls += 1
-                    reserve_checkpoint()
-                    response = await bounded_request(
-                        accounted_request(self._get_client(base_url).chat.completions.create(**kwargs),
-                                          model=model, base_url=base_url, usage_observer=observe_usage),
-                        timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
-                    )
+                    response = await dispatch(kwargs)
                 except (JobCancelled, SoftTimeLimitExceeded, ProviderAccountUnavailable):
                     raise
                 except Exception as response_exc:
                     if "response_format" not in str(response_exc).lower():
                         raise
                     kwargs.pop("response_format", None)
-                    self._raise_if_cancelled()
-                    blocked = self._blocked_accounts.get(self._account_key(base_url))
-                    if blocked:
-                        raise blocked
-                    if budget is not None:
-                        if budget["remaining"] <= 0:
-                            raise RuntimeError("chunk retry budget exhausted")
-                        budget["remaining"] -= 1
-                        budget["used"] += 1
-                    self.stats.api_calls += 1
-                    reserve_checkpoint()
-                    response = await bounded_request(
-                        accounted_request(self._get_client(base_url).chat.completions.create(**kwargs),
-                                          model=model, base_url=base_url, usage_observer=observe_usage),
-                        timeout=self.request_wall_timeout, cancel_check=self.cancel_check,
-                    )
+                    response = await dispatch(kwargs)
                 raw = (response.choices[0].message.content or "").strip()
                 try:
                     parsed = self._extract_json_from_response(raw)
@@ -1578,14 +1576,6 @@ class SemanticsTranslator:
         usage = response.usage if response else None
         prompt_tokens = getattr(usage, "prompt_tokens", None) or 0
         completion_tokens = getattr(usage, "completion_tokens", None) or 0
-        await self.distributed_rate_limiter.reconcile(
-            lease,
-            actual_tokens=(
-                int(getattr(usage, "total_tokens", 0) or 0)
-                if usage
-                else estimated_request_tokens
-            ),
-        )
         latency_ms = int((time.monotonic() - started_call) * 1000)
         self.stats.api_latency_ms_total += latency_ms
         self.stats.api_latency_ms_max = max(self.stats.api_latency_ms_max, latency_ms)

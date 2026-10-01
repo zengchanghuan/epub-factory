@@ -298,12 +298,13 @@ class LedgerTests(unittest.TestCase):
 
     def test_preflight_scope_uses_passed_order_database_in_worker_thread(self):
         from app.domain.translation_preflight_service import build_translation_preflight
+        source=self.root/'preflight.epub';source.write_bytes(b'offline fingerprint fixture')
         def analyze(**kwargs):
             asyncio.run(accounted_request(AsyncMock(return_value=response())(),model=MODEL,base_url=HOST))
             return {'status':'ready'}
         with patch('app.domain.translation_preflight_service._build_translation_preflight',side_effect=analyze):
             with ThreadPoolExecutor(max_workers=1) as pool:
-                result=pool.submit(build_translation_preflight,epub_path='unused',job_id='book',target_lang='zh-CN',translation_model=MODEL,requested_strategy='auto',billing_engine=self.engine).result()
+                result=pool.submit(build_translation_preflight,epub_path=source,job_id='book',target_lang='zh-CN',translation_model=MODEL,requested_strategy='auto',billing_engine=self.engine).result()
         self.assertEqual(result['status'],'ready')
         self.assertEqual(self.ledger.requests('book')[0]['attempt_id'],'preflight')
 

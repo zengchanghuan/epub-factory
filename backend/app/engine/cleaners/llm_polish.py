@@ -18,7 +18,8 @@ from opencc import OpenCC
 from app.cancellation import raise_if_cancelled
 from app.infra.llm_guard import assert_model_allowed
 from app.infra.llm_pricing import provider_host
-from app.infra.llm_usage_ledger import accounted_call, normalize_usage, require_usage_scope
+from app.infra.llm_usage_ledger import normalize_usage, require_usage_scope
+from app.infra.llm_gateway import governed_call
 
 
 class PrecisionPolishError(RuntimeError):
@@ -287,7 +288,7 @@ class LLMPolisher:
     """One book/session, one client, one conservative request budget.
 
     Test seam: subclass _request(payload) returning a provider envelope, or
-    inject httpx.MockTransport. Both still exercise accounted_call.
+    inject httpx.MockTransport. Both still exercise the governed usage ledger.
     """
     def __init__(self, api_key=None, *, base_url=None, model=None, client=None, cancel_check=None):
         direct_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "").strip()
@@ -314,6 +315,7 @@ class LLMPolisher:
         self.stats = L4Stats(model=self.model, provider=provider_host(self.base_url))
         self.cancel_check = cancel_check or (lambda: None)
         self.stats_callback = lambda stats: None
+        self.request_timeout = timeout
         self._budget_used = 0
         self._client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
@@ -349,14 +351,16 @@ class LLMPolisher:
             raise_if_cancelled(self.cancel_check, "用户已停止精校")
             if self._budget_used + reservation > self.book_limit:
                 raise PrecisionPolishError("budget_exceeded", "整书精校预算已达上限，未降级交付")
-            self._budget_used += reservation
-            def dispatch():
+            def before_dispatch():
+                self._budget_used += reservation
                 self.stats.api_calls += 1
                 self.stats.retries += int(attempt > 0)
-                return self._request(payload)
             try:
-                data = accounted_call(dispatch, model=self.model,
-                                      base_url=self.base_url, stage="precision_polish")
+                data = governed_call(lambda: self._request(payload), model=self.model,
+                                     base_url=self.base_url, messages=payload["messages"],
+                                     max_output_tokens=self.output_limit, stage="precision_polish",
+                                     cancel_check=self.cancel_check, timeout=self.request_timeout,
+                                     before_dispatch=before_dispatch)
                 usage = normalize_usage(data)
                 if usage["usage_status"] != "complete":
                     raise PrecisionPolishError("usage_unavailable", "精校请求用量不完整，已保留账本并停止新增请求")

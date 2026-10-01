@@ -31,6 +31,7 @@ from .infra.execution_lease import execution_lease, execution_identity, Executio
 from .infra.execution_heartbeat import ExecutionHeartbeat
 from .infra.llm_errors import ProviderAccountUnavailable
 from .infra.llm_usage_ledger import usage_scope, AccountingError
+from .infra.llm_gateway import GatewayControlError
 from .domain.translation_residual_policy import confirmed_preserved_terms
 from .domain.payment_entitlement import precision_polish_entitlement_reason
 from .domain.translation_input import (
@@ -678,7 +679,7 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             source_filename=job.source_filename,
         )
         logger.info("job cancelled", extra={"trace_id": job.trace_id, "job_id": job.id})
-    except (AccountingError, Exception) as exc:
+    except (AccountingError, GatewayControlError, Exception) as exc:
         current = job_store.get(job.id)
         if current and (current.status != JobStatus.running
                         or attempt_id_from_stats(current.translation_stats) != attempt_id):
@@ -692,6 +693,10 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
         failure_stats = None
         if isinstance(exc, AccountingError):
             error_code = ErrorCode.TRANSLATION_FAILED
+        if isinstance(exc, GatewayControlError):
+            error_code = ErrorCode.TRANSLATION_FAILED if job.enable_translation else ErrorCode.CONVERT_FAILED
+            failure_stats = dict(getattr(current, "translation_stats", {}) or job.translation_stats or {})
+            failure_stats.update(model_governor_blocked=True, last_error=message, live=False, deliverable=False)
         if isinstance(exc, TranslationInputError) and job.enable_translation:
             error_code = ErrorCode.TRANSLATION_FAILED
         if isinstance(exc, ProviderAccountUnavailable):
@@ -705,7 +710,8 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             error_code = ErrorCode.TRANSLATION_FAILED
         if getattr(job, "enable_precision_polish", False):
             error_code = ErrorCode.PRECISION_POLISH_FAILED
-            failure_stats = dict(getattr(current, "translation_stats", {}) or job.translation_stats or {})
+            failure_stats = dict(failure_stats if failure_stats is not None else
+                                 (getattr(current, "translation_stats", {}) or job.translation_stats or {}))
             failure_stats["precision_polish"] = {
                 **dict(failure_stats.get("precision_polish") or {}), "status": "failed",
                 "reason": type(exc).__name__, "validation_passed": False,

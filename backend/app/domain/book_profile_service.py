@@ -14,7 +14,10 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
-from app.infra.llm_usage_ledger import accounted_request, billing_stage
+from billiard.exceptions import SoftTimeLimitExceeded
+from app.cancellation import JobCancelled, raise_if_cancelled
+from app.infra.llm_usage_ledger import billing_stage
+from app.infra.llm_gateway import governed_request, preflight_output_limit
 
 from app.engine.unpacker import EpubUnpacker
 from .translation_strategy import (
@@ -396,7 +399,9 @@ async def profile_book_async(
     book_title: str = "",
     model: str | None = None,
     target_lang: str = "zh-CN",
+    cancel_check=None,
 ) -> dict[str, Any]:
+    raise_if_cancelled(cancel_check)
     payload, sampling = build_profiler_input(
         epub_path=epub_path,
         manifest=manifest,
@@ -442,8 +447,10 @@ async def profile_book_async(
         "toc": payload.get("toc"),
         "samples": payload.get("samples"),
     }
+    output_limit = preflight_output_limit()
+    request_timeout = float(os.environ.get("EPUB_BOOK_PROFILER_TIMEOUT", "75"))
     http_client = httpx.AsyncClient(
-        timeout=float(os.environ.get("EPUB_BOOK_PROFILER_TIMEOUT", "75"))
+        timeout=request_timeout
     )
     client = AsyncOpenAI(
         api_key=api_key,
@@ -459,17 +466,27 @@ async def profile_book_async(
                 {"role": "user", "content": json.dumps(request_payload, ensure_ascii=False)},
             ],
             "temperature": 0.1,
-            "timeout": float(os.environ.get("EPUB_BOOK_PROFILER_TIMEOUT", "75")),
+            "timeout": request_timeout,
+            "max_tokens": output_limit,
         }
+        async def dispatch():
+            return await governed_request(
+                lambda: client.chat.completions.create(**kwargs),
+                model=profiler_model, base_url=base_url, messages=kwargs["messages"],
+                max_output_tokens=output_limit, timeout=request_timeout,
+                cancel_check=cancel_check,
+            )
         if os.environ.get("OPENAI_DISABLE_JSON_RESPONSE_FORMAT", "").lower() not in {"1", "true", "yes"}:
             kwargs["response_format"] = {"type": "json_object"}
         try:
-            response = await accounted_request(client.chat.completions.create(**kwargs), model=profiler_model, base_url=base_url)
+            response = await dispatch()
+        except (JobCancelled, SoftTimeLimitExceeded):
+            raise
         except Exception as exc:
             if "response_format" not in str(exc).lower():
                 raise
             kwargs.pop("response_format", None)
-            response = await accounted_request(client.chat.completions.create(**kwargs), model=profiler_model, base_url=base_url)
+            response = await dispatch()
         profile = _normalize_profile(_extract_json(response.choices[0].message.content or ""))
         usage = getattr(response, "usage", None)
         profile["usage"] = {
@@ -478,6 +495,8 @@ async def profile_book_async(
             "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
         }
         return {**profile, **common}
+    except (JobCancelled, SoftTimeLimitExceeded):
+        raise
     except Exception as exc:
         logger.warning("book profiler failed; using conservative fallback: %s", exc)
         fallback["evidence"] = [{
@@ -497,6 +516,7 @@ def profile_book(
     book_title: str = "",
     model: str | None = None,
     target_lang: str = "zh-CN",
+    cancel_check=None,
 ) -> dict[str, Any]:
     import asyncio
 
@@ -506,4 +526,5 @@ def profile_book(
         book_title=book_title,
         model=model,
         target_lang=target_lang,
+        cancel_check=cancel_check,
     ))
