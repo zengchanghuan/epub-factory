@@ -108,6 +108,10 @@ jobs:
                 test_d46_write_fence_store
                 test_d46_write_fence_contract
                 test_d46_execution_fence
+                test_d47_queue_routing
+                test_d47_queue_process
+                test_d47_worker_control
+                test_d47_worker_environment
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard
@@ -122,5 +126,6 @@ jobs:
               python ../scripts/test_configure_alipay_public_key.py || fail=1
               python ../scripts/test_migrate_legacy_repair.py || fail=1
               python ../scripts/test_deploy_legacy_gate.py || fail=1
+              python ../scripts/test_worker_services.py || fail=1
               exit $fail
             '

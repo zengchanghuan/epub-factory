@@ -68,7 +68,7 @@ def fixture_worker(root, mode):
             "time_limit": 4 if mode in {"soft", "hard"} else 70,
         }},
     )
-    celery_app.worker_main(["worker", "--pool=prefork", "--concurrency=1", "--loglevel=WARNING",
+    celery_app.worker_main(["worker", "--queues=celery", "--pool=prefork", "--concurrency=1", "--loglevel=WARNING",
                             "--without-gossip", "--without-mingle", "--without-heartbeat"])
 
 

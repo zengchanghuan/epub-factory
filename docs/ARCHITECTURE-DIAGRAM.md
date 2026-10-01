@@ -2,7 +2,7 @@
 title: EPUB Factory 当前代码架构
 status: current
 updated: 2026-10-01
-code_revision: 5d1705c9fed54b93403d34f2a4b70f4bcfc2e3b8
+code_revision: 3e88b7f7b8f19a1ac02f329546161711120d55f4
 scope: local-code-and-offline-verification
 ---
 
@@ -10,7 +10,7 @@ scope: local-code-and-offline-verification
 
 本文依据上述提交的本地代码与离线核验，描述实际接通的调用链，不代表已经核验生产配置或部署版本。历史设计见 [AI 翻译设计](AI-TRANSLATION-DESIGN.md)，本轮缺陷与改进顺序见 [架构审查：2026-10-01](ARCHITECTURE-REVIEW-2026-10-01.md)。
 
-后续工作区已实现 R1 的独立付款权益快照与重译校验，并修复历史书稿暴露的导航与旧表格兼容问题；R2 的章节身份与 attempt 中间产物隔离、R3 的转换附加精校执行契约、R4 的统一翻译输入与执行计划均已通过相应专项、历史文件及离线回归，尚未发布。R5 已接付款事务内的任务投递 outbox 与独立重试分发器；R6 新增可信网关关单与迟到付款的恢复/人工处理分流；R7 接限次失联恢复；R8 在同一存储事务内限制旧执行器写入，并隔离每个执行器的成品。以下主链路包含这些工作区改动，最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
+R1–R8 及历史导航/表格兼容修复已提交并推送至上述版本，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复，以及旧执行器写入和成品保护。本地工作区继续实现 R9：书籍与维护任务分队列、分 Worker，并增加启动及部署前的角色检查。以下主链路包含 R9 工作区改动，最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
 
 当前形态是**模块化单体 API + 整本 Celery 任务 + Worker 内章节并发**；独立 EPUB 修复仍在 API 进程内执行。图中的虚线表示条件启用或旁路调用，不表示已经完成分布式改造。
 
@@ -27,8 +27,12 @@ flowchart TB
   API --> Store["JobStore<br/>SQLAlchemy：SQLite / 可配置 PostgreSQL<br/>任务 / 阶段 / 统计 / 邮件与投递 outbox"]
   Store --> Dispatch["job_dispatch_outbox<br/>逐 job / attempt 持久意图 + 认领租约<br/>API 独立线程退避重试 / 对账补充消费"]
   API -->|"验款后立即尝试投递"| Dispatch
-  Dispatch -->|"配置 Broker"| Redis["Redis Broker / Result Backend"]
-  Redis --> Worker["Celery Worker<br/>整本 jobs.run_conversion"]
+  Dispatch -->|"配置 Broker"| BookQueue["Redis：celery 队列<br/>保留历史积压"]
+  BookQueue --> Worker["book Worker<br/>仅 celery / 整本 jobs.run_conversion"]
+  HouseQueue["Redis：housekeeping 队列"] --> HouseWorker["housekeeping Worker<br/>仅维护队列 / 并发 1"]
+  HouseWorker -->|"可信对账 / 付款结算"| Store
+  HouseWorker -->|"补充投递"| Dispatch
+  HouseWorker -->|"查单与关单"| Pay
   Dispatch -.->|"无 Broker 的开发回退"| Local["BackgroundTasks / Thread"]
   Worker --> Runner["run_job<br/>执行租约 / attempt / 取消检查"]
   Local --> Runner
@@ -54,10 +58,10 @@ flowchart TB
   RepairWorker --> RepairEngine["epub_repairer<br/>REPAIR_UPLOAD_DIR 下成品"]
   Store --> Mail["API 内邮件分发线程<br/>完成通知 / 商户收款通知"]
   Mail --> SMTP["邮件服务"]
-  Beat["Celery Beat"] -->|"同一默认队列：对账 / 余额"| Redis
+  Beat["Celery Beat"] -->|"对账 / 余额：独立维护队列"| HouseQueue
 ```
 
-FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本采用单服务器上的 API、Worker、Beat 与反向代理。Celery 以整本任务为队列单位；`jobs.translate_chapter` 虽已注册，但主链路没有把全书分发为该任务组。
+FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本要求单服务器上的 API、book Worker、housekeeping Worker、Beat 四服务与反向代理。Redis 同时承载 Broker/Result Backend。Celery 以整本任务为队列单位；`jobs.translate_chapter` 虽已注册，但主链路没有把全书分发为该任务组。首次双 Worker 迁移需要人工审核现有 systemd 单元，代码不会自动安装或覆盖它们。
 
 未配置 `DATABASE_URL` 或 `EPUB_PERSISTENT_STORE` 时，JobStore 回退内存；这只适用于单进程开发，不应与独立 Celery Worker 混用。Redis 配置存在即选队列路径，不等于已经验证 Broker 健康。
 
@@ -77,6 +81,7 @@ FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本�
 | 超时关闭与迟到付款 | 工作区 R6：有网关关闭证据才本地关闭；实付到期单恢复，用户取消转可见人工处理，不自动退款 |
 | Worker 失联及未开始恢复 | 工作区 R7：持久心跳、同租约限次恢复及延迟补投；需要持久库与 Broker |
 | 旧执行器写入与成品保护 | 工作区 R8：父任务锁内 attempt/owner 守卫、独占成品目录及提交未知时保守清理；专项和历史门禁通过，未部署 |
+| 长短任务队列隔离 | 工作区 R9：整书保留 `celery`；对账/余额/ping 使用 `housekeeping`，独立消费者与启动门禁；尚未部署 |
 | Celery 分布式章节执行 | 存在另一章节任务入口，未接整书主链 |
 | PDF 翻译、图片像素 OCR 与重绘 | 尚未实现/未开放，不画入执行链 |
 
@@ -182,7 +187,7 @@ flowchart TD
 - 系统到期使用 `PAYMENT_EXPIRED` 标记；升级前仅识别两条精确的旧超时消息，不用模糊文字推断所有 cancelled 均能自动恢复。旧单仍必须经过新验款，历史迁移不自动标记为已付。
 - 超时阈值仅触发关单请求，不能单独证明订单已关闭；签名失败、错误订单、失败码、网络未知不构成关闭证据。关单后再查若发现匹配实付，付款优先；本地关闭条件更新不能覆盖已释放任务。
 - 批次按一个冻结总价验款，但逐子项保存处理结果。主子项被用户取消时，不会使其余待付/到期子项漏出对账；用户取消子项不自动重启。
-- 定时对账延续原 Beat 日程，同时扫描系统到期取消的主任务，补偿漏通知；该日程仍可能受长书默认队列阻塞，独立短队列属于 R9，不承诺实时恢复。
+- 定时对账延续原 Beat 日程，同时扫描系统到期取消的主任务，补偿漏通知；R9 新投递改走独立维护队列，不再等待长书释放书籍 Worker。维护队列内的长对账仍会阻塞其他维护任务，不承诺实时恢复。
 - 本项没有新增自动退款能力，也不从“订单取消”推断“退款成功”。管理员的只读式查款刷新仍只核验付款；实际自动补偿由验签回调、客户恢复接口和对账执行，人工处理须由运营明确决定。
 
 ### 2.4 Worker 心跳与有界恢复
@@ -208,7 +213,7 @@ flowchart TD
 - 陈旧心跳只是候选；租约繁忙、Redis/DB 异常或身份变化均不得抢占。恢复事务不能修改未付、已取消或终态任务。自动恢复不创建新翻译 attempt，不增加用户免费重译次数，不清缓存、章节断点或请求费用记录。
 - `job_executions` 为独立增量表。执行恢复默认为 2 次，上限为可配置的 10 次；排队未开始的补发单独退避到基础间隔的 8 倍，不把长队列等待当作毒性书稿失败。均为工程值，不是恢复 SLA。
 - 软超时作为执行控制信号向上抛出，不被 Compiler 当作坏书降级/跳过；硬退出由扫描器恢复。Celery 显式不启用无限 `reject_on_worker_lost` 重投，补偿依赖持久状态与 outbox。
-- Celery 在 fork 前关闭父进程空闲数据库连接，fork 后重建子进程连接池；覆盖 SQLite WAL 的继承连接锁错误，避免重启子进程继续使用父连接。
+- Celery 在 `worker_init`（任务导入后、进程池启动前）关闭父进程空闲数据库连接，异步池后续 fork 前再次清理，子进程只重建连接池；同时覆盖不发出 `worker_before_create_process` 的 BlockingPool，避免遗留 SQLite WAL 父连接。
 - 恢复线程随持久投递器在 API 中启动，需要持久 Store、已配置 Broker，并且 `JOB_DISPATCH_ENABLED` / `JOB_RECOVERY_ENABLED` 未关闭；API 停机期间扫描暂停，重启后继续。开发内存/无 Broker 模式不承诺自动恢复。
 - 本地进程门禁使用真实 Celery prefork、文件系统 Broker、SQLite 和文件租约；不等同于真实 Redis/PostgreSQL 或生产部署验证。R7 的执行记录 CAS 与 R8 的业务写入守卫互补，不覆盖独立修复服务或全部外部副作用。
 
@@ -232,6 +237,22 @@ flowchart LR
 - 同 attempt 失联恢复会更换 owner。Reduce 的文件与校验封装额外绑定 owner，不能把旧 owner 的晚到章节用于新打包；检查点和翻译缓存仍按来源及配置复用，费用账本仍记录已实际返回的请求用量，不伪装为同一个跨库事务。
 - 主链路由 `run_job` 建立作用域；未接主链的章节 Celery 入口也要求显式捕获 attempt/owner，缺失或过期身份在模型调用前拒绝。旧的无身份消息不能自行采用最新 owner。
 - 终态写入被拒绝的旧执行器不发完成通知；已经成功提交后的通知/邮件是独立副作用，尚未提供与人工重试跨事务的严格一次性投递保证。数据库确认未知而保留的孤儿目录也尚无自动垃圾回收，本项优先保护已交付文件。
+
+### 2.6 长短任务队列隔离
+
+| 角色 | 队列与任务 | 执行约束 |
+|---|---|---|
+| book | 保留 `celery`；`jobs.run_conversion`、`jobs.translate_chapter`，未知任务仍走原默认队列 | 原书籍并发与时限；prefork、预取 1 |
+| housekeeping | `housekeeping`；对账、余额、ping | 独立 prefork；并发 1、预取 1；默认软/硬时限 1500/1800 秒 |
+
+- 两个固定角色通过 `python -m app.infra.worker` 启动，并显式选择 `book` 或 `housekeeping` 参数。Worker 在池及消费者启动前拒绝裸命令订阅两队列、混合队列、错误角色、非 prefork 池、维护并发不为 1 或维护自动扩容。Beat 的原日程与 3600 秒过期预算不变，只显式指定新路由。
+- 构建 Celery 配置前固定加载 `backend/.env`，已导出的环境变量优先；不依赖任务模块稍后间接加载配置。覆盖 API 发布器、Beat、角色 launcher 和直接 Celery 入口，不读取无关当前目录的配置文件。
+- 启动后由 Celery 现有控制命令注册表按接收端 app 限制队列/并发变更，拒绝 `add_consumer`、`cancel_consumer`、`pool_grow`、`pool_shrink`、`autoscale`；只读 `inspect`/`ping` 及其他既有管理命令不变，非本工程 app 不受影响。不以关闭远程控制来掩盖运行时隔离缺口。
+- 维护独立预算保留原对账时限，不引入强制短超时。拆队列解除跨角色的并发位争用，并不隔离 CPU、内存、数据库或网关配额；单个长对账的分页/增量扫描不在本项范围。
+- 旧 `celery` 积压不改名、不清空、不复制；其中既有维护消息仍由旧队列处理，新投递才走新队列。生产部署前必须排空并确认旧进程角色，不能只 daemon-reload 后假定运行中 Worker 已切换。
+- 部署脚本在停止服务前核验四服务存在、配置 ExecStart 与运行进程参数；无法证明单角色时拒绝。旧 Celery 命令的兼容部署还拒绝自动扩容、非 prefork、排除队列及重复/含糊参数，不能在预检后改变实际角色。迁移草稿默认仅预览，显式指定输出目录才写文件，不读取密钥、不安装服务；详见 [首次双 Worker 迁移](DEPLOY.md#首次双-worker-迁移)。
+- 配置的 Celery 控制台脚本经 shebang 执行后，系统看到的进程参数会多出 Python 解释器；前后置检查识别 `python /绝对路径/celery ...`，仍完整校验 app、队列及角色约束，不接纳任意脚本或 shell 包装。
+- 本地集成使用两个真实 Celery prefork 进程与文件系统 Broker，验证书籍占满时维护仍可结算/投递、维护失败不影响书籍、缺失维护 Worker 时书籍不会抢走维护消息，以及无角色/混合 Worker 启动失败。真实 Redis、systemd、生产支付与负载表现仍需部署窗口验证。
 
 ## 3. EPUB AI 翻译主链路
 

@@ -1,3 +1,7 @@
+---
+title: 腾讯云部署
+---
+
 # 腾讯云部署
 
 本工程的发布入口是根目录 `deploy.sh`。默认服务器为 `ubuntu@81.71.22.79:22`，工程目录 `/home/ubuntu/epub-factory`，网站 `https://fixepub.com`。不再依赖本机配置 `fixepub` SSH 别名或固定名称的私钥。
@@ -27,7 +31,7 @@ DEPLOY_KEY=/绝对路径/fix_epub.pem bash deploy.sh
 DEPLOY_HOST=ubuntu@81.71.22.79 DEPLOY_PORT=22 bash deploy.sh
 ```
 
-本机需要 Python 3.9+、Git、OpenSSH 和 curl。SSH 首次连接时，请核对服务器主机指纹。服务器需要已有生产 `.env`、Python 虚拟环境、Java、EPUBCheck 5.1.0，以及三个 systemd 服务：`epub-factory`、`epub-factory-worker`、`epub-factory-beat`。这是已有服务的升级脚本，不负责首次建站或配置密钥。
+本机需要 Python 3.9+、Git、OpenSSH 和 curl。SSH 首次连接时，请核对服务器主机指纹。服务器需要已有生产 `.env`、Python 虚拟环境、Java、EPUBCheck 5.1.0，以及四个 systemd 服务：`epub-factory`、`epub-factory-worker`、`epub-factory-housekeeping`、`epub-factory-beat`。这是已有服务的升级脚本，不负责首次建站、安装单元或配置密钥。原三服务部署须先完成下节迁移；预检在停止任何服务前会拒绝缺失的第四服务或未限定队列的 Worker。
 
 免密安装脚本生成专用密钥 `~/.ssh/id_ed25519_fixepub`，只把公钥追加到服务器 `authorized_keys`，保留已有公钥；不保存密码、不修改 SSH 服务配置。私钥没有口令，保存在本机权限受限的 SSH 目录中，不进入工程或部署包。已有密钥可通过 `DEPLOY_KEY` 指定；带口令的密钥需先加入 ssh-agent。仅生成密钥可运行 `bash scripts/setup-deploy-ssh.sh --prepare`。部署入口启用 `BatchMode=yes` 和严格主机校验，认证异常会立即失败，不退回密码登录。
 
@@ -36,6 +40,49 @@ DEPLOY_HOST=ubuntu@81.71.22.79 DEPLOY_PORT=22 bash deploy.sh
 首页和脚本由 Nginx 静态入口提供，须设置 `Cache-Control: no-cache, must-revalidate`，不能只依赖 FastAPI 中间件。发布后分别核验公网首页、带版本的 `lib.js` 和任务 API；任务接口应为 `no-store`。原下单浏览器的会话和任务令牌须保留，新浏览器/新会话不会自动获得历史订单权限。
 
 入口重载前运行 `sudo /usr/sbin/nginx -t`。如证书与私钥不匹配，不直接重载当前仍正常运行的入口；先验证已安装证书的配对、域名和有效期，备份站点配置，再修正路径并通过校验。2026-09-17 已将本机站点证书指向与现有私钥匹配的 `/etc/nginx/ssl/fixepub.com.pem`，未更换密钥。
+
+## 首次双 Worker 迁移
+
+```mermaid
+flowchart LR
+    A[核对与备份原 unit] --> B[维护窗口 / 排空旧任务]
+    B --> C[停止旧进程 / 审核安装草稿]
+    C --> D[daemon-reload / 不提前启动]
+    D --> E[四服务与角色预检]
+    E --> F[部署新代码 / 统一启动与验收]
+```
+
+| 服务 | 启动命令 | 消费队列 |
+|---|---|---|
+| `epub-factory-worker` | `<venv>/bin/python -m app.infra.worker book` | 仅 `celery`，保留历史队列名 |
+| `epub-factory-housekeeping` | `<venv>/bin/python -m app.infra.worker housekeeping` | 仅 `housekeeping`，并发固定 1 |
+
+维护任务包括支付对账、余额巡检和 ping。隔离后书籍长任务不占用维护 Worker，但维护队列自身仍可能等待长对账，不承诺实时 SLA。维护预算默认软 1500/硬 1800 秒，保留原预算；变量为 `CELERY_HOUSEKEEPING_SOFT_TIME_LIMIT` / `CELERY_HOUSEKEEPING_TIME_LIMIT`（正整数，不超过 3600，硬时限大于软时限）。整书仍使用自己的时限，不因本次拆队列缩短。
+
+- [ ] 在服务器只读核对 `systemctl cat epub-factory-worker` 及 `systemctl show epub-factory-worker -p User -p Group -p WorkingDirectory -p EnvironmentFiles -p ExecStart -p KillMode -p TimeoutStopUSec`。不要把含密钥的内联环境配置复制到聊天或 Git；在服务器私有目录备份原 unit 与全部 drop-in。
+- [ ] 从本次已审源码/发布包取得 `scripts/prepare-worker-services.py`，按原单元的实际 User、Group、WorkingDirectory 和 EnvironmentFile 路径生成草稿。默认只打印模板；`--output-dir` 才写入指定审查目录，已有文件拒绝覆盖。不读取 `.env`、不运行 systemctl、不自动安装。
+
+```bash
+python3 scripts/prepare-worker-services.py \
+  --project-dir /home/ubuntu/epub-factory \
+  --user ubuntu \
+  --working-directory /home/ubuntu/epub-factory/backend \
+  --environment-file /home/ubuntu/epub-factory/backend/.env \
+  --output-dir /tmp/epub-worker-review
+# 原单元显式设置 Group 时，加 --group <原值>；多个环境文件按原顺序重复参数。
+```
+
+- [ ] 审核草稿，不能盲目覆盖自定义单元。book 草稿只重置 ExecStart，并增加 `NOSETPS=1`，保留既有身份、环境、工作目录和限制；housekeeping 是新单元，须人工对照原单元补齐自定义内联环境、资源限制、依赖与安全加固。确认指定工作目录能导入 `app`、Python 虚拟环境路径正确。草稿采用 `KillMode=mixed`，停止时先让 Celery 主进程执行 warm shutdown，`TimeoutStopSec=1900` 等待当前维护任务完成；提高维护硬时限时，须同步把停止超时调整为硬时限以上并留余量，不强杀正在核实付款的任务。
+- [ ] 选择维护窗口，先阻断外部新提交入口并停止 beat；还有待投递 outbox 时保留 API 内分发器，让现有排队/运行书籍及旧维护任务自然完成。确认没有 `pending/running` 订单和运行中的维护任务后，再停止 API 与旧 Worker。不要清空、移动或自动重发 Redis 消息；有活动订单时部署仍会拒绝。部署脚本不会替代这一步人工协调。
+- [ ] 仅安装审核后的 book drop-in 到 `/etc/systemd/system/epub-factory-worker.service.d/90-explicit-role.conf`，以及新 `epub-factory-housekeeping.service`；保留其他自定义 drop-in，检查是否存在更晚的 ExecStart 覆盖。执行 `systemctl daemon-reload` 并按原服务开机策略 enable 新服务，**不要使用 `--now`**。新 launcher 尚未部署时不要提前启动。
+- [ ] 执行 `bash deploy.sh --check` 后部署。预检自包含，不依赖服务器尚未解包的 helper；检查配置的明确角色，还会检查运行中 MainPID 的 `/proc/<pid>/cmdline`。仅 daemon-reload 不会改变旧进程，无 `-Q` 的旧进程仍会被拒绝。`NOSETPS=1` 防止 Celery 改写进程标题、丢失可验证参数；无法读取或无法确认参数时同样拒绝，不猜测角色。已停止的 Worker 可通过配置检查。
+- [ ] 部署后核验四服务均 active、book 仅消费 `celery`、housekeeping 仅消费 `housekeeping` 且并发 1；检查维护日志和 `/healthz`。脚本会验证角色、服务状态与 HTTP，但这些检查不等于一次真实支付或模型验收。
+
+兼容直接 Celery 命令时必须使用本工程 app、显式单队列 `-Q celery` 或 `-Q housekeeping`，维护再加 `-c 1`。只允许 prefork 池（可省略池参数使用默认值，或显式 `-P prefork` / `--pool=prefork`）；禁止 `--autoscale` 动态扩容和 `-X` / `--exclude-queues` 排除队列。预检拒绝重复、缺值或含糊的角色相关选项，不接受 shell 包装或同时订阅两队列的命令。推荐固定 launcher，因为它统一配置时限、预取和独立节点名；生产不要另启动裸 Worker。
+
+直接执行 Celery 脚本时，Linux 进程参数可能显示为 `python /绝对路径/celery ...`；部署前后均接受这一 shebang 解释器形式，并继续逐项验证 app、队列、并发和池，不能借此绕过角色限制。
+
+历史积压仍留在 `celery`，只能由 book Worker 排空，不能把原队列直接改名。已投递到旧 `celery` 的维护消息仍会按原队列处理；只有后续新投递使用维护队列。如果旧维护消息已超时/失效，需要人工核实原任务确已结束或达到原时限，再决定是否补发，不能仅因等待就复制消息。本次迁移不自动重发历史维护任务，也不重跑历史书籍。
 
 ## 腾讯云网页终端部署
 
@@ -62,8 +109,8 @@ curl -fsS https://fixepub.com/api/healthz
 - 包内记录每个文件的 SHA-256。服务器维护前校验路径和校验值，备份即将覆盖的代码及当前依赖版本，然后覆盖源码、更新依赖。
 - 已有 SQLite 服务升级会在服务器本地一致性备份订单数据库、译文缓存及 `.env`，权限为目录 0700、数据文件 0600，不导出到本机。其他数据库须先完成外部备份，脚本会拒绝自动继续。
 - 保留密钥、定价及用户权限，只将翻译默认模型设为 Flash、关闭首轮复杂块直接升级，并把可见性超时设为至少 10800 秒且大于任务硬时限。
-- 若数据库有排队或运行中的任务，拒绝部署。实际发布时短暂停止 API 和 beat，再次检查任务，避免检查后新任务进入；因此会有短暂维护中断。
-- 重启 API、worker、beat，并检查服务状态及本机 `/healthz`；本机入口还会验证公网 `/api/healthz`（校验 JSON 状态为 `ok`）。任何失败返回非零退出码，不会输出部署成功。
+- 若数据库有排队或运行中的任务，拒绝部署。实际发布时停止 API、beat 和 housekeeping，等待维护 Worker 优雅退出，再次检查任务后停止 book Worker，避免检查后新任务进入；因此存在维护中断，时长取决于正在执行的维护任务，不保证只需数秒。
+- 统一重启 API、book Worker、housekeeping Worker、beat，复核 Worker 角色、四服务状态及本机 `/healthz`；本机入口还会验证公网 `/api/healthz`（校验 JSON 状态为 `ok`）。任何失败返回非零退出码，不会输出部署成功。
 - 正式发布持有服务器工程目录下的 `.deploy.lock` 排他锁，覆盖备份、配置更新和服务重启。另一台 Mac 同时发布会明确拒绝，不互相覆盖；`--check` 只是只读快照，不保留发布权。入口证书配置在维护前校验。
 - 不清空缓存，不更改订单支付状态，不自动重跑历史订单。删除源码文件的迁移需单独处理；本脚本不会删除服务器上未列入发布包的文件。
 
@@ -118,6 +165,8 @@ curl -fsS https://fixepub.com/api/healthz
 - `pip-freeze.txt`：更新依赖前的版本；
 - `deploy-manifest.json`：本次发布的文件及哈希。
 
-失败时先查看 `journalctl -u epub-factory -u epub-factory-worker -u epub-factory-beat -n 100 --no-pager`。发布失败会尝试启动三个服务；若新代码或依赖无法运行，应回退后再重启，不能把启动尝试当作恢复成功。
+失败时先查看 `journalctl -u epub-factory -u epub-factory-worker -u epub-factory-housekeeping -u epub-factory-beat -n 100 --no-pager`。发布失败会尝试启动全部四个服务；若新代码或依赖无法运行，应回退后再重启，不能把启动尝试当作恢复成功。
 
-回退时停止三个服务，把 `previous-code.zip` 解压回工程目录，依据 `new-files.json` 移除本次新增的代码文件；若依赖已更新，按 `pip-freeze.txt` 恢复所需版本，再重启并检查 `/healthz`。`jobs.sqlite3`、`translation-cache.sqlite3` 和 `production.env` 是维护前的运行数据备份。代码回退不自动恢复数据库；如需恢复，须停止全部服务并另行核验，避免覆盖发布后新订单。脚本不会自动执行数据库回滚。
+回退时先关闭入口和 beat，优雅停止两个 Worker 及 API，把 `previous-code.zip` 解压回工程目录，依据 `new-files.json` 移除本次新增的代码文件；若依赖已更新，按 `pip-freeze.txt` 恢复所需版本。`jobs.sqlite3`、`translation-cache.sqlite3` 和 `production.env` 是维护前的运行数据备份。代码回退不自动恢复数据库；如需恢复，须停止全部服务并另行核验，避免覆盖发布后新订单。脚本不会自动执行数据库回滚。
+
+回退到 R9 之前的代码时，旧版没有角色 launcher，不能保留新 ExecStart 后直接重启。使用迁移前的私有备份恢复原 book 单元/drop-in，停用新 housekeeping 服务并 daemon-reload，再按旧版本的服务拓扑逐项核验后启动。新 `housekeeping` 队列内尚未处理的消息不得删除；旧代码不会正确消费这个新队列，应保留消息并先决定前向修复或在原任务时限后人工补发策略。若仍采用 R9 代码，则保留双 Worker，四服务都需启动并验收。unit 备份不包含在源码备份中，首次迁移必须单独保存。

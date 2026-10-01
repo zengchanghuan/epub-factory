@@ -30,7 +30,7 @@ class ReleasePackageTests(unittest.TestCase):
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
             sources = ['deploy.sh', 'scripts/deploy-server.sh', 'backend/app/main.py',
                        'frontend/index.html', 'backend/requirements.txt', 'backend/app/new_fix.py',
-                       'backend/scripts/import_llm_bill.py']
+                       'backend/scripts/import_llm_bill.py', 'scripts/prepare-worker-services.py']
             for name in sources + ['backend/.env', 'backend/outputs/private.epub']:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)

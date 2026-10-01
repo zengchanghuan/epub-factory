@@ -20,7 +20,7 @@ class LegacyIngressRecoveryTests(unittest.TestCase):
             log = root / 'service-actions'
             script = '''
 set -euo pipefail
-SERVICES=(epub-factory epub-factory-worker epub-factory-beat)
+SERVICES=(epub-factory epub-factory-worker epub-factory-housekeeping epub-factory-beat)
 BACKUP=offline-backup
 LEGACY_REPAIR_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 sudo() {

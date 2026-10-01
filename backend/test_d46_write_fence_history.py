@@ -58,7 +58,29 @@ class WriteFenceHistoryTests(previous.ExecutionHistoryTests):
                 ready, resume = threading.Event(), threading.Event()
                 errors, rejected, old_destinations = [], [], []
                 real_convert = job_runner.converter.convert_file_to_horizontal
+                real_heartbeat = job_runner.ExecutionHeartbeat
+                old_heartbeat_pulses = []
                 winner = {}
+
+                def controlled_heartbeat(*args, **kwargs):
+                    heartbeat = real_heartbeat(*args, **kwargs)
+                    if threading.current_thread().name == "r8-old-executor":
+                        # This test must reach all five late SQL writes. A
+                        # wall-clock heartbeat during the newer book conversion
+                        # can mark the old lease lost first (large books exceed
+                        # its 15s interval), testing a different R7 exit path.
+                        # Keep a real initial lease/DB pulse, then explicitly
+                        # withhold only this old executor's periodic pulses.
+                        # The new executor retains its real background thread.
+                        def start_at_controlled_boundary():
+                            owned = heartbeat.pulse()
+                            old_heartbeat_pulses.append(owned)
+                            self.assertTrue(owned, "Old executor must own the real initial heartbeat")
+                        heartbeat.start = start_at_controlled_boundary
+                    return heartbeat
+
+                stack.enter_context(patch.object(job_runner, "ExecutionHeartbeat",
+                                                 side_effect=controlled_heartbeat))
 
                 def converted_then_late_writes(source, destination, mode, **options):
                     result = real_convert(source, destination, mode, **options)
@@ -101,6 +123,7 @@ class WriteFenceHistoryTests(previous.ExecutionHistoryTests):
                 with redirect_stdout(io.StringIO()):
                     old.start()
                     self.assertTrue(ready.wait(40), errors)
+                    self.assertEqual(old_heartbeat_pulses, [True])
                     cancelled = client.post(f"/api/v2/jobs/{job.id}/cancel", headers=headers)
                     self.assertEqual(cancelled.status_code, 200, cancelled.text)
                     restarted, reason = store.restart_translation_attempt(
@@ -118,6 +141,7 @@ class WriteFenceHistoryTests(previous.ExecutionHistoryTests):
                     old.join(15)
                 self.assertFalse(old.is_alive())
                 self.assertEqual(errors, [])
+                self.assertEqual(old_heartbeat_pulses, [True], "Only the controlled old heartbeat may run")
                 self.assertCountEqual(rejected, ["status", "chapter", "chunk", "stage", "clear"])
                 current = store.get(job.id)
                 self.assertEqual(current.status, JobStatus.success)

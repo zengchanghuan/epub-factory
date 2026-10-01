@@ -5,7 +5,7 @@ ACTION=${1:?Usage: deploy-server.sh ARCHIVE_OR_--check [PROJECT_DIR]}
 PROJECT_DIR=${2:-/home/ubuntu/epub-factory}
 LEGACY_REPAIR_ID=${3:-}
 [[ -z "$LEGACY_REPAIR_ID" || "$LEGACY_REPAIR_ID" =~ ^[0-9a-f]{32}$ ]] || { echo 'Invalid legacy repair job ID.' >&2; exit 2; }
-SERVICES=(epub-factory epub-factory-worker epub-factory-beat)
+SERVICES=(epub-factory epub-factory-worker epub-factory-housekeeping epub-factory-beat)
 for cmd in python3 systemctl curl java flock; do
   command -v "$cmd" >/dev/null || { echo "Missing server prerequisite: $cmd" >&2; exit 1; }
 done
@@ -29,6 +29,110 @@ fi
 for service in "${SERVICES[@]}"; do
   [[ $(systemctl show "$service" -p LoadState --value) == loaded ]] || { echo "Service not installed: $service" >&2; exit 1; }
 done
+# Self-contained: --check runs before the release (and its helpers) is installed.
+check_worker_roles() {
+python3 - <<'PY'
+# R9_WORKER_PREFLIGHT_BEGIN
+import re
+import shlex
+import subprocess
+from pathlib import Path
+
+
+def property_value(service, name):
+    return subprocess.check_output(
+        ['systemctl', 'show', service, '-p', name, '--value'], text=True,
+    ).strip()
+
+
+def option_values(argv, short, long):
+    values = []
+    for i, value in enumerate(argv):
+        if value in (short, long):
+            values.append(argv[i + 1] if i + 1 < len(argv) and not argv[i + 1].startswith('-') else None)
+        elif value.startswith(long + '='):
+            values.append(value[len(long) + 1:])
+        elif value.startswith(long):
+            values.append(None)  # Reject ambiguous/abbreviated option spellings.
+        elif value.startswith(short) and value != short:
+            values.append(value[len(short):])
+    return values
+
+
+def single_option(argv, short, long):
+    values = option_values(argv, short, long)
+    return values[0] if len(values) == 1 else None
+
+
+def correct_role(argv, role):
+    if not argv:
+        return False
+    executable = Path(argv[0]).name
+    python = re.fullmatch(r'python(?:[0-9]+(?:\.[0-9]+)*)?', executable)
+    if python and argv[1:4] == ['-m', 'app.infra.worker', role]:
+        return len(argv) == 4 or (
+            len(argv) == 6 and argv[4] == '--loglevel'
+            and argv[5] in {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
+        )
+    if executable == 'celery':
+        options = argv[1:]
+    elif python and argv[1:3] == ['-m', 'celery']:
+        options = argv[3:]
+    elif python and len(argv) > 1 and Path(argv[1]).is_absolute() and Path(argv[1]).name == 'celery':
+        # A console-script shebang appears in /proc as Python + script path,
+        # although systemd's configured ExecStart begins with the celery script.
+        options = argv[2:]
+    else:
+        return False
+    # A single named queue is insufficient if later options remove it, expand
+    # concurrency dynamically, or select a pool without prefork time limits.
+    if '--' in options or any(value.startswith(('--autoscale', '--exclude-queues', '-X')) for value in options):
+        return False
+    pools = option_values(options, '-P', '--pool')
+    if pools and pools != ['prefork']:
+        return False
+    concurrency = option_values(options, '-c', '--concurrency')
+    if concurrency and (len(concurrency) != 1 or not re.fullmatch(r'[1-9][0-9]*', concurrency[0] or '')):
+        return False
+    app = single_option(options, '-A', '--app')
+    queue = single_option(options, '-Q', '--queues')
+    if app not in {'app.infra.celery_app:celery_app', 'app.infra.celery_app.celery_app'}:
+        return False
+    if options.count('worker') != 1 or queue != ('celery' if role == 'book' else 'housekeeping'):
+        return False
+    return role == 'book' or concurrency == ['1']
+
+
+def verify_workers():
+    for service, role in [('epub-factory-worker', 'book'), ('epub-factory-housekeeping', 'housekeeping')]:
+        configured = property_value(service, 'ExecStart')
+        commands = re.findall(r'argv\[\]=(.*?)(?:\s+;|\s*\})', configured)
+        try:
+            valid = len(commands) == 1 and correct_role(shlex.split(commands[0]), role)
+        except ValueError:
+            valid = False
+        if not valid:
+            raise SystemExit(f'{service}: configure an explicit {role} launcher / single-queue worker before deployment.')
+        pid = property_value(service, 'MainPID')
+        if not pid.isdecimal():
+            raise SystemExit(f'{service}: cannot verify MainPID; refusing deployment.')
+        if int(pid):
+            try:
+                raw = Path(f'/proc/{pid}/cmdline').read_bytes()
+                live = [part.decode('utf-8') for part in raw.split(b'\0') if part]
+            except (OSError, UnicodeError):
+                raise SystemExit(f'{service}: cannot verify running worker; drain and stop it before migration.') from None
+            if not correct_role(live, role):
+                raise SystemExit(f'{service}: running process does not prove the {role} role; drain and stop the old worker first (NOSETPS=1 preserves argv).')
+    print('Worker role preflight passed (configured and running processes).')
+
+
+if __name__ == '__main__':
+    verify_workers()
+# R9_WORKER_PREFLIGHT_END
+PY
+}
+check_worker_roles
 # Refuse to interrupt queued/running books or persisted active repairs; read-only.
 check_jobs() {
 "$PROJECT_DIR/backend/.venv/bin/python" - "$PROJECT_DIR" <<'PY'
@@ -179,7 +283,7 @@ PY
     --confirmed-nontest --confirmed-price-unchanged-since-start --apply
 fi
 # Close the submission window, then recheck jobs before replacing code.
-sudo -n systemctl stop epub-factory epub-factory-beat
+sudo -n systemctl stop epub-factory epub-factory-beat epub-factory-housekeeping
 check_jobs
 sudo -n systemctl stop epub-factory-worker
 # Keep a consistent server-local runtime backup before schema migrations or config edits.
@@ -282,6 +386,7 @@ cd "$PROJECT_DIR/backend"
 .venv/bin/python -m pip install -r requirements.txt
 # Graceful systemd restart; never kill unrelated uvicorn processes.
 sudo -n systemctl restart "${SERVICES[@]}"
+check_worker_roles
 for service in "${SERVICES[@]}"; do
   systemctl is-active --quiet "$service" || { echo "$service is not active" >&2; exit 1; }
 done

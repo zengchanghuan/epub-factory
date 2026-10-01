@@ -1,3 +1,7 @@
+---
+title: EPUB Factory
+---
+
 # EPUB Factory
 
 一个可产品化演进的 EPUB 转换引擎：支持竖排转横排、繁简互转、AI 全书翻译、双语对照输出，以及 Kindle/Apple Books 设备特化编译。生产主站域名：**fixepub.com**（腾讯云）。
@@ -98,18 +102,30 @@ CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
 
 **线上部署（腾讯云生产服务）**：统一使用项目根目录的 `deploy.sh`，说明见 [docs/DEPLOY.md](docs/DEPLOY.md)。
 
-### 1.1) 启动后台任务 Worker（Phase 1 基础设施）
+### 1.1) 启动分队列 Worker
+
+三个独立终端中分别启动书籍 Worker、维护 Worker 和 beat；API 与 Worker 必须共用持久数据库、Redis 及文件目录。也可在工程根目录运行 `docker compose up --build`。
 
 ```bash
 cd backend
-.venv/bin/celery -A app.infra.celery_app.celery_app worker --loglevel=info
+.venv/bin/python -m app.infra.worker book
+# 另一个终端（同样先 cd backend）：
+.venv/bin/python -m app.infra.worker housekeeping
+# 第三个终端：
+.venv/bin/celery -A app.infra.celery_app:celery_app beat --loglevel=info
 ```
 
-最小健康任务名：
-
-```text
-infra.health.ping
+```mermaid
+flowchart LR
+    API[API / 书籍投递] --> BQ[celery 队列] --> BW[book Worker]
+    Beat[beat / 维护任务] --> HQ[housekeeping 队列] --> HW[housekeeping Worker · 并发 1]
 ```
+
+书籍保留原 `celery` 队列及原执行预算；支付对账、余额巡检、健康任务 `infra.health.ping` 使用 `housekeeping`。维护独立软/硬时限默认 1500/1800 秒，可用 `CELERY_HOUSEKEEPING_SOFT_TIME_LIMIT` / `CELERY_HOUSEKEEPING_TIME_LIMIT` 配置。单个长对账仍会阻塞后续维护任务，队列隔离不是实时 SLA，但不占用书籍 Worker。
+
+不要再运行不指定角色的裸 `celery ... worker`：同时订阅两个队列或维护并发不为 1 会在消费前被拒绝。兼容旧直接命令时也必须使用 prefork（可省略以使用默认池），禁用 autoscale 和排除队列参数；部署预检拒绝重复或含糊的角色相关选项。生产新增第四个 systemd 服务前，先按 [首次双 Worker 迁移](docs/DEPLOY.md#首次双-worker-迁移) 审查现有单元；本轮代码不自动修改或安装生产服务。
+
+Celery 在构建配置前固定加载 `backend/.env`，已导出的 shell/systemd/容器变量优先，不读取其他当前目录的 `.env`。Worker 启动后也禁止通过远程 `add_consumer`、`cancel_consumer`、`pool_grow`、`pool_shrink`、`autoscale` 改变队列或并发；只读 `inspect`/`ping` 保留。需要调整角色/并发时，修改配置并在任务排空后按部署流程重启。
 
 可用以下方式快速验证 Celery 基础设施：
 

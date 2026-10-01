@@ -1,4 +1,4 @@
-# 本地一键起全栈（api + worker + beat + redis），与生产同镜像。
+# 本地一键起全栈（api + book worker + housekeeping worker + beat + redis）。
 # 生产仍走 systemd 部署，本文件仅用于本地开发/联调。
 #   docker compose up --build           # 启动
 #   docker compose run --rm api python run_regression.py   # 跑回归
@@ -33,7 +33,24 @@ services:
 
   worker:
     image: epub-factory:dev
-    command: celery -A app.infra.celery_app:celery_app worker -l info
+    command: python -m app.infra.worker book
+    env_file:
+      - backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DATABASE_URL: sqlite:////app/backend/epub_jobs.db
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      - redis
+      - api
+
+  housekeeping:
+    image: epub-factory:dev
+    # Launcher fixes this role to housekeeping only, with concurrency=1.
+    command: python -m app.infra.worker housekeeping
     env_file:
       - backend/.env
     environment:

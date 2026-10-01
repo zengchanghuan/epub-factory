@@ -90,6 +90,10 @@ D_SUITE = [
     "test_d46_write_fence_store.py",
     "test_d46_write_fence_contract.py",
     "test_d46_execution_fence.py",
+    "test_d47_queue_routing.py",
+    "test_d47_queue_process.py",
+    "test_d47_worker_control.py",
+    "test_d47_worker_environment.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

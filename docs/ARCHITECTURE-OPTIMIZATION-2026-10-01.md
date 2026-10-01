@@ -2,7 +2,7 @@
 title: 架构优化与逐项历史书稿回归
 date: 2026-10-01
 base_revision: 5d1705c9fed54b93403d34f2a4b70f4bcfc2e3b8
-status: r8-complete-next-r9
+status: r9-verified
 ---
 
 # 架构优化与逐项历史书稿回归
@@ -30,8 +30,8 @@ status: r8-complete-next-r9
 - [x] R6 超时关单和迟到实付补偿：可信关单、系统到期恢复及人工处理分流，专项/三书/全套门禁通过。
 - [x] R7 Worker 失联恢复闭环：持久心跳、同租约限次恢复、未开始补投和真实进程/三书/全套门禁通过。
 - [x] R8 数据库状态及 attempt 原子更新：事务写入守卫、owner 与成品隔离，专项/三书/全套离线门禁通过。
-- [ ] R9 长短任务队列隔离：前项已放行，尚未开始。
-- [ ] R10 独立修复的执行隔离与并发限制：等待前项放行。
+- [x] R9 长短任务队列隔离：运行时控制、配置加载、shebang 识别及数据库生命周期补修后，全套离线与三书历史门禁重新通过。
+- [ ] R10 独立修复的执行隔离与并发限制：R9 门禁已放行，本次仅修 R9，尚未开始。
 - [ ] R11 旧页面结账入口统一：等待前项放行。
 - [ ] R12 所有模型阶段统一限流与调用边界：等待前项放行。
 - [ ] R13 通知鉴权与分页：等待前项放行。
@@ -344,7 +344,7 @@ R6 历史测试 `test_d44_payment_lifecycle_history.py` 继承 R5 的真实成�
 
 ### R8：数据库状态及 attempt 原子更新
 
-状态：**本地实现、专项、三书及全套离线门禁通过，已放行 R9；R9 尚未开始。** 本轮未提交、推送或部署。
+状态：**本地实现、专项、三书及全套离线门禁通过，已放行 R9。** 截至 R8 的累计改动随后按用户要求提交并推送为 `3e88b7f`，远端 `origin/main` 已核验一致；未部署。R9 后续结果独立记录。
 
 #### 改动边界
 
@@ -370,7 +370,7 @@ R6 历史测试 `test_d44_payment_lifecycle_history.py` 继承 R5 的真实成�
 
 | 验证层 | 结果 | 验证边界 |
 |---|---|---|
-| 后端 catalog | 83/83 套通过 | D21 / D29 的 4 个可选指定书稿用例未提供而跳过，不算通过；其他离线替身不等同真实模型/Redis |
+| 后端 catalog | 83 套脚本无失败 | R9 复核原日志更正：D21/D26/D27/D28/D29 共 7 个可选指定书稿用例未提供而跳过，不算通过；其他离线替身不等同真实模型/Redis |
 | R8 新专项（包含在 catalog） | 42/42 通过 | 存储 17、执行器 19、HTTP 6，无跳过 |
 | D17 额外批量门禁 | 6/6 通过 | CI 中的额外 suite，隔离库与受控网关 |
 | 前端测试 | 29 套、209/209 通过 | 原任务页面逻辑无回归 |
@@ -387,6 +387,72 @@ R6 历史测试 `test_d44_payment_lifecycle_history.py` 继承 R5 的真实成�
 
 尚未验证真实 Redis、PostgreSQL、生产部署或 iBooks 视觉效果。成功终态提交后的通知/邮件属于独立副作用，仍无与人工重试跨事务的严格一次性保证；数据库未知而保留的孤儿目录暂未自动垃圾回收。本项不修改 R9 的队列划分或 R10 的独立修复服务。
 
+### R9：长短任务队列隔离
+
+状态：**补修四处启动/运行时边界缺口后，本地专项、完整后端及三书历史门禁重新通过。** 以下前轮证据保留追溯，本轮结论见末尾追加记录。本项尚未提交、推送或部署，未开始 R10。
+
+#### 改动边界
+
+- 书籍继续使用原 `celery` 队列，不改名、不清空历史积压；支付对账、余额巡检与 ping 新投递走 `housekeeping`。未知任务保留原默认路由；禁止隐式创建任意新队列。
+- 两个独立 Worker 使用固定角色 launcher、prefork 和预取 1；维护并发固定 1。启动时在池/消费者之前检查角色、消费队列、池类型及原始自动扩容选项，拒绝裸 Worker 自动同时订阅两队列，以及混合、错误角色、非 prefork、维护并发越界或维护自动扩容。
+- 保留书籍时限及并发配置；维护采用独立软/硬时限，默认 1500/1800 秒，正整数且不超过 3600。对账仍可能逐条查询积压订单，因此没有把原 30 分钟预算贸然降至数分钟。Beat 日程与 3600 秒过期预算不变。
+- Compose 接双 Worker；生产脚本要求 API、book、housekeeping、Beat 四服务。缺失服务、ExecStart 无明确角色，或运行中 MainPID 无法证明角色时，在停止任何服务前拒绝。只改 systemd 配置不代表旧进程已更新。
+- systemd 草稿生成器只做离线预览/显式输出，不读取 `.env`、不安装服务；书籍采用 ExecStart drop-in，保留原自定义项。维护草稿须人工审核身份、环境与安全限制，使用 `NOSETPS=1`、`KillMode=mixed` 和默认 1900 秒停止等待，调整硬时限时需同步调整等待预算。
+- 发布先停 API/Beat/维护 Worker，等待优雅退出后重查订单，再停书籍 Worker。四服务统一启动及失败恢复尝试，不把“尝试启动”称为恢复成功。首次迁移/回退单元的人工步骤与新队列积压保护已记录到部署文档。
+- 架构仍是单体与整书任务；不修改翻译质量、定价、对账业务或独立修复流程。队列隔离解决并发位争用，不保证维护实时性，也不隔离数据库、CPU、内存或网关配额。
+
+#### 前轮历史证据与门禁（本轮补修前）
+
+最终业务聚合 SHA-256：`e09027781bf670bdba43b902ceb1641c2448b80a59a92faad8a52083598df569`。修后后端快照/日志：`/private/tmp/fixepub-r9-verified.tpB2px`；实际 Python 3.10.12、Java 17、EPUBCheck 5.1.0。两套 R9 自动门禁已加入 catalog/CI，部署离线专项已加入 CI。
+
+首轮快照 `/private/tmp/fixepub-r9-final.o7PnlI` 的 85 套脚本虽无失败，独立复核仍实证了旧直接命令的三个缺口：维护 `--autoscale=3,1` 绕过并发 1、`--pool=solo` 缺失 prefork 超时保障、`-Q celery -X celery` 预检通过而启动失败。已在 Worker 的启动信号和自包含部署预检收紧这些入口，新增真实 WorkController、消费前退出及部署 stop 前拒绝测试；不是仅增加静态配置断言。收紧后全量与历史门禁重新执行，不沿用首轮通过结果作为最终放行依据。
+
+| 验证层 | 最终结果 | 验证边界 |
+|---|---|---|
+| R9 路由与启动专项 | 最终 16/16 通过 | 真 Celery/Kombu 发布信封、Beat、autoretry、WorkController，禁止网络 |
+| R9 双 Worker 进程专项 | 最终 3/3 通过，17.219 秒 | 实际两套 prefork / 文件系统 Broker / SQLite；合成转换受控；含五种非法启动反例 |
+| systemd 草稿/发布契约 | 修后新专项 20/20 + 既有部署 11/11 通过 | 临时数据库及假 systemctl/SSH/支付，不连接生产 |
+| 后端 catalog | 修后完整重跑 85 套脚本无失败 | D21/D26/D27/D28/D29 共 7 项可选指定书稿用例跳过，不算通过；本轮强制三书专项无跳过 |
+| D17 额外批量门禁 | 6/6 通过 | 同一快照、隔离数据库及受控网关 |
+| 前端 | 29 套、209/209 通过 | Node 离线 |
+| R9 三书双队列与继承保护 | 最终 16/16 方法通过，220.384 秒 | 三份固定 SHA 真书，含 R8 旧写保护与 R7 进程失联恢复 |
+| R1 三书付费权益 | 最终 4/4 方法、18 场景通过，8.177 秒 | 原报价、付费权限及既有下载 |
+| R3 三书精校 | 最终 17/17 通过，132.690 秒 | 受控模型回复、真实精校/账本/QA |
+| R4 统一输入 | 最终 16/16 通过，64.378 秒 | 三书与历史 Markdown；没有历史 DOCX，不算新模型翻译质量验收 |
+
+三本历史原书各自运行真实 book/housekeeping 进程：书籍先占满并发位，对账在短消息过期前实际结算受控实付并创建/发布 outbox；释放书籍后进入真实转换、打包与 EPUBCheck。新成品均 0 ERROR/FATAL，正文逐文档、图片字节、原 ID、TOC 标签/目标/层级保持。重载 Store 后 HTTP 详情完成且 no-store，鉴权下载字节与实际输出一致；原稿和历史成品 SHA 未变。
+
+最终历史日志为 `/private/tmp/fixepub-r9-history-guarded-20261001.log`、`/private/tmp/fixepub-r9-r1-history-guarded-20261001.log`、`/private/tmp/fixepub-r9-r3-history-guarded-20261001.log`、`/private/tmp/fixepub-r9-r4-history-guarded-20261001.log`。首轮 `*-history-final-*` 日志保留作诊断，不混作修后门禁。临时证据不随 Git 同步，跨 Mac 需提供同 SHA 书稿重跑。未调用收费模型、未真实支付、未修改历史订单；真实 Redis、systemd 部署、线上负载与 iBooks 视觉验收尚未执行。
+
+最终源码与测试快照逐字节核对一致；业务聚合 SHA 在所有修后历史门禁前后保持不变。外网审计守卫无连接/DNS 尝试，Shell 语法、Compose 解析和 `git diff --check` 通过。旧报告中 R8 的可选跳过数也已依据原日志更正为 7，不将这些未执行项算为真实历史覆盖。
+
+#### R9 追加修复：运行时控制、配置加载、进程识别与连接生命周期
+
+- [x] **运行时控制。** 前轮只在启动时限制角色，生产默认开启的远程 `add_consumer` 仍可让 book Worker 加入维护队列；原进程夹具又显式关闭远程控制，未覆盖此路径。现在用 Celery 原有 Panel 包裹五类改变队列/并发的命令，逐请求判断接收 app 的隔离配置，拒绝变更但保留 `inspect`、`ping` 和其他既有管理行为；无角色标签的直接 `-Q` 入口同样受保护，非本工程 app 仍调用原处理器。
+- [x] **配置加载顺序。** 原 Celery app 先构建，之后导入 Compiler 才间接读 `.env`，本地启动会丢失自定义 Broker、维护时限和 Beat 日程。现在在构建前固定读取 `backend/.env`，`override=False` 保留已有 shell/systemd/容器环境；缺少文件时使用默认值，不扫描无关当前目录。真实隔离 `.env` 的新增测试先在旧逻辑复现 4 处失败，补修后 6/6 通过，包含两个角色、直接 app/Beat 配置、优先级、无文件、非法预算及 help 不启动。
+- [x] **shebang 进程识别。** 合法 `/venv/bin/celery ...` 启动后真实参数是 `python /venv/bin/celery ...`，原 MainPID 检查会误拒绝。现只额外识别 Python + 绝对路径、文件名为 `celery` 的脚本入口，继续执行原 app/队列/并发/池检查；不放开任意脚本、相对入口或 shell 包装。用真实临时 shebang 子进程的原始 argv、整个前后置校验和发布脚本进行正反验证。
+- [x] **阻塞式 prefork 的连接生命周期。** 新历史门禁发现 SQLite `disk I/O error`。代码核对确认文件系统 Broker 使用 BlockingPool，而原 `worker_before_create_process` 信号只由 AsynPool 发出，父进程清理存在未覆盖路径。单独重跑 1 方法/三书通过（108.022 秒）不能消除此缺口；现追加 `worker_init` 清理，在任务导入后、池构造前关闭父进程空闲连接，保留异步池后续 fork 和子进程原有钩子。真实 WorkController 用例在旧代码确定性失败（池未构造但父连接仍为 1），修后父连接为 0；随后实际启动 BlockingPool，确认旧信号未触发，子进程 GC 前后 SQL 均通过且连接 PID 独立。数据库专项最终 4/4 通过（1.109 秒）；红/绿日志为 `/private/tmp/fixepub-r9-worker-db-red.log`、`/private/tmp/fixepub-r9-worker-db-green.log`。该证据验证生命周期缺口，最终历史复跑另行验证原 I/O 场景。
+- [x] **旧执行器历史夹具的时序。** 首次完整复跑在大书上触发 15 秒后台心跳，提前退出旧执行器，抢先于该方法专门验证的晚到写入路径。仅把旧执行器的心跳设为一次真实同步 pulse，新执行器仍运行真实后台心跳；五类晚到 SQL 写入、异常零容忍、成品 SHA 和下载断言均保留。目标方法三书通过（90.634 秒），未修改业务超时或放宽断言。
+- [x] 同一冻结业务源码重跑全部后端、前端、部署及三书历史门禁通过；R10 已具备继续条件，但本次未开始。
+
+中间业务聚合 SHA-256：`eb4ca1ac84fb8785cc26f59fa6e5a6630bf7642d4ca69a22911db9813d8683a1`。该版本后端 87 套、前端 209 项及部署专项无失败，但 R9 历史 16 方法在 264.223 秒后出现上述两处失败，**不算验收通过**。隔离快照/日志：`/private/tmp/fixepub-r9-followup.wMmLIM`；失败历史日志：`/private/tmp/fixepub-r9-followup-history-20261001.log`。单方法诊断保留于 `/private/tmp/fixepub-r9-diagnostic-history.log` 和 `/private/tmp/fixepub-r9-followup-oldexecutor-20261001.log`。随后完成生命周期补修，以最终冻结源码重跑，结果如下。
+
+最终冻结业务聚合 SHA-256：`41c7686c3e59e9c7b2d70ca0f3a52e0eba0fe64a9b5a20b0c8fb67cebbaeac4a`，源码快照 `/private/tmp/fixepub-r9-final.WeYEf4/current`。业务及本轮测试文件与快照逐文件比对一致；文档在结果确认后补记。全部最终离线门禁通过，三书原稿与历史成品 SHA 未变，外网拦截器无调用记录。未调用收费模型、真实支付宝或生产 Redis/PostgreSQL，未部署；不将受控模型回放当作新的译文质量验收。
+
+| 最终门禁 | 结果 | 验证边界 |
+| --- | --- | --- |
+| 后端 catalog | 87 套脚本无失败 | D21/D26/D27/D28/D29 共 7 个可选指定书稿用例跳过，不算通过；另跑 catalog 外 D17 批量转换 6/6 通过 |
+| R9 路由 / 双 Worker / 远程控制 / 环境配置 | 16/16、4/4、5/5、6/6 | 真实 Celery/Kombu、双 prefork、默认启用远程控制；文件系统 Broker，无真实 Redis |
+| 数据库父子生命周期 | 4/4 | 实际 WorkController 与 BlockingPool、GC 后 SQL 读取及父子连接 PID 隔离 |
+| 前端离线 | 29 套、209/209 | 原有 VM/DOM 离线门禁，非浏览器在线验收 |
+| 部署与角色校验 | 25/25 + 11/11 | 配置、真实 shebang argv、模拟 systemctl/进程状态；未操作生产服务 |
+| R9 三书双队列及继承保护 | 16/16，225.005 秒 | 无跳过；包含 R8 旧写、R7 失联恢复、R6 迟到实付、R5 投递及导航/成品门禁；本次无 SQLite I/O 错误 |
+| R1 权益历史 | 4/4，18 场景，8.386 秒 | 无跳过；三书原件、原成品和刷新下载 SHA 校验通过 |
+| R3 精校历史 | 17/17，133.711 秒 | 无跳过；三书 0/58/57 候选，115 次受控 SDK 响应及默认词典 auto/tw 报价/成品一致性；非收费模型质量验收 |
+| R4 翻译计划历史 | 16/16，64.512 秒 | 无跳过；三书实际 211 章、221 文档、4581 块及 3 份历史 Markdown（2 份唯一内容）离线回放；无历史 DOCX 样本 |
+
+完整后端结果：`/private/tmp/fixepub-r9-final.WeYEf4/full/results.json` 及 `full/logs/`；D17 为 `extra/logs/`。历史日志为 `/private/tmp/fixepub-r9-final-history-20261001.log`、`/private/tmp/fixepub-r9-final-r1-history-20261001.log` 等；前端和部署为 `/private/tmp/fixepub-r9-final-frontend.log`、`/private/tmp/fixepub-r9-final-worker-services.log`、`/private/tmp/fixepub-r9-final-deploy.log`。以上 `/private/tmp` 证据仅在当前 Mac 临时保存，跨 Mac 复核应按下方命令重新执行。
+
 ## 可重复执行的命令与证据
 
 在仓库根目录执行（目录不提供时历史测试明确跳过，不算通过）：
@@ -396,6 +462,12 @@ PYTHONPATH=backend backend/.venv/bin/python backend/test_d37_payment_entitlement
 EPUB_HISTORY_UPLOAD_DIR="$PWD/backend/uploads" \
 EPUB_HISTORY_OUTPUT_DIR="$PWD/backend/outputs" \
 backend/.venv/bin/python backend/test_d37_entitlement_history.py
+
+# R9 历史门禁还需要原始基线目录；提供固定 SHA 三书及其既有成品。
+EPUB_HISTORY_UPLOAD_DIR="$PWD/backend/uploads" \
+EPUB_HISTORY_OUTPUT_DIR="$PWD/backend/outputs" \
+EPUB_HISTORY_BASELINE_DIR=/路径/同源基线目录 \
+backend/.venv/bin/python backend/test_d47_queue_history.py
 ```
 
 本机隔离证据目录：`/private/tmp/fixepub-arch-20261001.RmFzTr`，包含 `inventory.json`、干净基线、`baseline-report.json`、`r1-report.json` 和逐书成品校验 JSON。该目录是临时证据，未加入 Git；六份输入/历史输出的固定哈希保存在 opt-in 历史测试中，可在两台 Mac 提供同一书稿后复测。
