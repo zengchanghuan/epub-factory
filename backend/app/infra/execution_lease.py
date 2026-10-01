@@ -24,6 +24,19 @@ class ExecutionLeaseLost(JobCancelled):
     pass
 
 
+def execution_identity(job) -> str:
+    """One stable lease identity before and after legacy attempt initialization."""
+    from app.domain.translation_attempt import attempt_id_from_stats
+    attempt = attempt_id_from_stats(getattr(job, "translation_stats", None))
+    if attempt:
+        return attempt
+    if getattr(job, "enable_precision_polish", False):
+        return f"polish-{job.id}"
+    if getattr(job, "enable_translation", False):
+        return f"translation-{job.id}"
+    return "conversion"
+
+
 _RENEW = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('expire', KEYS[1], ARGV[2])
@@ -41,9 +54,14 @@ return 0
 class LocalExecutionLease:
     def __init__(self):
         self.owner = uuid.uuid4().hex
+        self._lost = threading.Event()
+
+    def mark_lost(self) -> None:
+        self._lost.set()
 
     def assert_owned(self) -> None:
-        pass
+        if self._lost.is_set():
+            raise ExecutionLeaseLost("任务执行所有权已失效，停止旧执行器")
 
 
 class RedisExecutionLease:
@@ -63,6 +81,8 @@ class RedisExecutionLease:
             raise ExecutionLeaseUnavailable("任务执行锁暂不可用，未启动翻译") from exc
 
     def renew(self) -> bool:
+        if self._lost.is_set():
+            return False
         try:
             owned = bool(self.client.eval(_RENEW, 1, self.key, self.owner, self.ttl))
         except Exception:
@@ -70,6 +90,11 @@ class RedisExecutionLease:
         if not owned:
             self._lost.set()
         return owned
+
+    def mark_lost(self) -> None:
+        self._lost.set()
+        # A lost durable owner must not indefinitely renew its Redis lock.
+        self._stop.set()
 
     def start(self) -> None:
         def heartbeat():

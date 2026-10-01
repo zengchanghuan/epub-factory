@@ -11,11 +11,13 @@ import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urldefrag
+from typing import Callable
 
 from bs4 import BeautifulSoup
 import ebooklib
 from ebooklib import epub
 from app.domain.translation_titles import COMMON_ZH_TITLES
+from .navigation_compat import normalize_book_navigation
 
 
 @dataclass
@@ -40,16 +42,39 @@ class TocRebuilder:
         translated_book_title: str | None = None,
         target_lang: str | None = None,
         glossary: dict[str, str] | None = None,
+        title_normalizer: Callable[[str], str] | None = None,
+        source_warnings: list[str] | None = None,
+        synchronize_titles: bool = False,
     ) -> epub.EpubBook:
+        self.navigation_repair = normalize_book_navigation(book)
+        if source_warnings is not None:
+            source_warnings[:] = list(dict.fromkeys([*source_warnings, *self.navigation_repair.warnings]))
         if self._has_existing_toc(book):
             preserved = self._count_toc_entries(book.toc)
-            updated = self._sync_existing_toc_titles(
-                book,
-                original_book_title=original_book_title,
-                translated_book_title=translated_book_title,
-                target_lang=target_lang,
-                glossary=glossary,
-            )
+            updated = 0
+            if synchronize_titles or target_lang or translated_book_title:
+                updated = self._sync_existing_toc_titles(
+                    book,
+                    original_book_title=original_book_title,
+                    translated_book_title=translated_book_title,
+                    target_lang=target_lang,
+                    glossary=glossary,
+                )
+            elif title_normalizer is not None:
+                def normalize_titles(items):
+                    count = 0
+                    for entry in items or []:
+                        node = entry[0] if isinstance(entry, (tuple, list)) else entry
+                        title = getattr(node, 'title', None)
+                        if title:
+                            normalized = title_normalizer(title)
+                            if normalized != title:
+                                node.title = normalized
+                                count += 1
+                        if isinstance(entry, (tuple, list)):
+                            count += normalize_titles(entry[1])
+                    return count
+                updated = normalize_titles(book.toc)
             self.stats = {
                 "toc_generated": 0,
                 "toc_preserved": preserved,

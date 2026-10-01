@@ -24,7 +24,7 @@ class WebhookTests(unittest.TestCase):
         with patch('app.main.verify_alipay_notification',return_value=False):
             self.assertEqual(client.post('/api/v2/webhooks/alipay',data=data).text,'fail')
         self.assertIsNone(milestones(job_store,'checkout-test')['payment_succeeded'])
-        with patch('app.main.verify_alipay_notification',return_value=True), patch('app.main._use_celery',return_value=True), patch('app.tasks.job_pipeline.run_conversion.delay') as enqueue:
+        with patch('app.main.verify_alipay_notification',return_value=True), patch('app.main._use_celery',return_value=True), patch('app.infra.job_dispatch_publisher.publish_conversion') as enqueue:
             self.assertEqual(client.post('/api/v2/webhooks/alipay',data={**data,'total_amount':'0.01'}).text,'fail')
             self.assertIsNone(milestones(job_store,'checkout-test')['payment_succeeded'])
             self.assertEqual(client.post('/api/v2/webhooks/alipay',data=data).text,'success')

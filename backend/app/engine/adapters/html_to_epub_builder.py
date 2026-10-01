@@ -9,13 +9,15 @@ assembly logic lives in exactly one place. PDF remains disabled publicly.
 """
 
 import html as _html_mod
+import hashlib
+import json
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-def build(html_body: str, metadata: dict, output_epub: Path) -> None:
+def build(html_body: str, metadata: dict, output_epub: Path, *, deterministic: bool = False) -> None:
     """
     Write a minimal EPUB 3 file to *output_epub*.
 
@@ -33,12 +35,21 @@ def build(html_body: str, metadata: dict, output_epub: Path) -> None:
           identifier (str)  — unique book ID, auto-generated if absent
     output_epub:
         Destination path (parent dir must exist).
+    deterministic:
+        Opt-in for ephemeral translation normalization, not publication time.
+        Uses stable fallback ID, modification marker and ZIP member timestamps.
+        Existing ordinary-conversion callers retain their original behavior.
     """
     title = _html_mod.escape(metadata.get("title") or "Untitled")
     author = _html_mod.escape(metadata.get("author") or "")
     language = _html_mod.escape(metadata.get("language") or "zh", quote=True)
-    identifier = _html_mod.escape(metadata.get("identifier") or str(uuid.uuid4()), quote=True)
-    modified = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    stable_identity = hashlib.sha256(json.dumps(
+        {"body": html_body, "metadata": metadata}, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest() if deterministic else ""
+    identifier = _html_mod.escape(metadata.get("identifier") or (
+        "urn:sha256:" + stable_identity if deterministic else str(uuid.uuid4())), quote=True)
+    modified = "1980-01-01T00:00:00Z" if deterministic else datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
     chapter_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -103,8 +114,12 @@ def build(html_body: str, metadata: dict, output_epub: Path) -> None:
 
     output_epub.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_epub, "w") as zf:
-        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
-        zf.writestr("META-INF/container.xml", container_xml, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/content.opf", content_opf, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/chapter1.xhtml", chapter_xhtml, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/nav.xhtml", nav_xhtml, compress_type=zipfile.ZIP_DEFLATED)
+        for name, content, compression in (
+            ("mimetype", "application/epub+zip", zipfile.ZIP_STORED),
+            ("META-INF/container.xml", container_xml, zipfile.ZIP_DEFLATED),
+            ("OEBPS/content.opf", content_opf, zipfile.ZIP_DEFLATED),
+            ("OEBPS/chapter1.xhtml", chapter_xhtml, zipfile.ZIP_DEFLATED),
+            ("OEBPS/nav.xhtml", nav_xhtml, zipfile.ZIP_DEFLATED),
+        ):
+            entry = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)) if deterministic else name
+            zf.writestr(entry, content, compress_type=compression)

@@ -1,57 +1,84 @@
+---
+title: EPUB Factory 当前代码架构
+status: current
+updated: 2026-10-01
+code_revision: 5d1705c9fed54b93403d34f2a4b70f4bcfc2e3b8
+scope: local-code-and-offline-verification
+---
+
 # EPUB Factory 当前架构
 
-> 更新时间：2026-09-18（新增模型费用账本）
->
-> 状态：`current`
->
-> 本文以当前代码为准，描述已经接入主任务入口的真实架构。历史设计与演进方案见 `AI-TRANSLATION-DESIGN.md`。
+本文依据上述提交的本地代码与离线核验，描述实际接通的调用链，不代表已经核验生产配置或部署版本。历史设计见 [AI 翻译设计](AI-TRANSLATION-DESIGN.md)，本轮缺陷与改进顺序见 [架构审查：2026-10-01](ARCHITECTURE-REVIEW-2026-10-01.md)。
 
-> 2026-09-21 规划补充：PDF 翻译尚未实现，详见 [PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md)。该方案定义文本／扫描分流、MinerU 免费 API、超限转 DeepSeek Flash、OCR 性能与密钥安全；不属于下图的已上线功能。
+后续工作区已实现 R1 的独立付款权益快照与重译校验，并修复历史书稿暴露的导航与旧表格兼容问题；R2 的章节身份与 attempt 中间产物隔离、R3 的转换附加精校执行契约、R4 的统一翻译输入与执行计划均已通过相应专项、历史文件及离线回归，尚未发布。R5 已接付款事务内的任务投递 outbox 与独立重试分发器；R6 新增可信网关关单与迟到付款的恢复/人工处理分流；R7 接限次失联恢复；R8 在同一存储事务内限制旧执行器写入，并隔离每个执行器的成品。以下主链路包含这些工作区改动，最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
+
+当前形态是**模块化单体 API + 整本 Celery 任务 + Worker 内章节并发**；独立 EPUB 修复仍在 API 进程内执行。图中的虚线表示条件启用或旁路调用，不表示已经完成分布式改造。
+
+PDF 公共入口仍拒绝输入；[PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md) 与图片像素 OCR/重绘均为规划，不属于已实现能力。
 
 ## 1. 系统边界
 
 ```mermaid
 flowchart TB
-  U["用户浏览器"] --> FE["静态前端<br/>index / translator / repair / admin<br/>lib.js / auth.js"]
-  FE --> API["FastAPI<br/>backend/app/main.py"]
-
-  API --> Auth["认证<br/>SMS / Google / WeChat / JWT"]
-  API --> Preflight["支付前翻译确认<br/>Book Profiler / 术语 / 角色 / 章节策略"]
-  Preflight --> Pay["支付<br/>确认后 Alipay 下单 / webhook / recover"]
-  API --> JobAPI["任务 API<br/>/api/v1/jobs /api/v2/jobs<br/>/api/v2/batches"]
-  API --> Repair["EPUB 修复 API<br/>/api/v2/repair/*"]
-  API --> Admin["统计与反馈 API"]
-
-  JobAPI --> Store["JobStore 抽象"]
-  Auth --> Store
-  Pay --> Store
-  Admin --> Store
-  Store --> Mem["内存 Store<br/>开发或未配置持久化"]
-  Store --> DB["SQLAlchemy Store<br/>SQLite / PostgreSQL<br/>jobs / chapters / chunks / stages / notifications"]
-
-  JobAPI --> Dispatch{"任务调度"}
-  Dispatch -->|"配置 Redis/Celery"| Redis["Redis Broker"]
-  Redis --> Worker["Celery Worker<br/>jobs.run_conversion"]
-  Dispatch -->|"API 请求内提供 BackgroundTasks"| BG["FastAPI BackgroundTasks"]
-  Dispatch -->|"其他本地调用"| Thread["后台 Thread"]
-  Worker --> Runner["run_job<br/>backend/app/job_runner.py"]
-  BG --> Runner
-  Thread --> Runner
-
-  Runner --> Standard["EpubConverter → ExtremeCompiler<br/>普通转换 / 非 EPUB 翻译回退"]
-  Runner --> Fast["fast_translation_runner<br/>EPUB AI 翻译默认主链路"]
-  Runner --> Notify["站内通知 / 可选邮件"]
-  Runner --> Output["outputs/*.epub"]
-
-  Repair --> RepairEngine["epub_repairer<br/>独立内存任务状态"]
-  RepairEngine --> RepairTmp["/tmp/epub-repair"]
-
-  Beat["Celery Beat"] --> Reconcile["支付对账"]
-  Beat --> Balance["模型余额监控"]
-  Reconcile --> Pay
+  U["浏览器<br/>静态 HTML / JS"] --> API["FastAPI 单体<br/>上传 / 确认 / 支付 / 任务 / 下载<br/>账号 / 看板 / 反馈"]
+  API --> Preflight["API 侧输入归一化 / 报价 / 可选预分析<br/>画像 / 术语 / 角色 / 文体策略"]
+  Preflight --> LLM["OpenAI 兼容模型接口<br/>DeepSeek 优先 / 配置后备路由"]
+  API <-->|"下单 / 验签回调 / 主动查单"| Pay["支付宝"]
+  API --> Store["JobStore<br/>SQLAlchemy：SQLite / 可配置 PostgreSQL<br/>任务 / 阶段 / 统计 / 邮件与投递 outbox"]
+  Store --> Dispatch["job_dispatch_outbox<br/>逐 job / attempt 持久意图 + 认领租约<br/>API 独立线程退避重试 / 对账补充消费"]
+  API -->|"验款后立即尝试投递"| Dispatch
+  Dispatch -->|"配置 Broker"| Redis["Redis Broker / Result Backend"]
+  Redis --> Worker["Celery Worker<br/>整本 jobs.run_conversion"]
+  Dispatch -.->|"无 Broker 的开发回退"| Local["BackgroundTasks / Thread"]
+  Worker --> Runner["run_job<br/>执行租约 / attempt / 取消检查"]
+  Local --> Runner
+  Runner --> Normalize["AI 输入归一化 / 原稿 SHA 核对<br/>EPUB 只读 / DOCX 与 MD 临时 EPUB"]
+  Normalize --> Fast["统一 AI 翻译执行器<br/>fast_translation_runner<br/>进程内 asyncio 章节并发"]
+  Runner --> Standard["普通格式转换<br/>EpubConverter → ExtremeCompiler"]
+  Fast --> Translator["SemanticsTranslator<br/>批处理 / 缓存 / QA / 重试"]
+  Translator --> LLM
+  Translator -.-> Guard["可选 Redis 令牌桶 / 路由健康<br/>默认关闭，非全部 LLM 阶段覆盖"]
+  Fast --> Cache["本地 SQLite<br/>翻译缓存 / 准备与 chunk 检查点"]
+  Translator --> Cache
+  Fast --> Reduce["本地 reduce_work<br/>回写 / TOC / 打包 / EPUBCheck"]
+  Standard --> Gate["run_job 交付检查<br/>翻译额外执行 artifact_audit"]
+  Reduce --> Gate
+  Gate --> Files["本地 uploads / outputs<br/>每执行器独占目录，成功事务发布路径"]
+  Runner --> Fence["存储写入守卫<br/>running + attempt + execution owner<br/>父任务锁 / 条件更新"]
+  Fence --> Store
+  Preflight --> Ledger["逐请求费用账本<br/>与主库共用 SQLAlchemy engine"]
+  Translator --> Ledger
+  API --> Repair["独立修复 API<br/>order.json + 进程内缓存"]
+  Repair --> RepairWorker["API 内修复支付轮询线程<br/>确认已付后启动修复线程"]
+  RepairWorker -->|"查单"| Pay
+  RepairWorker --> RepairEngine["epub_repairer<br/>REPAIR_UPLOAD_DIR 下成品"]
+  Store --> Mail["API 内邮件分发线程<br/>完成通知 / 商户收款通知"]
+  Mail --> SMTP["邮件服务"]
+  Beat["Celery Beat"] -->|"同一默认队列：对账 / 余额"| Redis
 ```
 
-生产环境由 FastAPI 同源提供前端与 API。Celery 目前以“整本任务”为队列单位；章节并发与 chunk 批处理发生在 Worker 进程内部，并不是每章或每段各自创建一个 Celery Task。
+FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本采用单服务器上的 API、Worker、Beat 与反向代理。Celery 以整本任务为队列单位；`jobs.translate_chapter` 虽已注册，但主链路没有把全书分发为该任务组。
+
+未配置 `DATABASE_URL` 或 `EPUB_PERSISTENT_STORE` 时，JobStore 回退内存；这只适用于单进程开发，不应与独立 Celery Worker 混用。Redis 配置存在即选队列路径，不等于已经验证 Broker 健康。
+
+### 1.1 已实现、条件启用与未实现
+
+| 能力 | 当前代码状态 |
+|---|---|
+| EPUB、MOBI/AZW3、DOCX、Markdown 输入 | 普通转换支持；MOBI/AZW3 依赖 Calibre，AI 翻译须先转 EPUB |
+| 繁简转换、横排处理、批量转换 | 已接主任务；批量不包含 AI 翻译和 AI 精校 |
+| 翻译画像、术语、角色、用户确认 | EPUB/DOCX/Markdown 经同一归一化边界接支付前预分析 |
+| 高质量复核、文学编辑与原文语义回查 | 上述支持的翻译格式统一进入原快路径；R4 已通过离线/历史门禁，未部署 |
+| HTML caption、解释型脚注/尾注 | 已接翻译；纯引用按规则保留 |
+| 翻译缓存、检查点、费用账本、成品 QA | 已实现；恢复和交付的已知缺口见本轮审查 |
+| 全局 Redis RPM/TPM 与健康路由 | 显式配置才启用，默认关闭；预分析部分调用绕过该层 |
+| 转换附加 AI 精校 | 基线只有报价开关；工作区 R3 已接独立 domain 步骤、权益及交付门禁，历史和专项验收通过，尚未部署 |
+| 付款到主任务队列的可靠投递 | 工作区 R5：状态与投递意图同事务，独立分发器补发；需持久库与 Broker，不包含独立修复产品流 |
+| 超时关闭与迟到付款 | 工作区 R6：有网关关闭证据才本地关闭；实付到期单恢复，用户取消转可见人工处理，不自动退款 |
+| Worker 失联及未开始恢复 | 工作区 R7：持久心跳、同租约限次恢复及延迟补投；需要持久库与 Broker |
+| 旧执行器写入与成品保护 | 工作区 R8：父任务锁内 attempt/owner 守卫、独占成品目录及提交未知时保守清理；专项和历史门禁通过，未部署 |
+| Celery 分布式章节执行 | 存在另一章节任务入口，未接整书主链 |
+| PDF 翻译、图片像素 OCR 与重绘 | 尚未实现/未开放，不画入执行链 |
 
 ## 2. 任务生命周期与 attempt 隔离
 
@@ -60,28 +87,43 @@ sequenceDiagram
   participant UI as 前端
   participant API as FastAPI
   participant Store as JobStore
+  participant Pay as 支付宝
+  participant Relay as 持久投递分发器
+  participant Queue as Redis / Celery
   participant Runner as run_job
   participant Pipeline as 翻译流水线
 
-  UI->>API: 上传翻译书稿
+  UI->>API: 上传支持的书稿并请求画像确认
+  API->>API: 归一化输入 / 保存原稿 SHA
+  API->>API: 有界预分析（可能调用模型并产生费用）
   API->>Store: awaiting_confirmation + 可编辑画像
   API-->>UI: 画像 / 依据 / 术语 / 角色 / 章节策略
   UI->>API: 显式确认或修订
   API->>Store: 原子锁定确认快照
-  API->>API: 确认后才创建支付订单
-  UI->>API: 支付完成或免支付测试
-  API->>Store: 创建或重启 translation attempt
-  API->>Store: 创建新 attempt_id 并重置本轮统计
-  API-->>Runner: job_id + expected_attempt_id
-  Runner->>Store: 校验当前 attempt_id
-  Runner->>Pipeline: 写入 .job-attempt.epub 临时成品
-  Pipeline->>Store: 更新本 attempt 的 chapter/chunk/stage/stat
+  API->>Pay: 创建订单
+  API->>Store: pending_payment + 冻结金额
+  Pay-->>API: 已验证的付款回调（或主动查单）
+  API->>Store: 同一事务：pending_payment → pending + job/attempt 投递意图
+  API->>Relay: 立即尝试已有意图
+  Relay->>Store: CAS 认领到期意图，生成租约 token
+  Relay->>Queue: 投递 job_id + captured expected_attempt_id
+  alt Broker 接受消息
+    Relay->>Store: 租约 token 匹配才记为 sent
+  else 发布失败或进程退出
+    Note over Relay,Store: 意图保留，退避或租约到期后自动再试
+  end
+  Note over Store,Queue: 至少一次投递；发布成功而落库失败可能重复，执行端须校验 attempt 与租约
+  Queue->>Runner: 执行整本任务
+  Runner->>Store: 校验/建立 attempt 并标记 running
+  Runner->>Runner: 核对原稿 SHA / 归一化同一输入
+  Runner->>Pipeline: 同一配置进入统一执行器及独占成品目录
+  Pipeline->>Store: 父任务锁内检查 running/attempt/owner 并写入 chapter/chunk/stage/stat
   alt 用户重启或取消
-    Store-->>Runner: attempt_id 已变化或状态 cancelled
-    Runner->>Runner: 停止旧任务并删除旧 attempt 临时成品
+    Runner->>Store: 旧身份写入抛出 JobWriteConflict
+    Runner->>Runner: 停止旧执行器，清理自己的未提交成品
   else 质检通过
-    Runner->>Runner: 原子移动为用户可见文件名
-    Runner->>Store: completed + output_path
+    Runner->>Runner: 在独占目录内生成可读文件名
+    Runner->>Store: 条件更新提交 success + output_path + QA 报告
   else 质检失败
     Runner->>Runner: 删除不可交付临时成品
     Runner->>Store: failed + PARTIAL_TRANSLATION
@@ -94,17 +136,102 @@ sequenceDiagram
 
 1. 前端支持多文件选择或通过 `webkitdirectory` 递归选择整个文件夹，过滤出支持的电子书格式后，`POST /api/v2/batches` 接收 2–10 个文件；后端为每个文件创建独立 `Job`，并写入共同的 `batch_id`、`batch_size` 和访问令牌。
 2. 支付宝订单号使用 `batch_{batch_id}`，金额为单本转换价乘文件数；管理员测试模式整批仍为 ¥0.01。
-3. 支付 webhook 或 `/api/v2/batches/{id}/recover` 通过 `try_mark_batch_paid` 在同一存储事务中解锁整批任务，只有首个调用方取得入队权，避免重复回调导致重复转换。
+3. 支付 webhook 或 `/api/v2/batches/{id}/recover` 通过 `try_mark_batch_paid` 在同一存储事务中解锁整批任务并保存每个子任务的投递意图；重复回调可以再次检查待投递项，已成功项不会被重建，一项发布失败不会丢掉其余子任务。
 4. 子任务仍以整本为调度单位，互不覆盖状态；`GET /api/v2/batches/{id}` 聚合完成、运行、排队、失败数量和总体进度。
 5. 全部完成或部分完成时，`GET /api/v2/batches/{id}/download` 将成功产物打包为 ZIP；失败项继续保留在任务中心供单本排查。
 
 关键约束：
 
 - `attempt_id` 是一次翻译尝试的持久身份；重启会创建新身份，不继承旧 attempt 的段落数、Token、错误和 QA 统计。
-- Store 更新携带 `expected_attempt_id`，旧 Worker 的迟到写入不会覆盖新任务状态。
-- 翻译输出先写入 attempt 专属隐藏文件，只有通过交付检查后才移动为最终文件。
-- 取消、被新 attempt 取代或失败时，attempt 专属成品会被删除。
+- 执行器的存储写入绑定 `running + attempt + execution owner`，在父任务锁所在的同一事务内复核；状态 UPDATE 额外带原状态、统计、时间和 owner 条件并检查影响行数。显式空 attempt 不等同于未传约束的 `None`。
+- 所有主任务（含普通转换）先写独占目录，文件名仍可读；只有通过质量门禁并成功提交数据库路径才可下载，不再竞争共享最终文件名。
+- 取消、被新执行器取代或失败时，仅清理自己的未提交目录。成功提交结果未知时先核对数据库路径；数据库无法确认时保留文件，不冒险删除可能已交付的成品。
 - 支付前的章节策略编辑只列出实际章节和前后置内容；独立脚注文件继续参与翻译，但继承全书策略，避免为大量单行脚注生成冗余控件。
+- R1 工作区新增独立 `payment_entitlement` 快照，报价冻结档位/模型、验款授权，Store 在重译时检查；不再把 `cancelled` 等终态当作付款证明。旧单无法证明原购配置时需管理员核验，原成品下载不受影响。R5 补齐可靠投递，R6 接迟到付款补偿，R7 增加限次失联恢复，R8 约束主执行链的数据库写入与成品发布。这些改动尚未部署。
+
+### 2.2 投递补偿的边界
+
+- `job_dispatch_outbox` 与任务状态共用数据库事务；首次授权创建、验款释放、画像确认免付款及有权重试都会持久化当前意图。翻译和精校在投递前建立 attempt；普通首次转换显式携带空 attempt，不能与旧调用不传身份的 `None` 混为一谈。
+- 分发器只消费已有意图，不扫描任意 `pending` 任务来推断已付款。升级前没有意图的旧 pending 单，需要新的可信查单或回调；不启动无证据的自动补单。
+- API 内独立线程默认每 5 秒扫最多 20 项，认领租约 60 秒，失败指数退避 5–300 秒；对账任务补充消费。均为有界工程参数，不是交付时延承诺。
+- Broker 使用独立连接、每 socket 5 秒超时并关闭传输内自动重试；持久重试归 outbox。异步上传/回调通过线程执行发布，避免阻塞 API 事件循环；HTTP 仍可能等待本次发布尝试。
+- 同一 job/attempt 的固定消息 ID 用于追踪，不是 Celery 去重保证。发布后确认写库失败可再次发布；执行前后校验捕获的 attempt，并通过现有执行租约和终态检查抵挡重复消息。
+- 已取消、已完成或旧 attempt 的意图标记 obsolete；running 不主动再次投递，失联恢复由 R7 处理。无 Broker 的 `BackgroundTasks / Thread` 仍仅为开发回退，不具备生产重启恢复保证。
+- API 自动分发线程仅在配置 Broker、持久 Store 且 `JOB_DISPATCH_ENABLED` 未关闭时启动。SQL 新增表为加法迁移，部署前仍须保留数据库备份并核验实际 Redis/Worker 链路。
+
+### 2.3 网关关单与迟到付款
+
+```mermaid
+flowchart TD
+  Wait["滞留待付 / 系统到期取消"] --> Query["签名验证的支付宝查单<br/>绑定本订单"]
+  Query -->|"WAIT_BUYER_PAY 且超时"| Close["调用 trade.close<br/>验签、成功码及订单匹配"]
+  Close --> Again["再次查单<br/>处理付款与关单竞态"]
+  Query -->|"成功付款 + 金额匹配"| Paid["可信付款结算"]
+  Again -->|"成功付款 + 金额匹配"| Paid
+  Again -->|"无关闭证据且未查到实付 / 实付金额不匹配"| Keep["保留状态<br/>后续查单，不伪称已关闭"]
+  Again -->|"有可信关闭证据且未发现成功付款"| Expire["仅待付任务 CAS 关闭<br/>保存关闭原因和时间"]
+  Query -->|"TRADE_CLOSED"| Expire
+  Late["迟到验签回调 / 用户主动恢复<br/>订单及金额必须匹配"] --> Paid
+  Paid --> Kind{"任务状态与取消原因"}
+  Kind -->|"待付 / 系统到期取消"| Release["同事务 pending + 付款处理记录<br/>+ dispatch outbox"]
+  Kind -->|"用户取消 / 取消原因不明"| Review["保持 cancelled<br/>PAYMENT_REVIEW_REQUIRED<br/>已付款，待人工处理，尚未退款"]
+  Kind -->|"已排队 / 执行中 / 已完成 / 已失败"| Existing["不自动重开新尝试<br/>沿用已有投递/重译规则"]
+```
+
+- `payment_resolution` 独立于执行状态及 AI 付费权益，保存 `closed/paid/paid_review`、来源、金额和时间；人工处理保留原取消消息/错误码，客户详情、批次子项与管理员订单视图可见。
+- 系统到期使用 `PAYMENT_EXPIRED` 标记；升级前仅识别两条精确的旧超时消息，不用模糊文字推断所有 cancelled 均能自动恢复。旧单仍必须经过新验款，历史迁移不自动标记为已付。
+- 超时阈值仅触发关单请求，不能单独证明订单已关闭；签名失败、错误订单、失败码、网络未知不构成关闭证据。关单后再查若发现匹配实付，付款优先；本地关闭条件更新不能覆盖已释放任务。
+- 批次按一个冻结总价验款，但逐子项保存处理结果。主子项被用户取消时，不会使其余待付/到期子项漏出对账；用户取消子项不自动重启。
+- 定时对账延续原 Beat 日程，同时扫描系统到期取消的主任务，补偿漏通知；该日程仍可能受长书默认队列阻塞，独立短队列属于 R9，不承诺实时恢复。
+- 本项没有新增自动退款能力，也不从“订单取消”推断“退款成功”。管理员的只读式查款刷新仍只核验付款；实际自动补偿由验签回调、客户恢复接口和对账执行，人工处理须由运营明确决定。
+
+### 2.4 Worker 心跳与有界恢复
+
+```mermaid
+flowchart TD
+  Deliver["队列送达：捕获 attempt"] --> Lease["获取同一 execution lease<br/>锁后再次核对捕获身份"]
+  Lease --> Begin["原子 pending → running<br/>job_executions：owner / heartbeat / recoveries"]
+  Begin --> Run["整书执行 + 独立 15 秒 DB 心跳"]
+  Run -->|"正常终态"| Finish["完成执行记录；原有 QA / 下载门禁"]
+  Run -->|"强杀 / 超时 / 进程退出"| Stale["running 留存；断点及费用账本保留"]
+  Watch["API 独立恢复线程<br/>默认每 30 秒扫描"] --> Stale
+  Stale --> Proof["心跳陈旧 600 秒且原租约可获取<br/>旧翻译兼容探测 conversion 锁"]
+  Proof --> CAS["事务内复核状态 / attempt / owner / heartbeat"]
+  CAS -->|"未超过 2 次恢复"| Requeue["同 attempt → pending<br/>同事务重置原 outbox"]
+  CAS -->|"恢复额度耗尽"| Manual["failed + 明确人工处理<br/>不可交付；精校费用待核验"]
+  Requeue --> Relay["已有持久投递器补发"]
+  Relay --> Deliver
+  Watch --> Pending["已 sent 但仍 pending<br/>默认 1 小时后、指数退避补发"]
+  Pending -->|"同租约 + 状态及 sent 版本 CAS<br/>不扣执行恢复次数"| Relay
+```
+
+- 陈旧心跳只是候选；租约繁忙、Redis/DB 异常或身份变化均不得抢占。恢复事务不能修改未付、已取消或终态任务。自动恢复不创建新翻译 attempt，不增加用户免费重译次数，不清缓存、章节断点或请求费用记录。
+- `job_executions` 为独立增量表。执行恢复默认为 2 次，上限为可配置的 10 次；排队未开始的补发单独退避到基础间隔的 8 倍，不把长队列等待当作毒性书稿失败。均为工程值，不是恢复 SLA。
+- 软超时作为执行控制信号向上抛出，不被 Compiler 当作坏书降级/跳过；硬退出由扫描器恢复。Celery 显式不启用无限 `reject_on_worker_lost` 重投，补偿依赖持久状态与 outbox。
+- Celery 在 fork 前关闭父进程空闲数据库连接，fork 后重建子进程连接池；覆盖 SQLite WAL 的继承连接锁错误，避免重启子进程继续使用父连接。
+- 恢复线程随持久投递器在 API 中启动，需要持久 Store、已配置 Broker，并且 `JOB_DISPATCH_ENABLED` / `JOB_RECOVERY_ENABLED` 未关闭；API 停机期间扫描暂停，重启后继续。开发内存/无 Broker 模式不承诺自动恢复。
+- 本地进程门禁使用真实 Celery prefork、文件系统 Broker、SQLite 和文件租约；不等同于真实 Redis/PostgreSQL 或生产部署验证。R7 的执行记录 CAS 与 R8 的业务写入守卫互补，不覆盖独立修复服务或全部外部副作用。
+
+### 2.5 旧执行器写入与成品保护
+
+```mermaid
+flowchart LR
+  Run["已获准的执行器<br/>捕获 job / attempt / owner"] --> Scope["ContextVar 写入身份<br/>async 子任务继承"]
+  Scope --> Lock["Store 锁定父 Job"]
+  Lock --> Check{"running 且 attempt/owner 匹配？"}
+  Check -->|"是"| Commit["同事务写状态 / 章节 / 块 / 阶段<br/>重试清理也锁同一父 Job"]
+  Check -->|"否"| Stop["JobWriteConflict<br/>不覆盖状态、不发完成通知"]
+  Run --> Private["owner 隔离 reduce 中间文件<br/>独占最终目录"]
+  Private --> Commit
+  Commit -->|"成功终态 + output_path"| Download["既有鉴权下载接口"]
+```
+
+- 复用已有 attempt 和 R7 owner，不新增通用版本字段。内存 Store 返回深拷贝快照，调用方不能通过修改旧对象绕过守卫；SQL Store 的父任务锁串行化进度更新、取消及重试。
+- 外部取消命令捕获 attempt 和允许的活动状态，不因同 attempt 的正常进度更新而失效；成功终态或新 attempt 已先提交时返回冲突。重试还比较调用方看到的更新时间，不能以过期终态快照重开新任务。
+- 精校取消标记和费用待核验标记在取消事务内从最新统计合并，不再依靠取消后的旧 Worker 补写；未自动退款。
+- 同 attempt 失联恢复会更换 owner。Reduce 的文件与校验封装额外绑定 owner，不能把旧 owner 的晚到章节用于新打包；检查点和翻译缓存仍按来源及配置复用，费用账本仍记录已实际返回的请求用量，不伪装为同一个跨库事务。
+- 主链路由 `run_job` 建立作用域；未接主链的章节 Celery 入口也要求显式捕获 attempt/owner，缺失或过期身份在模型调用前拒绝。旧的无身份消息不能自行采用最新 owner。
+- 终态写入被拒绝的旧执行器不发完成通知；已经成功提交后的通知/邮件是独立副作用，尚未提供与人工重试跨事务的严格一次性投递保证。数据库确认未知而保留的孤儿目录也尚无自动垃圾回收，本项优先保护已交付文件。
 
 ## 3. EPUB AI 翻译主链路
 
@@ -112,13 +239,11 @@ sequenceDiagram
 flowchart TD
   A["run_job"] --> B["非 LLM 预处理<br/>EpubConverter / ExtremeCompiler"]
   B --> C["build_manifest<br/>文档分类 + 稳定 locator"]
-  C --> Profile["Book Profiler<br/>元数据 + TOC + 前言/首章/分布式样本"]
-  Profile --> Confirm["支付前确认<br/>策略 + 术语 + 角色 + 章节覆盖"]
-  Confirm --> PayGate["创建支付订单 / 支付成功"]
-  PayGate --> Route["固定策略矩阵<br/>已确认全书策略 + 章节覆盖"]
+  C --> Profile["复用已确认预分析 / 检查点<br/>或执行 Book Profiler 有界抽样"]
+  Profile --> Route["固定策略矩阵<br/>全书策略 + 章节覆盖"]
   Route --> D["chunk 分类"]
 
-  D --> Media["含 img/svg/image 的块<br/>不发送模型，原样保留"]
+  D --> Media["含 img/svg/image 的块<br/>只译媒体外部文本，保护媒体子树"]
   D --> Caption["文本型 caption/legend<br/>普通 HTML 翻译"]
   D --> RefNote["纯引用型脚注/尾注<br/>原样保留"]
   D --> ExplainNote["解释型脚注/尾注<br/>text_nodes 策略翻译"]
@@ -127,14 +252,15 @@ flowchart TD
   Caption --> G["全书术语表<br/>全局 + 自动 + 用户 + 可靠角色译名"]
   ExplainNote --> G
   Body --> G
+  Media --> G
   G --> Title["书名元数据翻译"]
   Title --> ContextPack["翻译前生成只读上下文包<br/>章节抽样提要 + 相邻原文 + 相关人物"]
   ContextPack --> Chapters["正文章节 asyncio 并发<br/>请求并发按成功/失败动态调节"]
   Chapters --> Mode{"translation_quality"}
   Mode -->|"standard"| Translator["Flash / 0.3 / reuse<br/>只读上下文 + 自适应 JSON batch"]
-  Mode -->|"high"| Context["Pro / 0.2 / verified<br/>只读章节摘要 + 前后段上下文"]
+  Mode -->|"high"| Context["默认 Flash / 0.2 / verified<br/>较长只读上下文 + 风险复核"]
   Mode -->|"literary"| StyleSample["抽取全书代表段落<br/>生成一次书级风格档案"]
-  StyleSample --> LiteraryDraft["Pro / 0.2 / verified<br/>上下文 + 风格档案"]
+  StyleSample --> LiteraryDraft["默认 Flash / 0.2 / verified<br/>上下文 + 风格档案"]
   Context --> Translator
   LiteraryDraft --> Translator
   Translator --> Validate["返回值、HTML 结构、漏译、句子结构与术语质检"]
@@ -161,6 +287,8 @@ flowchart TD
   ArtifactQA -->|"残留英文或扫描失败"| Stop2["不可交付并删除 attempt 成品"]
   ArtifactQA -->|"通过"| Finalize["原子发布最终 EPUB"]
 ```
+
+本图从付款后的 `run_job` 开始。支付前预分析位于上一节的 API 链路，不在 Worker 内再次等待用户付款；三种质量档位默认模型均为 `deepseek-flash`，显式选择 Pro 或有界失败救援另行处理。后续工作区 R2 已将 `reduce_work` 按 job/attempt/完整资源路径哈希隔离，原子写入且读取时核验身份与内容哈希；manifest 章节和 chunk 身份同步去重，阻止失败救援串章。实际改动及历史门禁见优化记录，不能仅凭格式 QA 推断语义忠实。
 
 ### 3.1 Chunk 分类规则
 
@@ -212,25 +340,29 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 | 成品文本审计 | `translation_qa_service` | 中文目标默认要求残留块为 0；可识别被 `<small>` 等内联标签拆开的英文短标题；扫描失败同样不可交付 |
 | Attempt 原子发布 | `job_runner` | 只有通过门禁的 attempt 文件才成为下载文件 |
 
-最终成品审计会检查正文与文本型图片说明；明确排除非正文文件、媒体块和纯引用型脚注。不能把“模型调用完成”或“EPUB 成功打包”当作翻译成功。
+最终成品审计会检查正文、文本型图片说明、目录标签及链接；对非正文、媒体内部和纯引用型脚注按分类规则排除或保护。不能把“模型调用完成”或“EPUB 成功打包”当作翻译成功。当前审计不是原书到成品的全量内容映射校验，不能识别所有中文错章、增删或语义错误。
 
 ## 5. 标准转换与格式适配
 
-- EPUB AI 翻译且 `EPUB_FAST_TRANSLATION=1` 时进入上述快速翻译主链路。
-- 普通 EPUB 转换、非 EPUB 输入或关闭快速翻译时进入 `EpubConverter -> ExtremeCompiler`。
-- DOCX、Markdown 会先经格式适配转换为临时 EPUB，再复用核心编译链路；共享 HTML 构建器单独生成真正的 nav 文档与正文，并写入 EPUB3 修改时间，避免把普通正文错误声明成导航。
+- EPUB、DOCX、Markdown 的 AI 翻译统一经过 `translation_input -> fast_translation_runner`；同一 Job 的质量档、模型、缓存、策略、术语和双语参数不因格式改变。报价/画像/确认复用该输入边界；原稿 SHA 与确认策略在重试时保留。
+- `EPUB_FAST_TRANSLATION=0` 表示暂停翻译，入口 503、Worker 停止模型执行，不再回退为低能力翻译。普通转换仍进入 `EpubConverter -> ExtremeCompiler`。
+- DOCX、Markdown 的普通转换仍由原格式适配器进入核心编译链；翻译则在 runner 前归一化为确定性临时 EPUB，完成或异常退出都清理。共享构建器保留真正的 nav 与正文分离；确定性标识和时间仅用于翻译归一化，不改变普通转换默认行为。
 - PDF 暂未开放：主页面、专题页、单文件/文件夹/批量上传均关闭；v1/v2 与批次 API 在保存文件、创建订单和支付前拒绝 `.pdf` 及伪装成其他扩展名的 PDF 文件头；已有 PDF 任务也不能通过公共转换器继续转换。私有适配实验不代表支持或交付。
-- MOBI/AZW3 由 `job_runner` 调用 Calibre `ebook-convert` 转成临时 EPUB。
+- MOBI/AZW3 普通转换由 `job_runner` 调用 Calibre `ebook-convert`；AI 翻译入口在收费前拒绝并提示先转为 EPUB。
 - 标准编译管线负责 CJK/OpenCC、CSS 清洗、排版增强、STEM 保护、设备配置、TOC 和打包。
+- DOCX/Markdown 对外部/缺失资源及适配器无法完整保留的正文明确拒绝，不自动下载或删减；内嵌 SVG 限静态自包含子集。没有历史 DOCX 覆盖，合成 Word 包通过真实适配器回归，不能等同在线整书译文验收。
+- R3 附加精校在普通转换 QA 后、最终发布前独立执行，不进入会吞掉清洗器失败的 compiler 链；目前尚未部署。R4 也未修复既有缓存折扣命名空间与 `fresh/verified` 实际策略不一致的问题，后者单独登记。
 
 ### 5.1 EPUB 输入与打包兼容性
 
 - `EpubUnpacker -> epub_compat` 在临时副本上规范 `text/html` 声明、容器内相对路径和资源 ID；优先读取可用的 EPUB3 nav，保存根/正文锚点、页头样式及直接挂在 body 下的文字，避免提取表示与 Reduce 回写表示不一致。
 - 从原 OPF 保留词汇前缀，将 EPUB2 作者/标识属性升级为 EPUB3 refinements，未声明的自定义元数据保留为兼容的 name/content 形式；合法默认词汇和带前缀扩展属性保持原意。缺少可选页码映射可移除其声明；缺正文或有歧义资源引用则明确拒绝，不补造内容。
 - `html_compat` 将旧 `font`、对齐属性，以及图片/表格等有尺寸语义元素上的旧尺寸（包括 pt 等 CSS 长度）迁移为等效 CSS；普通段落/引用上的无效尺寸仅保留为 `data-legacy-*`，不应用为 CSS，避免 `width=0pt` 压扁正文。补齐空标题，将旧 `epub-type` 规范为 `epub:type`；不改变正文、锚点或图片像素。页头按语义去重，重复序列化不累加样式/链接；未知旧资源属性保留在兼容元数据中。
+- 旧表格的间距、内边距、零边框和垂直对齐仅在能证明作者 CSS 优先级时迁移，直接子 `col` 归入 `colgroup`；复杂/缺失样式及不支持的旧值保持阻断，不能为过检覆盖作者样式或丢失信息。
 - XHTML 经 ebooklib 的 HTML 解析后，内嵌 script/style 的 XML 实体可能重复转义；兼容层从已解析的源节点恢复对应载荷，连续序列化及重打包保持脚本/样式语义，不用任意字符串反转义。
 - OpenCC、地域词典、竖排标点只变更文本，不变更文件路径、href、id 或受保护的代码/数学/SVG 内容。
 - 打包时同时保证 nav 与 NCX 资源存在；修复嵌套 NCX 的相对路径及 NCX 自身的空/重复标识，不重命名正文锚点。目录/页码指向已存在但未入 spine 的 HTML，以及含页码标记的非导航 HTML，以 `linear=no` 补入 spine；保持原阅读顺序，不伪造缺失资源。缺失的可选字体只移除不可用 src，保留可用/local/remote 字体并回退阅读器字体。
+- 导航兼容仅凭同文档内可验证的标题/锚点证据修复失效目标；普通转换保留原目录名称并应用明确的繁简规则，翻译独立同步译名。打包保留原 nav 的正文、ID、page-list、landmarks 及有效链接；无法可靠恢复或会丢失原锚点的变更明确拒绝。
 - 文件名中的嵌入式关键词不再用于跳过正文：`index_split_N` 视作正文，`TableOfContents` 等明确名称视作目录。Manifest 与成品审计优先使用 OPF 的 nav 声明，泛名导航文件不再误计正文；主导航与普通命名的 HTML 目录中的 TOC 标签/目标均独立质检，不能借正文排除漏过未翻译目录。
 - `chunk_extractor` 一次遍历建立 locator 索引，以节点对象身份区分重复段落；避免逐段扫描同级节点，保持定位路径及 chunk 编号稳定。
 - 翻译资格按 Unicode 字母系统和目标语言判断，不再仅要求拉丁字母；中文成品质检新增日文假名残留信号，显式保留术语仍受豁免。
@@ -254,11 +386,37 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 
 未配置持久化时使用内存 Store；配置 `DATABASE_URL` 或 `EPUB_PERSISTENT_STORE=1` 后使用 SQLAlchemy 的 SQLite/PostgreSQL Store。Celery Worker 必须配合持久化 Store，才能通过 `job_id` 读取同一任务。
 
+### 6.1 存储与扩容边界
+
+| 数据 | 当前落点 | 不能混淆的边界 |
+|---|---|---|
+| 任务、章节、chunk、阶段、账号、邮件及任务投递 outbox | JobStore 的 SQLAlchemy 数据库 | PostgreSQL 是配置能力，不是本次已验证的生产事实 |
+| 逐请求 Token/费用 | 同一 SQLAlchemy engine 的账本表 | 价目计算成本与供应商实扣账单分开 |
+| 段落翻译缓存 | 本地 `translation_cache.db` | 更换任务主库不会自动迁走此 SQLite |
+| 画像/术语/书名/风格和 chunk 检查点 | 默认复用缓存 DB，可配置独立检查点路径 | 必须保留输入与配置指纹，不能跨配置盲目复用 |
+| 上传、成品、章节回写文件 | 本机 `uploads`、`outputs`、`reduce_work` | 独立主机 Worker 需要共享存储；当前不是对象存储架构 |
+| 独立修复订单与文件 | `REPAIR_UPLOAD_DIR/<id>` 下 `order.json` 与成品，默认 `/tmp/epub-repair` | 不在主 JobStore；临时目录生命周期与数据库备份不同 |
+| 队列、执行租约、可选全局限流/健康 | Redis；开发执行租约可退回文件锁 | 队列存在不等于端到端“恰好一次”履约 |
+
+API 与 Worker 多进程能使用同一数据库，不意味着当前工程已经支持多机无状态扩容。文件、本地 SQLite、修复进程内状态都需要一起纳入扩容方案。
+
 ## 7. 辅助与修复链路
 
 - `/api/v2/repair/*` 是独立的 EPUB 诊断/修复产品流，不进入主转换 Job 表。
+- 修复订单已持久化为 `order.json`，通过临时文件、fsync 和 rename 原子替换；API 同时保留进程内缓存与锁。`RepairPaymentWorker` 默认每 5 秒轮询查单、恢复已付修复；实际修复通过 API 内线程执行，不经过 Celery 或主任务执行租约。
+- 修复当前只具备同进程执行去重，不能直接增加 API workers；缓存不跨进程刷新、修复线程无统一总并发上限，见审查 R10。
+- 完成邮件和商户收款邮件分别由 API 启动的后台分发器消费持久化待发送记录，具有重试/认领机制；它们不占用整书 Celery 消费槽。
 - `image_caption_repair.py` 是对既有成品进行文本型 caption 补译的维护工具，保留图片字节与 EPUB `mimetype` 规则，并在写出后执行相同的成品 QA；正常新任务不依赖该工具。
 - Celery Beat 负责支付对账与模型余额监控，不参与单本书的章节编排。
+
+### 7.1 部署与运行约束
+
+- `deploy.sh` / `scripts/deploy-server.sh` 是 SSH 单服务器原地发布链路，有跨 Mac 发布锁、活跃任务检查、数据/配置备份和代码哈希校验；不是滚动发布或 CI 自动部署。
+- `docker-compose.yml` 描述本地 API、Worker、Beat、Redis 的开发拓扑，不应当作已核实的生产容器部署。
+- Celery 默认整书并发为 1，书任务软/硬时限为 7200/7500 秒；对账/余额任务与整书共用默认队列，且任务消息 3600 秒过期，存在长任务阻塞维护任务的问题。
+- `acks_late` 和租约不能单独保证异常退出自动恢复；工作区 R7 已补独立持久心跳、限次恢复与排队补发，详见 §2.4；上线仍需验证真实 Broker/Worker 故障恢复。
+- `/healthz` 与 systemd active 只能证明进程/API 存活，不能证明 Redis 可达、Celery 正在消费或模型供应商可用。
+- 以上均为仓库配置及调用链审查，不是生产故障断言。
 
 ## 8. TODO：图片像素文字 OCR 翻译
 
@@ -304,3 +462,5 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 | `backend/app/infra/llm_route_health.py` | 可选 Redis 跨 Worker 模型路由健康状态 |
 | `backend/app/storage.py` / `storage_db.py` | 内存/持久化 Store |
 | `backend/app/tasks/job_pipeline.py` | Celery 整本任务入口 |
+| `backend/app/domain/job_recovery_service.py` / `job_recovery_worker.py` | 失联候选、租约证明、限次恢复和未开始投递补偿 |
+| `backend/app/infra/execution_heartbeat.py` / `worker_db_lifecycle.py` | 独立执行心跳、Celery fork 前后连接池生命周期 |

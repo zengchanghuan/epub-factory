@@ -99,13 +99,19 @@ class BatchConversionTest(unittest.TestCase):
         self.assertEqual(precreate.call_count, 1)
         self.assertEqual(precreate.call_args.args[0], f"batch_{data['batch_id']}")
 
-        with patch("app.main._enqueue_conversion") as enqueue:
+        # Exercise the real durable dispatcher. A duplicate receipt may drain
+        # again, but already acknowledged children must not be republished.
+        with patch("app.main._use_celery", return_value=True), patch(
+            "app.infra.job_dispatch_publisher.publish_conversion"
+        ) as enqueue:
             from app.main import _release_batch
             self.assertTrue(_release_batch(data["batch_id"]))
             self.assertFalse(_release_batch(data["batch_id"]))
         self.assertEqual(enqueue.call_count, 2)
         jobs = job_store.list_jobs_by_batch_id(data["batch_id"])
         self.assertTrue(all(job.status == JobStatus.pending for job in jobs))
+        self.assertEqual({call.args for call in enqueue.call_args_list}, {(job.id, "") for job in jobs})
+        self.assertTrue(all(job_store.list_dispatches(job.id)[0]["status"] == "sent" for job in jobs))
 
     def test_batch_webhook_routes_one_order_to_batch_release(self):
         with patch("app.infra.alipay.create_alipay_precreate", return_value="alipay://batch-qr"):

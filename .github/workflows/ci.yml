@@ -79,6 +79,35 @@ jobs:
                 test_d35_payment_reconcile
                 test_d36_alipay_verification
                 test_d36_repair_checkout
+                test_d37_payment_entitlement
+                test_d38_navigation_compat
+                test_d38_navigation_packaging
+                test_d39_table_compat
+                test_d40_reduce_isolation
+                test_d40_rescue_identity
+                test_d41_precision_polish
+                test_d41_precision_contract
+                test_d42_translation_input
+                test_d42_translation_contract
+                test_d43_dispatch_store
+                test_d43_dispatch_service
+                test_d43_dispatch_publisher
+                test_d43_dispatch_contract
+                test_d43_dispatch_execution
+                test_d44_alipay_close
+                test_d44_payment_lifecycle_store
+                test_d44_payment_lifecycle_contract
+                test_d44_payment_reconcile
+                test_d45_execution_store
+                test_d45_execution_runtime
+                test_d45_recovery_service
+                test_d45_worker_process
+                test_d45_execution_resume
+                test_d45_worker_db
+                test_d45_unstarted_dispatch
+                test_d46_write_fence_store
+                test_d46_write_fence_contract
+                test_d46_execution_fence
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard

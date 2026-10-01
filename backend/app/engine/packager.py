@@ -3,13 +3,14 @@ import shutil
 import tempfile
 import zipfile
 import posixpath
+from copy import deepcopy
 from pathlib import Path
 from urllib.parse import quote, unquote, urldefrag, urlparse, urlsplit, urlunsplit
 
 import ebooklib
 from ebooklib import epub
 from ebooklib.utils import get_pages
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from lxml import etree
 from .font_compat import repair_font_sources
 
@@ -287,6 +288,8 @@ class EpubPackager:
 
             fixes_applied = []
 
+            if self._preserve_navigation_documents(temp_dir):
+                fixes_applied.append("original navigation structure")
             if self._sync_serialized_toc_files(temp_dir):
                 fixes_applied.append("toc files")
 
@@ -373,6 +376,134 @@ class EpubPackager:
                 self._repack(temp_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _navigation_types(node) -> set[str]:
+        return set((node.get('{http://www.idpf.org/2007/ops}type') or '').split())
+
+    def _preserve_navigation_documents(self, temp_dir: Path) -> bool:
+        """ebooklib regenerates NAV and otherwise discards its non-TOC content.
+
+        Retain the source document when its ordered destinations still match
+        the authoritative TOC. This also preserves IDs that prose/guide links
+        may reference. A changed TOC may be regenerated only if doing so does
+        not silently discard nested anchors; ambiguous cases fail closed.
+        """
+        changed = False
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        for item in self.book.get_items():
+            if not isinstance(item, epub.EpubNav) or not item.content:
+                continue
+            path = (temp_dir / self.book.FOLDER_NAME / item.get_name()).resolve()
+            if not path.is_relative_to(temp_dir.resolve()) or not path.is_file():
+                raise ValueError('Navigation output path is invalid')
+            raw = item.content.encode('utf-8') if isinstance(item.content, str) else item.content
+            original = etree.fromstring(raw, parser)
+            if original.find('.//{*}body') is None:
+                original = etree.fromstring(item.get_content(), parser)
+            generated = etree.fromstring(path.read_bytes(), parser)
+            body = original.find('.//{*}body')
+            generated_body = generated.find('.//{*}body')
+            if body is None or generated_body is None:
+                raise ValueError('Navigation document has no body')
+            old_tocs = [node for node in body.iter('{*}nav')
+                        if 'toc' in self._navigation_types(node)]
+            new_tocs = [node for node in generated_body.iter('{*}nav')
+                        if 'toc' in self._navigation_types(node)]
+            if len(old_tocs) > 1 or len(new_tocs) != 1:
+                raise ValueError('Navigation TOC is ambiguous')
+            new_toc = new_tocs[0]
+
+            def entries(node):
+                result = []
+                for row in node.iter('{*}li'):
+                    labels = [label for label in row.iterdescendants()
+                              if isinstance(label.tag, str) and etree.QName(label).localname in {'a', 'span'}
+                              and next(label.iterancestors('{*}li'), None) is row]
+                    label = labels[0] if labels else None
+                    href = label.get('href') if label is not None else None
+                    uri = urlsplit(href or '')
+                    destination = ((uri.scheme, uri.netloc,
+                                    posixpath.normpath(unquote(uri.path)) if uri.path else '',
+                                    uri.query, unquote(uri.fragment)) if href else None)
+                    depth = sum(1 for ancestor in row.iterancestors('{*}li'))
+                    result.append(((depth, destination, label is not None), label))
+                return result
+
+            def preserve_label_nodes(old, new):
+                # Non-link section labels have no href for the later title
+                # map. Synchronize their text too, without removing IDs.
+                for (_key, old_label), (_new_key, new_label) in zip(old, new):
+                    if old_label is None or new_label is None:
+                        continue
+                    title = ''.join(new_label.itertext())
+                    if ''.join(old_label.itertext()) == title:
+                        continue
+                    texts = old_label.xpath('.//text()')
+                    for index, text in enumerate(texts):
+                        owner = text.getparent()
+                        if text.is_tail:
+                            owner.tail = title if index == 0 else ''
+                        else:
+                            owner.text = title if index == 0 else ''
+                    if not texts:
+                        old_label.text = title
+
+            def safe_generated_copy(node, replacing=None):
+                used = {element.get('id') for element in original.iter() if element.get('id')
+                        and element is not replacing and (replacing is None or replacing not in element.iterancestors())}
+                clone = deepcopy(node)
+                remapped = {}
+                for element in clone.iter():
+                    old_id = element.get('id')
+                    if not old_id:
+                        continue
+                    new_id = old_id
+                    while new_id in used:
+                        new_id += '-generated'
+                    if new_id != old_id:
+                        element.set('id', new_id)
+                        remapped[old_id] = new_id
+                    used.add(new_id)
+                for element in clone.iter():
+                    href = element.get('href', '')
+                    if href.startswith('#') and unquote(href[1:]) in remapped:
+                        element.set('href', '#' + quote(remapped[unquote(href[1:])], safe='-._~:'))
+                    for attribute in ('aria-labelledby', 'aria-describedby'):
+                        if element.get(attribute):
+                            element.set(attribute, ' '.join(remapped.get(value, value)
+                                                            for value in element.get(attribute).split()))
+                return clone
+
+            if old_tocs:
+                old_toc = old_tocs[0]
+                old_entries, new_entries = entries(old_toc), entries(new_toc)
+                if [key for key, _ in old_entries] != [key for key, _ in new_entries]:
+                    if any(node.get('id') for node in old_toc.iterdescendants()):
+                        raise ValueError('Cannot regenerate TOC without losing existing navigation anchors')
+                    replacement = safe_generated_copy(new_toc, replacing=old_toc)
+                    for key, value in old_toc.attrib.items():
+                        replacement.set(key, value)
+                    old_toc.getparent().replace(old_toc, replacement)
+                else:
+                    preserve_label_nodes(old_entries, new_entries)
+            else:
+                body.append(safe_generated_copy(new_toc))
+
+            # Keep source landmarks/page-list verbatim. Add generated auxiliary
+            # navigation only when the source did not provide that type.
+            existing_types = set().union(*(self._navigation_types(node)
+                                           for node in body.iter('{*}nav')))
+            for node in generated_body:
+                if not isinstance(node.tag, str) or etree.QName(node).localname != 'nav':
+                    continue
+                types = self._navigation_types(node)
+                if types and not types & existing_types:
+                    body.append(safe_generated_copy(node))
+                    existing_types.update(types)
+            path.write_bytes(etree.tostring(original, encoding='utf-8', xml_declaration=True))
+            changed = True
+        return changed
 
     @staticmethod
     def _flatten_toc(items) -> list[tuple[str, str]]:
@@ -466,12 +597,23 @@ class EpubPackager:
                 continue
             soup = BeautifulSoup(raw, "xml")
             local_changed = False
-            for a in soup.find_all("a", href=True):
+            toc_links = [a for nav in soup.find_all('nav')
+                         if 'toc' in str(nav.get('epub:type') or '').split()
+                         for a in nav.find_all('a', href=True)]
+            for a in toc_links:
                 candidates = self._serialized_href_candidates(temp_dir, nav_path, a.get("href", ""))
                 title = next((title_map[c] for c in candidates if c in title_map), None)
                 if title and a.get_text(strip=True) != title:
-                    a.clear()
-                    a.append(title)
+                    # Do not discard inline spans/IDs referenced by the book.
+                    # Replace label text only; page-list and landmarks never
+                    # receive chapter titles from this synchronization.
+                    texts = [text for text in a.find_all(string=True) if not isinstance(text, Comment)]
+                    if texts:
+                        texts[0].replace_with(title)
+                        for text in texts[1:]:
+                            text.replace_with('')
+                    else:
+                        a.append(title)
                     local_changed = True
             if local_changed:
                 nav_path.write_text(str(soup), encoding="utf-8")

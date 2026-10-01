@@ -8,6 +8,8 @@ Worker 使用时需配置持久化 store（DATABASE_URL），否则无法加载 
 import logging
 import os
 import re
+import shutil
+import tempfile
 import time
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -25,10 +27,17 @@ from .domain.translation_attempt import attempt_id_from_stats, initial_translati
 from .error_reporter import report_error
 from .models import ErrorCode, JobStage, JobStatus, OutputMode, StageStatus
 from .storage import job_store
-from .infra.execution_lease import execution_lease, ExecutionLeaseLost, ExecutionLeaseBusy
+from .infra.execution_lease import execution_lease, execution_identity, ExecutionLeaseLost, ExecutionLeaseBusy
+from .infra.execution_heartbeat import ExecutionHeartbeat
 from .infra.llm_errors import ProviderAccountUnavailable
 from .infra.llm_usage_ledger import usage_scope, AccountingError
 from .domain.translation_residual_policy import confirmed_preserved_terms
+from .domain.payment_entitlement import precision_polish_entitlement_reason
+from .domain.translation_input import (
+    normalized_translation_input, ensure_translation_executor_available,
+    validate_translation_filename, TranslationInputError,
+)
+from .domain.job_write_fence import job_write_scope, JobWriteConflict
 
 logger = logging.getLogger("epub_factory")
 
@@ -89,7 +98,7 @@ def _rename_output_with_translated_title(job, result, output_path: Path, suffix:
     original_title = (stats.get("book_title_original") or "").strip()
     if not translated_title or translated_title == original_title:
         return output_path
-    new_path = _unique_output_path(OUTPUT_DIR / f"{_safe_output_stem(translated_title)}_{suffix}.epub")
+    new_path = _unique_output_path(output_path.parent / f"{_safe_output_stem(translated_title)}_{suffix}.epub")
     if output_path.exists() and new_path != output_path:
         output_path.replace(new_path)
         return new_path
@@ -97,11 +106,17 @@ def _rename_output_with_translated_title(job, result, output_path: Path, suffix:
 
 
 def _finalize_attempt_output(job, result, working_path: Path, default_path: Path, suffix: str) -> Path:
-    """Move an attempt-scoped artifact to its user-facing final filename."""
+    """Choose a readable name *inside* this executor's private directory.
+
+    A filename is not publication: only the fenced success transaction exposes
+    its path. Never replace an artifact belonging to a different execution.
+    """
     translated_path = _rename_output_with_translated_title(job, result, working_path, suffix)
     if translated_path != working_path:
         return translated_path
-    final_path = _unique_output_path(default_path)
+    if working_path.name == default_path.name:
+        return working_path
+    final_path = _unique_output_path(working_path.parent / default_path.name)
     if working_path.exists() and working_path != final_path:
         working_path.replace(final_path)
     return final_path
@@ -154,6 +169,69 @@ def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
         result.message = f"翻译交付质检未通过：{qa['summary']}。已停止交付，请查看失败诊断。"
 
 
+def _run_precision_polish_stage(job, result, output_path, *, cancel_check, stage_callback, persist_stats):
+    """A paid add-on is a required, independently audited delivery stage."""
+    from .domain.precision_polish_service import PrecisionPolishError, run_precision_polish
+
+    base_stats = dict(job.translation_stats or {})
+    base_stats.update(dict(result.translation_stats or {}))
+    quote = dict((job.translation_stats or {}).get("precision_polish") or {})
+    polished_path = output_path.with_name(output_path.stem + ".polished.epub")
+
+    def publish(snapshot):
+        # Runtime counters may never replace the frozen commercial terms.
+        precision = {**quote, **snapshot}
+        for key in ("quoted_amount", "char_count", "order_no"):
+            if key in quote:
+                precision[key] = quote[key]
+        base_stats["precision_polish"] = precision
+        job.translation_stats = dict(base_stats)
+        result.translation_stats = dict(base_stats)
+        persist_stats(dict(base_stats))
+        return precision
+
+    if not result.validation_passed:
+        publish({"status": "failed", "reason": "conversion_validation_failed",
+                 "refund_required": not job.is_test_order, "validation_passed": False})
+        return
+    started = time.monotonic()
+    stage_callback("precision_polish", "开始 AI 精校：按上下文检查风险词，不改写正文", None)
+    publish({"status": "running", "api_calls": 0, "reviewed": 0, "changed": 0})
+    try:
+        stats = run_precision_polish(output_path, polished_path, cancel_check=cancel_check,
+                                     stats_callback=publish)
+        if stats.get("status") == "no_candidates":
+            # New quotes reject zero candidates. A historical paid order that
+            # reaches this state still needs fee review, not a success claim.
+            raise PrecisionPolishError("no_candidates", "没有可完成精校的正文风险段",
+                                       stats={**stats, "status": "no_candidates"})
+        if stats.get("status") != "completed" or not stats.get("validation_passed"):
+            raise PrecisionPolishError("incomplete_review", "精校未完成或最终校验未通过",
+                                       stats={**stats, "status": "failed"})
+        raise_if_cancelled(cancel_check)
+        if not polished_path.is_file():
+            raise PrecisionPolishError("missing_polished_output", "精校成品不存在",
+                                       stats={**stats, "status": "failed"})
+        polished_path.replace(output_path)
+        final = publish({**stats, "refund_required": False})
+        elapsed = int((time.monotonic() - started) * 1000)
+        message = f"AI 精校已检查 {final.get('reviewed', 0)} 段，修改 {final.get('changed', 0)} 段"
+        stage_callback("precision_polish_completed", message, elapsed)
+        result.message = f"转换完成；{message}"
+    except PrecisionPolishError as exc:
+        failure = {**getattr(exc, "stats", {}), "reason": getattr(exc, "reason", str(exc)),
+                   "refund_required": not job.is_test_order, "validation_passed": False}
+        if failure.get("status") != "no_candidates":
+            failure["status"] = "failed"
+        publish(failure)
+        result.validation_passed = False
+        result.error_code = ErrorCode.PRECISION_POLISH_FAILED.value
+        result.message = "AI 精校未完成，已停止交付；精校费用请联系客服核验，未自动退款。"
+        stage_callback("precision_polish_failed", result.message, int((time.monotonic() - started) * 1000))
+    finally:
+        polished_path.unlink(missing_ok=True)
+
+
 def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditional_variant: str) -> str:
     """
     根据输出模式对文件名主体做繁简转换，保证下载文件名与正文方向一致。
@@ -188,20 +266,24 @@ def run_job(job_id: str, expected_attempt_id: str | None = None, *, retry_if_bus
     job = job_store.get(job_id)
     if not job:
         return
-    if job.status not in {JobStatus.pending, JobStatus.running}:
+    if job.status != JobStatus.pending:
         return
     current_attempt = attempt_id_from_stats(job.translation_stats)
-    if expected_attempt_id and current_attempt and expected_attempt_id != current_attempt:
+    # None is an old caller without a captured identity. An explicitly empty
+    # first-conversion identity must not adopt a newer retry's nonempty ID.
+    if expected_attempt_id is not None and expected_attempt_id != current_attempt:
         return
-    identity = expected_attempt_id or attempt_id_from_stats(job.translation_stats) or "conversion"
+    identity = execution_identity(job)
     with execution_lease(job_id, identity) as lease:
         if lease is None:
             logger.info("duplicate job delivery ignored", extra={"job_id": job_id})
             if retry_if_busy:
                 raise ExecutionLeaseBusy("同一次翻译已被执行器占用，延后核验，不重复执行")
             return
-        # Re-read after acquiring: a prior executor may have finished meanwhile.
-        _run_job_locked(job_id, expected_attempt_id, lease)
+        # None permits a legacy caller to adopt the FIRST observed attempt,
+        # not a different attempt created while acquiring this attempt's lock.
+        # Otherwise the runner and recovery scanner would hold different keys.
+        _run_job_locked(job_id, current_attempt, lease)
 
 
 def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None:
@@ -210,14 +292,17 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
     if not job:
         logger.warning("run_job: job not found", extra={"job_id": job_id})
         return
-    if job.status not in {JobStatus.pending, JobStatus.running}:
+    if job.status != JobStatus.pending:
         logger.info("run_job: job not executable", extra={"job_id": job_id})
         return
-    job = job_store.get(job_id) or job
+    current_attempt = attempt_id_from_stats(job.translation_stats)
+    if expected_attempt_id is not None and expected_attempt_id != current_attempt:
+        logger.info("run_job: stale queued attempt ignored", extra={"job_id": job_id})
+        return
     now_utc = datetime.now(timezone.utc)
     translation_stats = None
-    attempt_id = ""
-    if getattr(job, "enable_translation", False):
+    attempt_id = current_attempt
+    if getattr(job, "enable_translation", False) or getattr(job, "enable_precision_polish", False):
         existing_stats = dict(getattr(job, "translation_stats", {}) or {})
         existing_attempt_id = attempt_id_from_stats(existing_stats)
         if expected_attempt_id and existing_attempt_id and expected_attempt_id != existing_attempt_id:
@@ -227,26 +312,65 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             )
             return
         stats = initial_translation_stats(existing_stats)
+        if not existing_attempt_id:
+            # Older AI jobs have no attempt. Persist the same deterministic
+            # identity used to acquire their lease; never switch to a random key.
+            stats["attempt_id"] = execution_identity(job)
         stats.setdefault("attempt_started_at", now_utc.isoformat())
         attempt_id = expected_attempt_id or attempt_id_from_stats(stats)
         stats["attempt_id"] = attempt_id
         translation_stats = stats
         job.translation_stats = stats
         if not existing_attempt_id:
-            job_store.update_status(
+            initialized = job_store.update_status(
                 job.id,
                 job.status,
                 job.message,
                 translation_stats=stats,
+                expected_attempt_id="",
+                expected_statuses={JobStatus.pending},
             )
+            if (not initialized or initialized.status != JobStatus.pending
+                    or attempt_id_from_stats(initialized.translation_stats) != attempt_id):
+                logger.info("legacy attempt initialization rejected", extra={"job_id": job.id})
+                return
 
+    lease.assert_owned()
+    if not job_store.begin_execution(job.id, attempt_id, lease.owner):
+        logger.info("job execution admission rejected", extra={"job_id": job.id})
+        return
+    heartbeat = ExecutionHeartbeat(job_store, job.id, attempt_id, lease)
+    try:
+        heartbeat.start()
+        lease.assert_owned()
+        with job_write_scope(job.id, attempt_id, lease.owner):
+            try:
+                _execute_admitted_job(job, attempt_id, translation_stats, lease)
+            except JobWriteConflict:
+                # Includes conflicts raised from an error/cancellation handler.
+                # They are not a fresh cancellation and must never write back.
+                logger.info("obsolete executor stopped writing", extra={"job_id": job.id})
+    finally:
+        heartbeat.stop()
+        # Soft timeout/lost process is deliberately still running. Only a real
+        # terminal transition may finalize metadata; the scanner owns recovery.
+        try:
+            current = job_store.get(job.id)
+            if current and current.status in {JobStatus.success, JobStatus.failed, JobStatus.cancelled}:
+                job_store.finish_execution(job.id, attempt_id, lease.owner)
+        except Exception as exc:
+            logger.warning("Execution metadata finalization unavailable (%s)", type(exc).__name__,
+                           extra={"job_id": job.id})
+
+
+def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> None:
     def update_job_status(status: JobStatus, message: str = "", **kwargs):
         lease.assert_owned()
         return job_store.update_status(
             job.id,
             status,
             message,
-            expected_attempt_id=attempt_id or None,
+            expected_attempt_id=attempt_id,
             **kwargs,
         )
 
@@ -257,8 +381,19 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
         translation_stats=translation_stats,
     )
     output_path: Path | None = None
-    attempt_scoped_output = False
+    output_directory: Path | None = None
+    artifact_committed = False
+    publication_attempted = False
     try:
+        if job.enable_translation:
+            ensure_translation_executor_available()
+            validate_translation_filename(job.input_path)
+        if getattr(job, "enable_precision_polish", False):
+            reason = precision_polish_entitlement_reason(job)
+            if reason:
+                raise RuntimeError("AI 精校付款权益未核验或与原订单不符，已停止执行，请联系管理员核验。")
+            if Path(job.input_path).suffix.lower() != ".epub":
+                raise RuntimeError("AI 精校目前仅支持 EPUB 的普通简体转换")
         source_name_raw = Path(job.source_filename).stem
         source_name = _convert_filename_stem_for_mode(
             source_name_raw,
@@ -267,11 +402,11 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
         )
         suffix = _build_output_suffix(job)
         default_output_path = OUTPUT_DIR / f"{source_name}_{suffix}.epub"
-        if attempt_id:
-            output_path = OUTPUT_DIR / f".{job.id}-{attempt_id}-{lease.owner}.epub"
-            attempt_scoped_output = True
-        else:
-            output_path = default_output_path
+        # This also isolates ordinary conversions whose first attempt is "".
+        # mkdtemp exclusively creates the directory; no old executor can replace
+        # a new executor's bytes even when its final status write is rejected.
+        output_directory = Path(tempfile.mkdtemp(prefix=".execution-", dir=OUTPUT_DIR))
+        output_path = output_directory / default_output_path.name
 
         last_progress_event: str | None = None
         last_progress_recorded_at = 0.0
@@ -297,7 +432,8 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                 metadata={
                     "message": message,
                     "level": level,
-                    **({"attempt_id": attempt_id} if attempt_id else {}),
+                    "attempt_id": attempt_id,
+                    "execution_owner": lease.owner,
                 },
             )
             job_store.add_stage(stage)
@@ -307,10 +443,14 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             current = job_store.get(job.id)
             if not current:
                 return True
-            if current.status == JobStatus.cancelled:
+            if current.status != JobStatus.running:
                 return True
-            if attempt_id and attempt_id_from_stats(current.translation_stats) != attempt_id:
+            if attempt_id_from_stats(current.translation_stats) != attempt_id:
                 return True
+            execution = job_store.get_execution(job.id, attempt_id)
+            if (not execution or execution.get("state") != "running"
+                    or execution.get("owner") != lease.owner):
+                raise JobWriteConflict("执行器归属已变化，停止旧执行器")
             return False
 
         def check_cancelled() -> None:
@@ -353,22 +493,36 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             except FileNotFoundError:
                 raise RuntimeError("服务器未安装 ebook-convert (Calibre)，无法转换此格式。")
 
-        fast_translation_enabled = os.environ.get("EPUB_FAST_TRANSLATION", "1").lower() not in ("0", "false", "no")
         check_cancelled()
         accounting = usage_scope(job.id, attempt_id or "conversion", engine=getattr(job_store, "_engine", None),
                                  existing_stats=job.translation_stats) if (
                                      job.enable_translation or getattr(job, "enable_precision_polish", False)) else nullcontext()
         with accounting:
-            if job.enable_translation and input_path.suffix.lower() == ".epub" and fast_translation_enabled:
+            if job.enable_translation:
                 from .domain.fast_translation_runner import run_fast_translation_job
-                result = run_fast_translation_job(
-                    job=job,
-                    input_path=input_path,
-                    output_path=output_path,
-                    progress_callback=on_progress,
-                    stage_callback=on_stage,
-                    cancel_check=is_cancelled,
-                )
+                on_stage("normalizing_input", "统一解析翻译输入，保留已确认的翻译设定")
+                with normalized_translation_input(
+                    input_path, source_name=job.source_filename, cancel_check=is_cancelled,
+                ) as normalized:
+                    previous_input = (job.translation_stats or {}).get("translation_input") or {}
+                    if previous_input.get("source_sha256") and previous_input["source_sha256"] != normalized.source_sha256:
+                        raise TranslationInputError("source_changed", "原文件已变化，请重新上传并确认翻译设定")
+                    job.translation_stats = {
+                        **dict(job.translation_stats or {}),
+                        "translation_input": {
+                            "version": normalized.normalization_version, "adapter": normalized.adapter,
+                            "source_sha256": normalized.source_sha256,
+                        },
+                        "source_warnings": list(dict.fromkeys([
+                            *((job.translation_stats or {}).get("source_warnings") or []),
+                            *normalized.source_warnings,
+                        ])),
+                    }
+                    update_job_status(JobStatus.running, "翻译输入解析完成", translation_stats=job.translation_stats)
+                    result = run_fast_translation_job(
+                        job=job, input_path=normalized.epub_path, output_path=output_path,
+                        progress_callback=on_progress, stage_callback=on_stage, cancel_check=is_cancelled,
+                    )
             else:
                 result = converter.convert_file_to_horizontal(
                     input_path,
@@ -387,8 +541,14 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                     progress_callback=on_progress,
                     stage_callback=on_stage,
                 )
+            if getattr(job, "enable_precision_polish", False):
+                _run_precision_polish_stage(
+                    job, result, output_path, cancel_check=is_cancelled, stage_callback=on_stage,
+                    persist_stats=lambda stats: update_job_status(
+                        JobStatus.running, "正在执行 AI 精校", translation_stats=stats),
+                )
         check_cancelled()
-        if job.enable_translation:
+        if job.enable_translation or getattr(job, "enable_precision_polish", False):
             current_attempt_stats = dict(job.translation_stats or {})
             current_attempt_stats.update(dict(getattr(result, "translation_stats", {}) or {}))
             result.translation_stats = current_attempt_stats
@@ -401,6 +561,7 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             on_stage("translation_quality_gate_failed", result.message or "翻译交付质检未通过")
         status, message, error_code = resolve_after_conversion(result)
         if status != JobStatus.failed:
+            check_cancelled()
             output_path = _finalize_attempt_output(
                 job,
                 result,
@@ -408,7 +569,6 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                 default_output_path,
                 suffix,
             )
-            attempt_scoped_output = False
         if job.enable_translation:
             qa_output_path = (
                 None
@@ -430,8 +590,6 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                 translation_stats=result.translation_stats,
                 metrics_summary=result.metrics_summary,
             )
-            if attempt_scoped_output and output_path:
-                output_path.unlink(missing_ok=True)
             report_error(
                 error_code=error_code or ErrorCode.CONVERT_FAILED,
                 message=message,
@@ -449,6 +607,7 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                 extra={"trace_id": job.trace_id, "job_id": job.id},
             )
             return
+        publication_attempted = True
         update_job_status(
             status,
             message,
@@ -458,6 +617,7 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             translation_stats=result.translation_stats,
             metrics_summary=result.metrics_summary,
         )
+        artifact_committed = True
         notify_job_completed(
             job.id, status, message,
             error_code=error_code,
@@ -465,25 +625,27 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             source_filename=job.source_filename,
         )
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
+    except SoftTimeLimitExceeded:
+        # Preserve current progress/checkpoints and the running execution row.
+        # Bounded durable recovery, not a new purchase/manual restart, resumes it.
+        logger.warning("job soft time limit reached; awaiting durable recovery", extra={"job_id": job.id})
+        raise
     except ExecutionLeaseLost:
-        if attempt_scoped_output and output_path:
-            output_path.unlink(missing_ok=True)
         logger.error("execution lease lost; old executor stopped", extra={"job_id": job.id})
         # Never overwrite a new owner's status or artifact after losing ownership.
         raise
+    except JobWriteConflict:
+        raise
     except JobCancelled as exc:
         current = job_store.get(job.id)
-        if attempt_id and current and attempt_id_from_stats(current.translation_stats) != attempt_id:
-            if attempt_scoped_output and output_path:
-                output_path.unlink(missing_ok=True)
+        if current and (current.status != JobStatus.running
+                        or attempt_id_from_stats(current.translation_stats) != attempt_id):
             logger.info(
                 "job attempt superseded",
                 extra={"trace_id": job.trace_id, "job_id": job.id, "attempt_id": attempt_id},
             )
             return
         message = str(exc) or "用户已停止翻译"
-        if attempt_scoped_output and output_path:
-            output_path.unlink(missing_ok=True)
         if getattr(job_store, "add_stage", None):
             now = datetime.now(timezone.utc)
             job_store.add_stage(JobStage(
@@ -495,10 +657,20 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                 metadata={
                     "message": message,
                     "level": "warning",
-                    **({"attempt_id": attempt_id} if attempt_id else {}),
+                    "attempt_id": attempt_id,
+                    "execution_owner": lease.owner,
                 },
             ))
-        update_job_status(JobStatus.cancelled, message)
+        cancelled_stats = None
+        if getattr(job, "enable_precision_polish", False):
+            cancelled_stats = dict(job.translation_stats or {})
+            cancelled_stats["precision_polish"] = {
+                **dict(cancelled_stats.get("precision_polish") or {}), "status": "cancelled",
+                "reason": "cancelled", "validation_passed": False,
+                "refund_required": not job.is_test_order,
+            }
+        update_job_status(JobStatus.cancelled, message,
+                          **({"translation_stats": cancelled_stats} if cancelled_stats is not None else {}))
         notify_job_completed(
             job.id,
             JobStatus.cancelled,
@@ -508,20 +680,19 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
         logger.info("job cancelled", extra={"trace_id": job.trace_id, "job_id": job.id})
     except (AccountingError, Exception) as exc:
         current = job_store.get(job.id)
-        if attempt_id and current and attempt_id_from_stats(current.translation_stats) != attempt_id:
-            if attempt_scoped_output and output_path:
-                output_path.unlink(missing_ok=True)
+        if current and (current.status != JobStatus.running
+                        or attempt_id_from_stats(current.translation_stats) != attempt_id):
             logger.info(
                 "stale job failure ignored",
                 extra={"trace_id": job.trace_id, "job_id": job.id, "attempt_id": attempt_id},
             )
             return
         message = str(exc)
-        if attempt_scoped_output and output_path:
-            output_path.unlink(missing_ok=True)
         error_code = ErrorCode.CONVERT_FAILED
         failure_stats = None
         if isinstance(exc, AccountingError):
+            error_code = ErrorCode.TRANSLATION_FAILED
+        if isinstance(exc, TranslationInputError) and job.enable_translation:
             error_code = ErrorCode.TRANSLATION_FAILED
         if isinstance(exc, ProviderAccountUnavailable):
             error_code = ErrorCode.TRANSLATION_PROVIDER_UNAVAILABLE
@@ -530,11 +701,16 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                                  blocked_provider=exc.provider, last_error=message,
                                  live=False, deliverable=False)
             failure_stats = attach_translation_qa_report(failure_stats, error_code=error_code.value)
-        if isinstance(exc, SoftTimeLimitExceeded) and job.enable_translation:
-            message = "翻译任务达到运行时限，已完成的译文缓存已保留。请重启翻译并使用复用缓存，继续处理剩余内容。"
-            error_code = ErrorCode.TRANSLATION_FAILED
         if "AI 翻译失败" in message or "翻译流程未完成" in message:
             error_code = ErrorCode.TRANSLATION_FAILED
+        if getattr(job, "enable_precision_polish", False):
+            error_code = ErrorCode.PRECISION_POLISH_FAILED
+            failure_stats = dict(getattr(current, "translation_stats", {}) or job.translation_stats or {})
+            failure_stats["precision_polish"] = {
+                **dict(failure_stats.get("precision_polish") or {}), "status": "failed",
+                "reason": type(exc).__name__, "validation_passed": False,
+                "refund_required": not job.is_test_order,
+            }
         if getattr(job_store, "add_stage", None):
             now = datetime.now(timezone.utc)
             job_store.add_stage(JobStage(
@@ -546,7 +722,8 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
                 metadata={
                     "message": message or "任务失败",
                     "level": "error",
-                    **({"attempt_id": attempt_id} if attempt_id else {}),
+                    "attempt_id": attempt_id,
+                    "execution_owner": lease.owner,
                 },
             ))
         update_job_status(JobStatus.failed, message, error_code=error_code,
@@ -567,3 +744,22 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
             "job failed",
             extra={"trace_id": job.trace_id, "job_id": job.id},
         )
+    finally:
+        if output_directory is not None and not artifact_committed:
+            remove_private_directory = True
+            if publication_attempted:
+                # commit may have succeeded even if refresh/transport/soft-timeout
+                # raised before update_status returned. Never delete a possibly
+                # committed artifact; an unavailable DB leaves a private orphan,
+                # not a successful job with a missing download.
+                try:
+                    published = job_store.get(job.id)
+                    remove_private_directory = not (
+                        published and published.output_path and output_path
+                        and Path(published.output_path) == output_path
+                    )
+                except Exception:
+                    remove_private_directory = False
+                    logger.warning("output commit uncertain; private artifact retained", extra={"job_id": job.id})
+            if remove_private_directory:
+                shutil.rmtree(output_directory, ignore_errors=True)

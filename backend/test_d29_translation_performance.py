@@ -385,6 +385,10 @@ class PerformanceTests(unittest.TestCase):
 
     def test_rescue_overlaps_other_chapter_and_releases_chapter_slot(self):
         manifest = manifest_for(ALPHA, BETA)
+        # Rescue must write a real chapter payload. An empty content map used
+        # to silently skip rewriting and no longer satisfies the runner contract.
+        contents = {ch['file_path']: ('<html><body>' + ''.join(c['html'] for c in ch['chunks'])
+                    + '</body></html>').encode() for ch in manifest['chapters']}
         counts = {ALPHA: 0}
         async def run():
             beta_started = asyncio.Event()
@@ -401,7 +405,7 @@ class PerformanceTests(unittest.TestCase):
             with patch.dict(os.environ, {'EPUB_CHAPTER_CONCURRENCY_CAP': '1'}), \
                  patch.object(SemanticsTranslator, '_call_llm_json_batch', new=call):
                 return await asyncio.wait_for(_translate_manifest_async(job=self.job, manifest=manifest,
-                    content_by_file={}, glossary={}, progress_callback=lambda _: None), 2)
+                    content_by_file=contents, glossary={}, progress_callback=lambda _: None), 2)
         stats, _ = asyncio.run(run())
         self.assertEqual(stats['failed_chunks'], 0)
         self.assertEqual(stats['failed_chunk_rescue_succeeded'], 1)

@@ -5,6 +5,7 @@ import tempfile
 import zipfile
 from .epub_compat import package_path, normalize_package, normalize_book, normalize_metadata
 from .epub_resource_repair import build_resource_repair_plan, MAX_METADATA_BYTES, ResourceRepairError, INVALID
+from .navigation_compat import normalize_book_navigation
 
 
 class EpubUnpacker:
@@ -47,7 +48,10 @@ class EpubUnpacker:
                                     output.writestr(info, normalized if info.filename == opf_path else repaired.read(info.filename))
                         book = epub.read_epub(normalized_path, options=options)
             normalize_metadata(book, normalized)
-            return normalize_book(book, opf_path)
+            book = normalize_book(book, opf_path)
+            navigation = normalize_book_navigation(book)
+            self.source_warnings = list(dict.fromkeys([*self.source_warnings, *navigation.warnings]))
+            return book
         except Exception as e:
             self._last_error = e
             print(f"Unpack Error: {e}")

@@ -14,6 +14,8 @@ from lxml import etree, html
 
 from .epub_compat import OPF_NS, EPUB_NS, is_font_item, missing_font_is_optional, xml_tree
 from .font_compat import FONT_FACE
+from .navigation_compat import (WARNING_REPAIRED_NAVIGATION, WARNING_DISABLED_NAVIGATION,
+                                WARNING_UNRESOLVED_NAVIGATION)
 
 WARNING_META = 'epub-factory-source-warning'
 MISSING_DOCUMENT_ATTRIBUTE = 'data-epub-factory-missing-document'
@@ -24,7 +26,9 @@ WARNING_DOCUMENTS = '原文件缺少部分章节，已插入缺章说明页；�
 WARNING_NAVIGATION = '原文件目录资源缺失，已根据现有章节重建目录。'
 WARNING_MANIFEST = '原文件部分资源未在清单声明，已保留现有资源并补齐声明。'
 KNOWN_WARNINGS = frozenset({WARNING_ALIASES, WARNING_IMAGES, WARNING_STYLES,
-                          WARNING_DOCUMENTS, WARNING_NAVIGATION, WARNING_MANIFEST})
+                          WARNING_DOCUMENTS, WARNING_NAVIGATION, WARNING_MANIFEST,
+                          WARNING_REPAIRED_NAVIGATION, WARNING_DISABLED_NAVIGATION,
+                          WARNING_UNRESOLVED_NAVIGATION})
 HTML_TYPES = {'application/xhtml+xml', 'text/html'}
 NCX_TYPE = 'application/x-dtbncx+xml'
 MAX_ENTRIES = 50_000

@@ -168,7 +168,7 @@ def test_packager_syncs_stale_serialized_toc_files():
         oebps.mkdir()
         (oebps / "nav.xhtml").write_text(
             """<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
 <nav epub:type="toc"><ol><li><a href="xhtml/chap_01.xhtml#h1">Chapter 1</a></li></ol></nav>
 </body></html>""",
             encoding="utf-8",
@@ -209,7 +209,7 @@ def test_toc_rebuilder_preserves_existing_hierarchy_and_localizes_titles():
         ),
     )
 
-    rebuilt = TocRebuilder().rebuild(book)
+    rebuilt = TocRebuilder().rebuild(book, target_lang="zh-CN")
 
     assert len(rebuilt.toc) == 2
     assert rebuilt.toc[0].title == "第一章"
@@ -240,7 +240,7 @@ def test_packager_prefers_fragment_specific_toc_titles():
         root = Path(tmp)
         (root / "nav.xhtml").write_text(
             """<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><ol>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol>
 <li><a href="chapter.xhtml#one">Old one</a></li>
 <li><a href="chapter.xhtml#two">Old two</a></li>
 </ol></nav></body></html>""",

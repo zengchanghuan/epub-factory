@@ -16,7 +16,8 @@ from .auth import (AdminBase, AdminSession, COOKIE, credential_version, credenti
 from .orders import PaymentCheck, money, order_view, safe_file
 from ..storage_db import JobRecord, _record_to_job
 from ..models import JobStage, JobStatus, StageStatus
-from ..domain.translation_attempt import new_attempt_id
+from ..domain.translation_attempt import new_attempt_id, attempt_id_from_stats
+from ..domain.payment_entitlement import grant_verified_entitlement
 from ..infra.alipay import query_verified_trade
 from ..order_events import milestones, record_event
 from ..infra.llm_usage_ledger import get_ledger
@@ -68,6 +69,7 @@ def make_router(store, upload_dir, output_dir, enqueue):
         result = order_view(job, dict(payment) if payment else None, upload_dir, output_dir, expected=expected)
         result["cost"]["ledger"] = ledger.summary(job.id, job.translation_stats)
         result["checkout"] = milestones(store, number)
+        result["payment_resolution"] = dict(getattr(job, "payment_resolution", None) or {})
         return result
 
     def check_payment(job):
@@ -95,6 +97,7 @@ def make_router(store, upload_dir, output_dir, enqueue):
                 setattr(record, key, value)
             session.commit()
         if state == "paid":
+            grant_verified_entitlement(store, job, amount, "verified_query")
             record_event(store, number, "payment_succeeded", "verified_query")
             # A historical order refresh must not send a new-sale notification.
             if job.status == JobStatus.pending_payment:
@@ -233,8 +236,15 @@ def make_router(store, upload_dir, output_dir, enqueue):
             raise HTTPException(409, "只允许重试失败的订单")
         if not safe_file(job.input_path, upload_dir):
             raise HTTPException(410, "原文件不存在或已过期")
-        if check_payment(job)["status"] != "paid":
+        payment = check_payment(job)
+        if payment["status"] != "paid":
             raise HTTPException(409, "未能核验支付成功及金额一致，未发起重试")
+        if job.enable_translation:
+            # Cost acknowledgement + authenticated admin + fresh gateway proof
+            # explicitly authorize a legacy plan that lacks its original quote.
+            refreshed_job = store.get(job.id) or job
+            grant_verified_entitlement(store, refreshed_job, payment["amount"],
+                                       "verified_admin_query", allow_legacy_plan=True)
         now = datetime.now(timezone.utc)
         restarted, reason = store.restart_translation_attempt(
             job.id, attempt_id=new_attempt_id(), action_label="管理员重试", max_free_retries=-1,
@@ -244,12 +254,19 @@ def make_router(store, upload_dir, output_dir, enqueue):
         store.add_stage(JobStage(job_id=job.id, stage_name="admin_retry", status=StageStatus.completed,
                                 started_at=now, finished_at=now,
                                 metadata={"admin": credentials()[0], "previous_error_code": job.error_code,
-                                          "previous_message": job.message, "cache_policy": "reuse"}))
+                                          "previous_message": job.message, "cache_policy": "reuse",
+                                          "attempt_id": attempt_id_from_stats(restarted.translation_stats)}),
+                        expected_attempt_id=attempt_id_from_stats(restarted.translation_stats))
         try:
             enqueue(restarted, background)
         except Exception:
             store.update_status(job.id, status=JobStatus.failed, message="管理员重试入队失败，请检查队列后重试",
-                                expected_attempt_id=restarted.translation_stats.get("attempt_id"))
+                                expected_attempt_id=attempt_id_from_stats(restarted.translation_stats),
+                                expected_statuses={JobStatus.pending})
+            current = store.get(job.id)
+            if (current and attempt_id_from_stats(current.translation_stats) == attempt_id_from_stats(restarted.translation_stats)
+                    and current.status in {JobStatus.running, JobStatus.success}):
+                return view(current)
             raise HTTPException(503, "任务入队失败，已保留原文件和缓存")
         return view(restarted)
 

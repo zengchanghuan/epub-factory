@@ -97,7 +97,9 @@ class CompletionEmailTests(unittest.TestCase):
         self.send.assert_not_called()
 
     def test_old_job_without_access_token_has_explicit_failure(self):
-        self.job(status=JobStatus.success).access_token = ""
+        job = self.job(status=JobStatus.success)
+        job.access_token = ""
+        self.store.add(job)  # Persist the fixture; returned Jobs are detached snapshots.
         state = self.subscribe()
         self.assertEqual(state["status"], "failed")
         self.assertEqual(state["last_error_code"], "result_link_unavailable")
@@ -108,19 +110,22 @@ class CompletionEmailTests(unittest.TestCase):
         job = self.job(status=JobStatus.success)
         expired = datetime.now(timezone.utc) - timedelta(days=1)
         job.token_expires_at = expired
+        self.store.add(job)
         state = self.subscribe()
         self.assertEqual(state["status"], "failed")
         self.assertEqual(state["last_error_code"], "result_link_unavailable")
         service.dispatch_pending_email_notifications()
         self.send.assert_not_called()
-        self.assertEqual(job.token_expires_at, expired)
+        self.assertEqual(self.store.get(job.id).token_expires_at, expired)
 
     def test_token_expiring_after_queue_is_rechecked_before_send(self):
         job = self.job(status=JobStatus.success)
         job.token_expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+        self.store.add(job)
         self.assertEqual(self.subscribe()["status"], "pending")
         # SQLite can return naive UTC datetimes, so cover that representation too.
         job.token_expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).replace(tzinfo=None)
+        self.store.add(job)
         service.dispatch_pending_email_notifications()
         self.send.assert_not_called()
         self.assertEqual(service.get_email_subscription("email-job")["last_error_code"], "result_link_unavailable")

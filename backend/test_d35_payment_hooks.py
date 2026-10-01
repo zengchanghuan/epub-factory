@@ -37,8 +37,8 @@ class PaymentHookTests(unittest.TestCase):
         self.events = self.stack.enter_context(patch.object(main, 'record_event'))
         self.verify = self.stack.enter_context(patch.object(main, 'verify_alipay_notification', return_value=True))
         self.stack.enter_context(patch.object(main, '_use_celery', return_value=True))
-        self.enqueue = self.stack.enter_context(patch('app.tasks.job_pipeline.run_conversion.delay'))
-        self.batch_enqueue = self.stack.enter_context(patch.object(main, '_enqueue_batch'))
+        self.enqueue = self.stack.enter_context(patch('app.infra.job_dispatch_publisher.publish_conversion'))
+        self.batch_enqueue = self.stack.enter_context(patch.object(main, '_enqueue_batch', wraps=main._enqueue_batch))
         self.repair_run = self.stack.enter_context(patch.object(main, '_ensure_repair_running'))
         self.wake = self.stack.enter_context(patch('app.domain.payment_email_worker.payment_email_worker.wake'))
         self.send = self.stack.enter_context(patch.object(mail.completion_mail, '_send_email'))
@@ -110,7 +110,11 @@ class PaymentHookTests(unittest.TestCase):
         body = self.send.call_args.args[2]
         self.assertIn('3.98', body)
         self.assertIn('2 本', body)
-        self.batch_enqueue.assert_called_once_with('batch-id', None)
+        self.batch_enqueue.assert_called_with('batch-id', None)
+        # Both verified callbacks may drain, but each child is published once.
+        self.assertEqual(self.enqueue.call_count, 2)
+        self.assertEqual({call.args for call in self.enqueue.call_args_list},
+                         {('batch-job-0', ''), ('batch-job-1', '')})
 
     def test_server_marked_test_order_still_runs_without_merchant_email(self):
         self.job(is_test_order=True, expected_amount='0.02')
@@ -119,7 +123,7 @@ class PaymentHookTests(unittest.TestCase):
         self.assertIsNone(self.repo.get('paid-job'))
         self.wake.assert_not_called()
 
-    def test_historical_single_order_callbacks_do_not_create_receipts(self):
+    def test_historical_callbacks_do_not_create_receipts_but_can_resume_pending(self):
         for status in (JobStatus.pending, JobStatus.running, JobStatus.success,
                        JobStatus.failed, JobStatus.cancelled):
             with self.subTest(status=status):
@@ -130,7 +134,9 @@ class PaymentHookTests(unittest.TestCase):
                 self.assertIsNone(self.repo.get(key))
                 self.assertEqual(self.store.get(key).status, status)
         self.wake.assert_not_called()
-        self.enqueue.assert_not_called()
+        # A verified duplicate may repair a pending delivery, not restart a
+        # running/terminal order or announce a historical order as a new sale.
+        self.enqueue.assert_called_once_with('historical-pending', '')
         self.assertEqual(mail.dispatch_pending_payment_emails()['sent'], 0)
         self.send.assert_not_called()
 
@@ -185,12 +191,12 @@ class PaymentHookTests(unittest.TestCase):
     def test_recover_requires_verified_amount_and_notifies_once(self):
         self.job(enable_translation=True, expected_amount='5.99')
         with patch('app.infra.alipay.query_verified_trade') as query:
-            for trade in (None, {'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}):
+            for trade in (None, {'out_trade_no': 'paid-job', 'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}):
                 query.return_value = trade
                 result = self.client.post('/jobs/paid-job/recover', headers={'X-Job-Token': 'private-owner-token'})
                 self.assertFalse(result.json()['recovered'])
                 self.assertIsNone(self.repo.get('paid-job'))
-            query.return_value = {'trade_status': 'TRADE_FINISHED', 'total_amount': '5.99'}
+            query.return_value = {'out_trade_no': 'paid-job', 'trade_status': 'TRADE_FINISHED', 'total_amount': '5.99'}
             result = self.client.post('/jobs/paid-job/recover', headers={'X-Job-Token': 'private-owner-token'})
             self.assertTrue(result.json()['recovered'])
         self.assertEqual(mail.dispatch_pending_payment_emails()['sent'], 1)
@@ -204,12 +210,12 @@ class PaymentHookTests(unittest.TestCase):
             self.job('batch-job-' + str(index), batch_id='batch-id', batch_index=index, batch_size=2,
                      expected_amount='3.98' if index == 0 else '')
         with patch('app.infra.alipay.query_verified_trade') as query:
-            query.return_value = {'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}
+            query.return_value = {'out_trade_no': 'batch_batch-id', 'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}
             result = self.client.post('/batches/batch-id/recover', headers={'X-Job-Token': 'private-owner-token'})
             self.assertFalse(result.json()['recovered'])
             self.assertIsNone(self.repo.get('batch_batch-id'))
             self.batch_enqueue.assert_not_called()
-            query.return_value = {'trade_status': 'TRADE_SUCCESS', 'total_amount': '3.98'}
+            query.return_value = {'out_trade_no': 'batch_batch-id', 'trade_status': 'TRADE_SUCCESS', 'total_amount': '3.98'}
             result = self.client.post('/batches/batch-id/recover', headers={'X-Job-Token': 'private-owner-token'})
             self.assertTrue(result.json()['recovered'])
         self.assertEqual(mail.dispatch_pending_payment_emails()['sent'], 1)

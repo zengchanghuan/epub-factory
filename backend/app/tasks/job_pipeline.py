@@ -11,6 +11,10 @@ from app.infra.execution_lease import ExecutionLeaseUnavailable, ExecutionLeaseL
 
 
 @celery_app.task(name="jobs.run_conversion",
+                 # Local Celery Request.on_failure/on_timeout requeues worker
+                 # loss indefinitely when reject_on_worker_lost=True. The DB
+                 # watchdog owns bounded retries, including hard/soft timeouts.
+                 reject_on_worker_lost=False, acks_on_failure_or_timeout=True,
                  autoretry_for=(ExecutionLeaseUnavailable, ExecutionLeaseLost, ExecutionLeaseBusy),
                  retry_backoff=60, retry_backoff_max=300, retry_jitter=False,
                  retry_kwargs={"max_retries": 10})

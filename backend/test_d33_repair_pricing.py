@@ -66,12 +66,16 @@ class RepairPricingTests(unittest.TestCase):
         self.assertEqual(main.job_store.get(result['job_id']).expected_amount, '0.99')
 
     def test_precision_polish_is_a_separate_add_on(self):
+        # This test isolates the unchanged price tiers; actual EPUB risk
+        # inspection and unsupported-mode rejection are covered by D41.
         with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create, patch(
-            'app.engine.cleaners.llm_polish.count_effective_chars', return_value=120_000
+            'app.domain.precision_polish_service.inspect_precision_polish_source',
+            return_value={'char_count': 120_000, 'candidates': 1}
         ):
             response = self.client.post('/api/v2/jobs',
                 files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')},
-                data={'enable_translation': 'false', 'enable_precision_polish': 'true'},
+                data={'enable_translation': 'false', 'enable_precision_polish': 'true',
+                      'output_mode': 'simplified'},
                 headers={'X-Client-Session': 'pricing-polish-' + uuid.uuid4().hex})
         self.assertEqual(response.status_code, 200, response.text)
         result = response.json()
@@ -103,11 +107,12 @@ class RepairPricingTests(unittest.TestCase):
         main.job_store.add(Job(id=job_id, source_filename='fixture.epub', input_path='/tmp/not-read',
             trace_id='offline', output_mode=OutputMode.simplified,
             expected_amount='1.99', status=JobStatus.pending_payment))
-        with patch.object(main.job_store, 'try_mark_paid', return_value=False) as mark:
+        with patch.object(main.job_store, 'settle_verified_payment',
+                          return_value={'released': [], 'review': [], 'unchanged': [job_id]}) as mark:
             self.assertEqual(self.webhook(job_id, '0.99').text, 'fail')
             mark.assert_not_called()
             self.assertEqual(self.webhook(job_id, '1.99').text, 'success')
-            mark.assert_called_once_with(job_id)
+            mark.assert_called_once_with(job_id, amount='1.99', source='verified_webhook')
 
     def test_old_single_orders_keep_saved_or_legacy_amount(self):
         for stored in ('5.99', ''):
@@ -115,11 +120,12 @@ class RepairPricingTests(unittest.TestCase):
             main.job_store.add(Job(id=job_id, source_filename='fixture.epub', input_path='/tmp/not-read',
                 trace_id='offline', output_mode=OutputMode.simplified,
                 expected_amount=stored, status=JobStatus.pending_payment))
-            with patch.object(main.job_store, 'try_mark_paid', return_value=False) as mark:
+            with patch.object(main.job_store, 'settle_verified_payment',
+                              return_value={'released': [], 'review': [], 'unchanged': [job_id]}) as mark:
                 self.assertEqual(self.webhook(job_id, '1.99').text, 'fail')
                 mark.assert_not_called()
                 self.assertEqual(self.webhook(job_id, '5.99').text, 'success')
-                mark.assert_called_once_with(job_id)
+                mark.assert_called_once_with(job_id, amount='5.99', source='verified_webhook')
 
     def test_diagnose_reports_new_price(self):
         response = self.client.post('/api/v2/repair/diagnose',

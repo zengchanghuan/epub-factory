@@ -14,6 +14,7 @@ from app.admin.auth import LoginBucket, password_hash
 from app.admin.orders import cost_view
 from app.admin.router import make_router
 from app.domain.translation_attempt import restarted_translation_stats
+from app.domain.payment_entitlement import quote_entitlement
 from app.models import Job, JobStatus, OutputMode
 from app.storage_db import Base, PersistentJobStore
 from app.infra.llm_usage_ledger import get_ledger, usage_scope
@@ -151,8 +152,8 @@ class AdminTests(unittest.TestCase):
     def test_search_amount_dates_and_batch(self):
         self.job(created_at=datetime(2026,9,1,tzinfo=timezone.utc))
         self.job('b',source_filename='another',expected_amount='38.98')
-        self.job('c',batch_id='batch1',batch_index=0,expected_amount='19.99')
-        self.job('d',batch_id='batch1',batch_index=1,expected_amount='')
+        self.job('c',batch_id='batch1',batch_index=0,expected_amount='19.99',enable_translation=False)
+        self.job('d',batch_id='batch1',batch_index=1,expected_amount='',enable_translation=False)
         self.login()
         for query,count in [('q=测试书',3),('q=%25',0),('amount=5.99',1),('amount=19.99',2),('start=2026-09-01&end=2026-09-01',1),('payment=paid',0)]:
             r=self.client.get('/api/admin/orders?'+query);self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['total'],count)
@@ -162,13 +163,27 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(self.retry('d').status_code,200);self.trade.assert_called_with('batch_batch1')
 
     def test_compare_and_swap_parallel_claims(self):
-        self.job()
+        job = self.job()
+        entitlement = quote_entitlement(job)
+        entitlement.update(state='paid', source='verified_query', authorized_at=datetime.now(timezone.utc).isoformat())
+        self.store.save_payment_entitlement(job.id, entitlement, expected={})
         def claim(i):
             return self.store.restart_translation_attempt('a',attempt_id=str(i),action_label='test',max_free_retries=-1,
                     started_at=datetime.now(timezone.utc),failed_only=True)[1]
         with ThreadPoolExecutor(max_workers=2) as pool:
             results=list(pool.map(claim, range(2)))
         self.assertEqual(results.count('ok'),1)
+
+    def test_legacy_restarted_plan_requires_audited_admin_payment_approval(self):
+        self.job(translation_stats={'translation_attempt': 3, 'free_retry_count': 2})
+        self.login()
+        response = self.retry()
+        self.assertEqual(response.status_code, 200, response.text)
+        entitlement = self.store.get('a').payment_entitlement
+        self.assertEqual(entitlement['source'], 'verified_admin_query')
+        self.assertTrue(entitlement['legacy_plan_approved'])
+        audit = [stage for stage in self.store.list_stages('a') if stage.stage_name == 'admin_retry']
+        self.assertEqual(audit[0].metadata['admin'], 'tristan')
 
     def test_stale_admin_request_cannot_claim_new_failure(self):
         original=self.job()
@@ -290,8 +305,13 @@ class AdminTests(unittest.TestCase):
         result=self.client.get('/api/admin/orders').json()
         self.assertEqual(result['total'],1)
         self.assertEqual(result['items'][0]['id'],'real')
-        self.store.restart_translation_attempt('test',attempt_id='new',action_label='test',max_free_retries=-1,
+        job = self.store.get('test')
+        entitlement = quote_entitlement(job)
+        entitlement.update(state='paid', source='verified_query', authorized_at=datetime.now(timezone.utc).isoformat())
+        self.store.save_payment_entitlement(job.id, entitlement, expected={})
+        _, reason = self.store.restart_translation_attempt('test',attempt_id='new',action_label='test',max_free_retries=-1,
                 started_at=datetime.now(timezone.utc))
+        self.assertEqual(reason, 'ok')
         self.assertTrue(self.store.get('test').is_test_order)
 
     def test_verified_sdk_shapes_and_reject_exception(self):

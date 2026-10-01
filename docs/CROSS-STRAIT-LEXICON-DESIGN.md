@@ -2,7 +2,7 @@
 title: "两岸用词差异处理方案（繁简转换 v2）"
 date: 2026-05-18
 tags: ["EPUB", "繁简转换", "OpenCC", "DeepSeek", "定价"]
-status: "draft / 待评审"
+status: "historical-draft / 精校执行契约以 2026-10-01 回归记录为准"
 related:
   - "docs/TRADITIONAL-TO-SIMPLIFIED-DESIGN.md"
   - "docs/AI-TRANSLATION-DESIGN.md"
@@ -10,6 +10,8 @@ related:
 ---
 
 # 两岸用词差异处理方案（繁简转换 v2）
+
+> **当前实现边界（2026-10-01）：** 本文保留早期方案讨论，不作为上线承诺。精校仅支持单个 EPUB 的普通简体转换，在转换校验后、成品发布前独立执行；无风险段或不支持的组合在付款前拒绝。预算有上限，失败不交付，费用需人工核验，**尚无自动退款**。下文关于不限量、自动退款、与翻译组合的描述均是旧设想。当前实现与逐项验收以 [架构优化回归记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md#r3转换附加-ai-精校执行契约) 为准；R3 已通过本地门禁，未部署。
 
 > v1（`docs/TRADITIONAL-TO-SIMPLIFIED-DESIGN.md`）解决了「字形 + 横排」，但 OpenCC 内置词典对**两岸三地用词差异**（軟體/软件、滑鼠/鼠标、雷根/里根、窩心/暖心 等）覆盖度有限。本文为 v2 设计：**分层管线 + 自维护词典 + DeepSeek 精校兜底**。
 

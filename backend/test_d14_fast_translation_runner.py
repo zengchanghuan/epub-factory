@@ -100,6 +100,7 @@ def test_fast_translation_runner_glossary_audit():
                 glossary={"Smith": "史密斯", "London": "伦敦"},
                 device=DeviceProfile.generic,
             )
+            job_store.add(job)
             result = run_fast_translation_job(
                 job=job,
                 input_path=inp,
@@ -219,7 +220,7 @@ def test_fast_translation_runner_high_quality_context_and_review():
                 temperature=0.2,
                 device=DeviceProfile.generic,
             )
-
+            job_store.add(job)
             result = run_fast_translation_job(
                 job=job,
                 input_path=inp,
@@ -342,7 +343,7 @@ def test_fast_translation_runner_rescues_failed_chunk_queue():
                 target_lang="zh-CN",
                 device=DeviceProfile.generic,
             )
-
+            job_store.add(job)
             result = run_fast_translation_job(
                 job=job,
                 input_path=inp,
@@ -439,7 +440,7 @@ def test_fast_translation_runner_keeps_failed_chunk_after_rescue_queue_exhausted
                 target_lang="zh-CN",
                 device=DeviceProfile.generic,
             )
-
+            job_store.add(job)
             result = run_fast_translation_job(
                 job=job,
                 input_path=inp,
@@ -581,6 +582,7 @@ def test_fast_translation_runner_literary_style_polish_and_verify():
                 },
                 device=DeviceProfile.generic,
             )
+            job_store.add(job)
             result = run_fast_translation_job(
                 job=job,
                 input_path=inp,

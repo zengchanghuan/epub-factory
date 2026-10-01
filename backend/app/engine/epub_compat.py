@@ -337,7 +337,15 @@ def _preserved_get_content(item, default=None):
         xml_lang = node.get(f'{{{XML_NS}}}lang')
         if xml_lang is not None and node.get('lang') is not None:
             node.set('lang', xml_lang)
-    upgrade_legacy_html(generated, getattr(item.book, 'title', '') or '')
+    def stylesheet_loader(href):
+        parsed = urlsplit(href or '')
+        if parsed.scheme or parsed.netloc:
+            return None
+        name = posixpath.normpath(posixpath.join(posixpath.dirname(item.get_name()), unquote(parsed.path)))
+        resource = item.book.get_item_with_href(name)
+        return resource.get_content() if resource is not None and resource.get_type() == 2 else None
+
+    upgrade_legacy_html(generated, getattr(item.book, 'title', '') or '', stylesheet_loader=stylesheet_loader)
     return etree.tostring(generated, encoding='utf-8', xml_declaration=True)
 
 

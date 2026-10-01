@@ -77,6 +77,8 @@ def test_upsert_chunk_memory_store():
     from app.models import JobChunk, ChunkStatus
     from app.storage import job_store
     key = "ch9_test_job_xyz"
+    job_store.add(Job(id=key, trace_id="d7", source_filename="x.epub",
+                      input_path="/nonexistent/x.epub", output_mode=OutputMode.simplified))
     chunk = JobChunk(
         job_id=key,
         chapter_id="ch1",

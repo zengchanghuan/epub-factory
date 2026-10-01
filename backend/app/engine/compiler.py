@@ -1,10 +1,14 @@
 import os
 import time
 import re
+from html import escape
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List
+import ebooklib
 from dotenv import load_dotenv
+from billiard.exceptions import SoftTimeLimitExceeded
+from app.cancellation import JobCancelled
 
 load_dotenv()
 
@@ -74,6 +78,7 @@ class ExtremeCompiler:
         self.output_mode = output_mode
         self.traditional_variant = traditional_variant or "auto"
         self.enable_translation = enable_translation
+        self.target_lang = target_lang
         self.bilingual = bilingual
         self.glossary: dict = glossary or {}
         self.progress_callback = progress_callback or (lambda msg: None)
@@ -144,6 +149,8 @@ class ExtremeCompiler:
                     raw = content.decode("utf-8", errors="ignore") if isinstance(content, (bytes, bytearray)) else str(content)
                     soup = BeautifulSoup(raw, "html.parser")
                     texts.append(soup.get_text(separator=" "))
+                except (SoftTimeLimitExceeded, JobCancelled):
+                    raise
                 except Exception:
                     continue
 
@@ -183,6 +190,8 @@ class ExtremeCompiler:
                 ),
                 elapsed_ms,
             )
+        except (SoftTimeLimitExceeded, JobCancelled):
+            raise
         except Exception as e:
             log.warning(f"auto glossary skipped: {e}")
 
@@ -204,6 +213,10 @@ class ExtremeCompiler:
         t0 = time.monotonic()
         try:
             result = self._run_full_pipeline()
+        except (SoftTimeLimitExceeded, JobCancelled):
+            # Worker control flow is not a malformed book. Let the execution
+            # boundary retain checkpoints / release ownership, never fallback.
+            raise
         except TranslationPipelineError as exc:
             self.metrics.total_ms = (time.monotonic() - t0) * 1000
             self.final_message = str(exc)
@@ -217,6 +230,8 @@ class ExtremeCompiler:
             self.metrics.mode = "safe"
             try:
                 result = self._run_safe_mode()
+            except (SoftTimeLimitExceeded, JobCancelled):
+                raise
             except Exception as exc2:
                 print(f"❌ [Fallback] Safe mode also failed: {exc2}")
                 self.final_message = str(exc2)
@@ -303,6 +318,8 @@ class ExtremeCompiler:
                     result_content = cleaner.process(content, item_type)
                     if result_content is not None:
                         content = result_content
+                except (SoftTimeLimitExceeded, JobCancelled):
+                    raise
                 except Exception as exc:
                     self.progress_callback(
                         f"{cleaner.__class__.__name__} 处理 {file_name} 失败，已跳过：{str(exc)[:160]}"
@@ -356,7 +373,19 @@ class ExtremeCompiler:
         self.stage_callback("packaging", "开始打包")
         t = time.monotonic()
         rebuilder = TocRebuilder()
-        self.book = rebuilder.rebuild(self.book)
+        def normalize_navigation_title(title):
+            from bs4 import BeautifulSoup
+            content = self._cjk_normalizer.process(
+                f'<span>{escape(title)}</span>'.encode('utf-8'), ebooklib.ITEM_DOCUMENT)
+            return BeautifulSoup(content.decode('utf-8'), 'html.parser').get_text()
+
+        self.book = rebuilder.rebuild(
+            self.book,
+            target_lang=self.target_lang if self.enable_translation else None,
+            glossary=self.glossary if self.enable_translation else None,
+            title_normalizer=normalize_navigation_title if not self.enable_translation else None,
+            source_warnings=self.source_warnings,
+        )
         if hasattr(rebuilder, "stats"):
             self.job_stats.toc_generated += rebuilder.stats.get("toc_generated", 0)
         self.metrics.record("TocRebuilder", (time.monotonic() - t) * 1000)

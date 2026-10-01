@@ -335,6 +335,7 @@ class LedgerTests(unittest.TestCase):
             return asyncio.run(accounted_request(operation(),model=MODEL,base_url=HOST))
         with patch('app.job_runner.job_store',store),patch('app.job_runner.OUTPUT_DIR',self.root),patch('app.job_runner.execution_lease',return_value=nullcontext(N(assert_owned=lambda:None,owner='offline'))),patch('app.domain.fast_translation_runner.run_fast_translation_job',side_effect=translate),patch.object(self.ledger,'finish',side_effect=RuntimeError('db')),patch('app.job_runner.report_error'),patch('app.job_runner.notify_job_completed'),patch('app.job_runner.logger.exception'):
             run_job(job.id,'one')
+        job=store.get(job.id)  # Store reads are snapshots, never a live mutable alias.
         self.assertEqual(job.status,JobStatus.failed);self.assertEqual(job.error_code,ErrorCode.TRANSLATION_FAILED)
         self.assertEqual(operation.await_count,1)
         self.assertEqual(self.summary(job.id)['pending_reasons'],{'in_flight':1})

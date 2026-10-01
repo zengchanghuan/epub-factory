@@ -9,11 +9,12 @@
 """
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import (
-    Column, DateTime, Enum, String, Boolean, Text, Float, create_engine, event, inspect, text
+    Column, DateTime, Enum, String, Boolean, Text, Float, Integer, create_engine, event, inspect, text
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -35,6 +36,12 @@ from .models import (
     User,
 )
 from .domain.translation_attempt import restarted_translation_stats
+from .domain.payment_entitlement import restart_entitlement_reason
+from .domain.dispatch_intent import DISPATCH_FIELDS, build_dispatch_intent, completion_values, timestamp
+from .domain.payment_lifecycle_state import is_payment_expired, settlement_values, closed_values
+from .domain.execution_state import (EXECUTION_FIELDS, bounded_integer, execution_identity,
+                                     running_record, legacy_record, recovery_outbox, recovery_values, migrates_legacy_identity, unstarted_due)
+from .domain.job_write_fence import check_job_write, current_job_write_fence, reject_write, translation_stats_for_status
 
 
 # ─── ORM 模型 ────────────────────────────────────────────────────────────────
@@ -49,6 +56,35 @@ class OrderEventRecord(Base):
     event = Column(String(32), primary_key=True)
     occurred_at = Column(DateTime(timezone=True), nullable=False)
     source = Column(String(40), nullable=False)
+
+
+class DispatchRecord(Base):
+    """At-least-once queue publication; no payment or book content is stored."""
+    __tablename__ = "job_dispatch_outbox"
+
+    dispatch_id = Column(String(64), primary_key=True)
+    job_id = Column(String(32), nullable=False, index=True)
+    attempt_id = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(Float, nullable=False)
+    updated_at = Column(Float, nullable=False)
+    next_attempt_at = Column(Float, nullable=False, index=True)
+    lease_token = Column(String(32), nullable=False, default="")
+    lease_expires_at = Column(Float, nullable=False, default=0, index=True)
+    last_error = Column(Text, nullable=False, default="")
+
+
+class ExecutionRecord(Base):
+    __tablename__ = "job_executions"
+
+    execution_id = Column(String(64), primary_key=True)
+    job_id = Column(String(32), nullable=False, index=True)
+    attempt_id = Column(String(64), nullable=False)
+    owner = Column(String(128), nullable=False)
+    state = Column(String(16), nullable=False, index=True)
+    heartbeat_at = Column(Float, nullable=False, index=True)
+    recoveries = Column(Integer, nullable=False, default=0)
 
 
 class UserRecord(Base):
@@ -79,6 +115,8 @@ class JobRecord(Base):
     creator_session = Column(String(128), nullable=True)
     is_test_order = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     expected_amount = Column(String(16), nullable=True)
+    payment_entitlement_json = Column(Text, nullable=True)
+    payment_resolution_json = Column(Text, nullable=True)
     batch_id = Column(String(32), nullable=True, index=True)
     batch_index = Column(String(16), nullable=True, default="0")
     batch_size = Column(String(16), nullable=True, default="0")
@@ -259,6 +297,10 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN is_test_order BOOLEAN NOT NULL DEFAULT FALSE")
     if "expected_amount" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN expected_amount VARCHAR(16)")
+    if "payment_entitlement_json" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN payment_entitlement_json TEXT")
+    if "payment_resolution_json" not in columns:
+        migrations.append("ALTER TABLE epub_jobs ADD COLUMN payment_resolution_json TEXT")
     if "batch_id" not in columns:
         migrations.append("ALTER TABLE epub_jobs ADD COLUMN batch_id VARCHAR(32)")
     if "batch_index" not in columns:
@@ -305,6 +347,20 @@ def _record_to_job(r: JobRecord) -> Job:
     import json
     stats = QualityStats()
     translation_stats = {}
+    payment_entitlement = {}
+    payment_resolution = {}
+    try:
+        parsed_resolution = json.loads(getattr(r, "payment_resolution_json", None) or "{}")
+        if isinstance(parsed_resolution, dict):
+            payment_resolution = parsed_resolution
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed_entitlement = json.loads(getattr(r, "payment_entitlement_json", None) or "{}")
+        if isinstance(parsed_entitlement, dict):
+            payment_entitlement = parsed_entitlement
+    except (TypeError, ValueError):
+        pass
     if r.quality_stats_json:
         try:
             d = json.loads(r.quality_stats_json)
@@ -345,6 +401,8 @@ def _record_to_job(r: JobRecord) -> Job:
         creator_session=getattr(r, "creator_session", None) or "",
         is_test_order=bool(getattr(r, "is_test_order", False)),
         expected_amount=getattr(r, "expected_amount", None) or "",
+        payment_entitlement=payment_entitlement,
+        payment_resolution=payment_resolution,
         batch_id=getattr(r, "batch_id", None) or "",
         batch_index=int(getattr(r, "batch_index", None) or 0),
         batch_size=int(getattr(r, "batch_size", None) or 0),
@@ -590,6 +648,8 @@ def _job_to_record(job: Job) -> JobRecord:
         creator_session=getattr(job, "creator_session", "") or "",
         is_test_order=bool(getattr(job, "is_test_order", False)),
         expected_amount=getattr(job, "expected_amount", "") or "",
+        payment_entitlement_json=json.dumps(getattr(job, "payment_entitlement", {}) or {}),
+        payment_resolution_json=json.dumps(getattr(job, "payment_resolution", {}) or {}),
         batch_id=getattr(job, "batch_id", "") or None,
         batch_index=str(getattr(job, "batch_index", 0) or 0),
         batch_size=str(getattr(job, "batch_size", 0) or 0),
@@ -616,7 +676,8 @@ def _job_to_record(job: Job) -> JobRecord:
         enable_proper_noun=bool(getattr(job, "enable_proper_noun", True)),
         enable_precision_polish=bool(getattr(job, "enable_precision_polish", False)),
         precision_polish_order_no=getattr(job, "precision_polish_order_no", None) or None,
-        precision_polish_status="not_used",
+        # Compatibility mirror only; the persisted JSON report is authoritative.
+        precision_polish_status=((job.translation_stats or {}).get("precision_polish") or {}).get("status", "not_used"),
         polish_char_count=str(getattr(job, "polish_char_count", 0) or 0),
         user_id=getattr(job, "user_id", None),
         created_at=job.created_at,
@@ -635,8 +696,325 @@ class PersistentJobStore:
 
     def add(self, job: Job) -> None:
         with self._Session() as session:
-            session.add(_job_to_record(job))
+            record = _job_to_record(job)
+            session.add(record)
+            if job.status == JobStatus.pending:
+                self._ensure_dispatch_in_session(session, record)
             session.commit()
+            # Match the memory store's first-attempt identity for callers that
+            # retain the just-created Job instead of reading it back.
+            if job.status == JobStatus.pending:
+                job.translation_stats = _record_to_job(record).translation_stats
+
+    @staticmethod
+    def _dispatch_dict(record) -> dict:
+        return {key: getattr(record, key) for key in DISPATCH_FIELDS}
+
+    def _ensure_dispatch_in_session(self, session, record, *, now=None) -> dict:
+        """Caller holds the job row's write lock or is inserting that row."""
+        import json
+        stats, intent = build_dispatch_intent(_record_to_job(record), now=now)
+        record.translation_stats_json = json.dumps(stats, ensure_ascii=False)
+        existing = session.get(DispatchRecord, intent["dispatch_id"])
+        if existing is not None:
+            return self._dispatch_dict(existing)
+        session.add(DispatchRecord(**intent))
+        return intent
+
+    def ensure_dispatch(self, job_id: str) -> Optional[dict]:
+        """Explicit internal recovery; never scans pending as payment proof."""
+        from sqlalchemy import update
+        with self._Session() as session:
+            # A no-op conditional write serializes initialization on SQLite and
+            # PostgreSQL alike, including two callers creating the first ID.
+            claimed = session.execute(update(JobRecord).where(
+                JobRecord.id == job_id, JobRecord.status == JobStatus.pending.value,
+            ).values(status=JobStatus.pending.value))
+            if (claimed.rowcount or 0) != 1:
+                session.rollback()
+                return None
+            record = session.get(JobRecord, job_id)
+            intent = self._ensure_dispatch_in_session(session, record)
+            session.commit()
+            return dict(intent)
+
+    def claim_dispatch(self, *, job_id=None, lease_seconds=60, now=None) -> Optional[dict]:
+        from sqlalchemy import and_, or_, update
+        at = timestamp(now)
+        eligible = or_(
+            and_(DispatchRecord.status == "pending", DispatchRecord.next_attempt_at <= at),
+            and_(DispatchRecord.status == "publishing", DispatchRecord.lease_expires_at <= at),
+        )
+        # CAS, not SELECT ownership: concurrent relays can read the same row but
+        # only one wins its lease. A loser advances to another due record.
+        with self._Session() as session:
+            query = session.query(DispatchRecord.dispatch_id).filter(eligible)
+            if job_id is not None:
+                query = query.filter(DispatchRecord.job_id == job_id)
+            candidates = query.order_by(DispatchRecord.created_at, DispatchRecord.dispatch_id).limit(100).all()
+            for (dispatch_id,) in candidates:
+                token = uuid.uuid4().hex
+                result = session.execute(update(DispatchRecord).where(
+                    DispatchRecord.dispatch_id == dispatch_id, eligible,
+                ).values(status="publishing", attempts=DispatchRecord.attempts + 1,
+                         updated_at=at, lease_token=token,
+                         lease_expires_at=at + max(1.0, float(lease_seconds))))
+                if (result.rowcount or 0) == 1:
+                    record = session.get(DispatchRecord, dispatch_id)
+                    intent = self._dispatch_dict(record)
+                    session.commit()
+                    return intent
+            session.rollback()
+        return None
+
+    def finish_dispatch(self, dispatch_id, lease_token, *, outcome="sent", error="", retry_delay_seconds=5, now=None) -> bool:
+        from sqlalchemy import update
+        values = completion_values(outcome=outcome, error=error, retry_delay_seconds=retry_delay_seconds, now=now)
+        if not lease_token:
+            return False
+        with self._Session() as session:
+            result = session.execute(update(DispatchRecord).where(
+                DispatchRecord.dispatch_id == dispatch_id,
+                DispatchRecord.status == "publishing", DispatchRecord.lease_token == lease_token,
+            ).values(**values))
+            session.commit()
+            return (result.rowcount or 0) == 1
+
+    def list_dispatches(self, job_id=None, limit=100) -> list[dict]:
+        with self._Session() as session:
+            query = session.query(DispatchRecord)
+            if job_id is not None:
+                query = query.filter(DispatchRecord.job_id == job_id)
+            rows = query.order_by(DispatchRecord.created_at, DispatchRecord.dispatch_id).limit(max(0, int(limit))).all()
+            return [self._dispatch_dict(record) for record in rows]
+
+    def get_dispatch(self, dispatch_id: str) -> Optional[dict]:
+        with self._Session() as session:
+            record = session.get(DispatchRecord, dispatch_id)
+            return self._dispatch_dict(record) if record is not None else None
+
+    @staticmethod
+    def _execution_dict(record):
+        return {field: getattr(record, field) for field in EXECUTION_FIELDS}
+
+    def get_execution(self, job_id, attempt_id) -> Optional[dict]:
+        from .domain.dispatch_intent import dispatch_identity
+        with self._Session() as session:
+            row = session.get(ExecutionRecord, dispatch_identity(job_id, attempt_id))
+            return self._execution_dict(row) if row else None
+
+    @staticmethod
+    def _lock_execution_job(session, job_id, *, status=None):
+        from sqlalchemy import update
+        predicate = [JobRecord.id == job_id]
+        if status is not None:
+            predicate.append(JobRecord.status == status.value)
+        locked = session.execute(update(JobRecord).where(*predicate).values(status=JobRecord.status))
+        if (locked.rowcount or 0) != 1:
+            return None
+        return session.get(JobRecord, job_id, populate_existing=True)
+
+    def _check_write_locked(self, session, record, job_id, **expectations):
+        from .domain.dispatch_intent import dispatch_identity
+        job = _record_to_job(record) if record is not None else None
+        execution = (session.get(ExecutionRecord, dispatch_identity(job_id, execution_identity(job)))
+                     if job is not None and current_job_write_fence() is not None else None)
+        return check_job_write(job, job_id, execution=self._execution_dict(execution) if execution else None,
+                               **expectations)
+
+    def begin_execution(self, job_id, attempt_id, owner, *, now=None) -> bool:
+        from .domain.dispatch_intent import dispatch_identity
+        values = running_record(job_id, attempt_id, owner, now=now)
+        with self._Session() as session:
+            job = self._lock_execution_job(session, job_id, status=JobStatus.pending)
+            if job is None or execution_identity(_record_to_job(job)) != attempt_id:
+                session.rollback()
+                return False
+            record = session.get(ExecutionRecord, values["execution_id"])
+            if record is None:
+                if migrates_legacy_identity(_record_to_job(job), attempt_id):
+                    old_key = dispatch_identity(job_id, "")
+                    legacy = session.get(ExecutionRecord, old_key)
+                    if legacy is not None and legacy.state == "queued" and not legacy.owner:
+                        values["recoveries"] = legacy.recoveries
+                        legacy.state, legacy.heartbeat_at = "finished", values["heartbeat_at"]
+                        old_outbox = session.get(DispatchRecord, old_key)
+                        obsolete = recovery_outbox(job_id, "", exhausted=True, now=values["heartbeat_at"],
+                            existing=self._dispatch_dict(old_outbox) if old_outbox else None)
+                        obsolete["last_error"] = "legacy execution identity migrated"
+                        if old_outbox is None:
+                            session.add(DispatchRecord(**obsolete))
+                        else:
+                            for field, value in obsolete.items():
+                                setattr(old_outbox, field, value)
+                session.add(ExecutionRecord(**values))
+            else:
+                values["recoveries"] = record.recoveries
+                for field, value in values.items():
+                    setattr(record, field, value)
+            job.status, job.message = JobStatus.running.value, "开始转换"
+            job.updated_at = datetime.fromtimestamp(values["heartbeat_at"], timezone.utc)
+            session.commit()
+            return True
+
+    def heartbeat_execution(self, job_id, attempt_id, owner, *, now=None) -> bool:
+        from .domain.dispatch_intent import dispatch_identity
+        with self._Session() as session:
+            job = self._lock_execution_job(session, job_id, status=JobStatus.running)
+            row = session.get(ExecutionRecord, dispatch_identity(job_id, attempt_id))
+            if (job is None or execution_identity(_record_to_job(job)) != attempt_id or row is None
+                    or row.state != "running" or not owner or row.owner != owner):
+                session.rollback()
+                return False
+            row.heartbeat_at = timestamp(now)
+            session.commit()
+            return True
+
+    def finish_execution(self, job_id, attempt_id, owner, *, now=None) -> bool:
+        from .domain.dispatch_intent import dispatch_identity
+        with self._Session() as session:
+            job = self._lock_execution_job(session, job_id)
+            row = session.get(ExecutionRecord, dispatch_identity(job_id, attempt_id))
+            if (job is None or job.status not in {JobStatus.success.value, JobStatus.failed.value, JobStatus.cancelled.value}
+                    or execution_identity(_record_to_job(job)) != attempt_id or row is None
+                    or row.state != "running" or not owner or row.owner != owner):
+                session.rollback()
+                return False
+            row.state, row.owner, row.heartbeat_at = "finished", "", timestamp(now)
+            session.commit()
+            return True
+
+    def list_stale_executions(self, *, stale_before, limit=20) -> list[dict]:
+        from .domain.dispatch_intent import dispatch_identity
+        bound = bounded_integer(limit, name="limit", minimum=1, maximum=100)
+        cutoff = timestamp(stale_before)
+        with self._Session() as session:
+            jobs = session.query(JobRecord).filter_by(status=JobStatus.running.value).all()
+            records = session.query(ExecutionRecord).join(JobRecord, JobRecord.id == ExecutionRecord.job_id).filter(
+                JobRecord.status == JobStatus.running.value).all()
+            indexed = {row.execution_id: row for row in records}
+            stale = []
+            for record in jobs:
+                job = _record_to_job(record)
+                row = indexed.get(dispatch_identity(job.id, execution_identity(job)))
+                candidate = {**self._execution_dict(row), "legacy": False} if row else legacy_record(job)
+                if candidate["state"] == "running" and candidate["heartbeat_at"] <= cutoff:
+                    stale.append(candidate)
+            stale.sort(key=lambda row: (row["heartbeat_at"], row["execution_id"]))
+            return stale[:bound]
+
+    def recover_execution(self, job_id, attempt_id, owner, *, stale_before, now=None, max_recoveries=2) -> str:
+        """External execution lease is required in addition to this DB fencing."""
+        import json
+        from .domain.dispatch_intent import dispatch_identity
+        cap = bounded_integer(max_recoveries, name="max_recoveries", minimum=0, maximum=10)
+        at, cutoff = timestamp(now), timestamp(stale_before)
+        with self._Session() as session:
+            job = self._lock_execution_job(session, job_id, status=JobStatus.running)
+            if job is None or execution_identity(_record_to_job(job)) != attempt_id:
+                session.rollback()
+                return "unchanged"
+            key = dispatch_identity(job_id, attempt_id)
+            execution = session.get(ExecutionRecord, key)
+            row = self._execution_dict(execution) if execution else legacy_record(_record_to_job(job))
+            if row["state"] != "running" or row["owner"] != owner or row["heartbeat_at"] > cutoff:
+                session.rollback()
+                return "unchanged"
+            exhausted = row["recoveries"] >= cap
+            existing_outbox = session.get(DispatchRecord, key)
+            outbox = recovery_outbox(job_id, attempt_id, exhausted=exhausted, now=at,
+                                     existing=self._dispatch_dict(existing_outbox) if existing_outbox else None)
+            values = recovery_values(_record_to_job(job), exhausted=exhausted,
+                                     now=datetime.fromtimestamp(at, timezone.utc))
+            for field, value in values.items():
+                if field == "translation_stats":
+                    job.translation_stats_json = json.dumps(value, ensure_ascii=False)
+                    if isinstance(value.get("precision_polish"), dict):
+                        job.precision_polish_status = value["precision_polish"].get("status") or "not_used"
+                else:
+                    setattr(job, field, value)
+            execution_values = {field: row[field] for field in EXECUTION_FIELDS}
+            execution_values.update(state="exhausted" if exhausted else "queued", owner="", heartbeat_at=at,
+                                    recoveries=row["recoveries"] if exhausted else row["recoveries"] + 1)
+            if execution is None:
+                session.add(ExecutionRecord(**execution_values))
+            else:
+                for field, value in execution_values.items():
+                    setattr(execution, field, value)
+            if existing_outbox is None:
+                session.add(DispatchRecord(**outbox))
+            else:
+                for field, value in outbox.items():
+                    setattr(existing_outbox, field, value)
+            session.commit()
+            return "exhausted" if exhausted else "recovered"
+
+    def list_unstarted_dispatches(self, *, now=None, grace_seconds=3600, limit=20) -> list[dict]:
+        grace = bounded_integer(grace_seconds, name="grace_seconds", minimum=600, maximum=86400)
+        bound = bounded_integer(limit, name="limit", minimum=1, maximum=100)
+        at = timestamp(now)
+        with self._Session() as session:
+            candidates = session.query(DispatchRecord, JobRecord).join(JobRecord, JobRecord.id == DispatchRecord.job_id).filter(
+                JobRecord.status == JobStatus.pending.value, DispatchRecord.status == "sent",
+                DispatchRecord.updated_at <= at - grace).order_by(DispatchRecord.updated_at, DispatchRecord.dispatch_id)
+            rows = []
+            for dispatch, job in candidates.yield_per(100):
+                intent = self._dispatch_dict(dispatch)
+                if execution_identity(_record_to_job(job)) == intent["attempt_id"] and unstarted_due(intent, now=at, grace_seconds=grace):
+                    rows.append(intent)
+                    if len(rows) >= bound:
+                        break
+            return rows
+
+    def rearm_unstarted_dispatch(self, job_id, attempt_id, *, sent_at, now=None, grace_seconds=3600) -> bool:
+        """Exact attempt/sent-version CAS, while caller holds the external lease."""
+        from sqlalchemy import update
+        from .domain.dispatch_intent import dispatch_identity
+        grace = bounded_integer(grace_seconds, name="grace_seconds", minimum=600, maximum=86400)
+        at, expected_at = timestamp(now), timestamp(sent_at)
+        with self._Session() as session:
+            job = self._lock_execution_job(session, job_id, status=JobStatus.pending)
+            if job is None or execution_identity(_record_to_job(job)) != attempt_id:
+                session.rollback()
+                return False
+            key = dispatch_identity(job_id, attempt_id)
+            row = session.get(DispatchRecord, key)
+            if row is None or row.updated_at != expected_at or not unstarted_due(self._dispatch_dict(row), now=at, grace_seconds=grace):
+                session.rollback()
+                return False
+            values = recovery_outbox(job_id, attempt_id, exhausted=False, now=at, existing=self._dispatch_dict(row))
+            # Publisher completions don't lock jobs, so also CAS the outbox's
+            # observed status and timestamp rather than relying on the job lock.
+            changed = session.execute(update(DispatchRecord).where(
+                DispatchRecord.dispatch_id == key, DispatchRecord.status == "sent", DispatchRecord.updated_at == expected_at,
+            ).values(**values))
+            session.commit()
+            return (changed.rowcount or 0) == 1
+
+    def save_payment_entitlement(self, job_id: str, entitlement: dict, *, expected: dict) -> Optional[Job]:
+        """CAS purchase facts; payment migration must not race a newer snapshot."""
+        import json
+        from sqlalchemy import update
+        with self._Session() as session:
+            record = session.get(JobRecord, job_id)
+            if record is None:
+                return None
+            raw = record.payment_entitlement_json
+            try:
+                current = json.loads(raw or "{}")
+            except (ValueError, TypeError):
+                return _record_to_job(record)
+            if current != expected:
+                return _record_to_job(record)
+            values = {"payment_entitlement_json": json.dumps(entitlement)}
+            if entitlement.get("source") == "server_test_bypass":
+                values["is_test_order"] = True
+            session.execute(update(JobRecord).where(
+                JobRecord.id == job_id, JobRecord.payment_entitlement_json == raw,
+            ).values(**values))
+            session.commit()
+            session.expire_all()
+            return _record_to_job(session.get(JobRecord, job_id))
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._Session() as session:
@@ -707,6 +1085,8 @@ class PersistentJobStore:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
+            if (result.rowcount or 0) == 1:
+                self._ensure_dispatch_in_session(session, session.get(JobRecord, job_id))
             session.commit()
             return (result.rowcount or 0) == 1
 
@@ -715,6 +1095,11 @@ class PersistentJobStore:
         from sqlalchemy import update
         with self._Session() as session:
             now = datetime.now(timezone.utc)
+            # Locking the leader serializes callbacks. Remember only previously
+            # unpaid children: unrelated old pending rows are not recovered here.
+            pending_ids = [row[0] for row in session.query(JobRecord.id).filter(
+                JobRecord.batch_id == batch_id, JobRecord.status == JobStatus.pending_payment.value,
+            ).all()]
             leader = session.execute(
                 update(JobRecord)
                 .where(JobRecord.batch_id == batch_id)
@@ -739,6 +1124,10 @@ class PersistentJobStore:
                     updated_at=now,
                 )
             )
+            for job_id in pending_ids:
+                record = session.get(JobRecord, job_id)
+                if record is not None and record.status == JobStatus.pending.value:
+                    self._ensure_dispatch_in_session(session, record, now=now)
             session.commit()
             return True
 
@@ -763,38 +1152,94 @@ class PersistentJobStore:
             )
             return [_record_to_job(r) for r in rows]
 
-    def mark_payment_timeout(self, job_id: str) -> bool:
-        """将超时未支付任务标记为 cancelled。"""
-        from sqlalchemy import update
+    def list_payment_reconciliation_candidates(self, min_age_minutes: int = 30) -> list:
+        from sqlalchemy import and_, or_
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=min_age_minutes)
         with self._Session() as session:
-            result = session.execute(
-                update(JobRecord)
-                .where(JobRecord.id == job_id)
-                .where(JobRecord.status == JobStatus.pending_payment.value)
-                .values(
-                    status=JobStatus.cancelled.value,
-                    message="支付超时，订单已关闭",
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            session.commit()
-            return (result.rowcount or 0) == 1
+            records = session.query(JobRecord).filter(or_(
+                and_(JobRecord.status == JobStatus.pending_payment.value, JobRecord.created_at < cutoff),
+                JobRecord.status == JobStatus.cancelled.value,
+            )).order_by(JobRecord.created_at).all()
+            jobs = [_record_to_job(record) for record in records]
+            return [job for job in jobs if job.status == JobStatus.pending_payment or is_payment_expired(job)]
 
-    def mark_batch_payment_timeout(self, batch_id: str) -> int:
+    @staticmethod
+    def _apply_payment_values(record, values):
+        import json
+        for field, value in values.items():
+            if field == "payment_resolution":
+                record.payment_resolution_json = json.dumps(value, ensure_ascii=False)
+            elif field == "status":
+                record.status = value.value
+            else:
+                setattr(record, field, value)
+
+    def settle_verified_payment(self, job_id: str, *, batch_id="", source="verified_webhook", amount="") -> dict:
+        """Serialize verified receipt disposition and its outbox in one transaction."""
+        from sqlalchemy import update
+        result = {"released": [], "review": [], "unchanged": []}
+        with self._Session() as session:
+            predicate = [JobRecord.id == job_id]
+            if batch_id:
+                predicate.extend([JobRecord.batch_id == batch_id, JobRecord.batch_index == "0"])
+            # No-op write locks work on both SQLite and PostgreSQL. Read only
+            # after acquiring the lock so a concurrent verified close is seen.
+            locked = session.execute(update(JobRecord).where(*predicate).values(status=JobRecord.status))
+            if (locked.rowcount or 0) != 1:
+                session.rollback()
+                return result
+            if batch_id:
+                session.execute(update(JobRecord).where(JobRecord.batch_id == batch_id).values(status=JobRecord.status))
+                records = session.query(JobRecord).filter_by(batch_id=batch_id).all()
+                records.sort(key=lambda record: (int(record.batch_index or 0), record.id))
+            else:
+                records = [session.get(JobRecord, job_id)]
+            now = datetime.now(timezone.utc)
+            for record in records:
+                action, values = settlement_values(_record_to_job(record), source=source, amount=amount, now=now)
+                self._apply_payment_values(record, values)
+                if action == "released":
+                    self._ensure_dispatch_in_session(session, record, now=now)
+                result[action].append(record.id)
+            session.commit()
+            return result
+
+    def mark_payment_timeout(self, job_id: str, *, gateway_confirmed=False) -> bool:
+        """Only an explicitly verified gateway close can expire a waiting order."""
+        if gateway_confirmed is not True:
+            return False
         from sqlalchemy import update
         with self._Session() as session:
-            result = session.execute(
-                update(JobRecord)
-                .where(JobRecord.batch_id == batch_id)
-                .where(JobRecord.status == JobStatus.pending_payment.value)
-                .values(
-                    status=JobStatus.cancelled.value,
-                    message="支付超时，批次订单已关闭",
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
+            locked = session.execute(update(JobRecord).where(
+                JobRecord.id == job_id, JobRecord.status == JobStatus.pending_payment.value,
+            ).values(status=JobRecord.status))
+            if (locked.rowcount or 0) != 1:
+                session.rollback()
+                return False
+            record = session.get(JobRecord, job_id)
+            self._apply_payment_values(record, closed_values(_record_to_job(record)))
             session.commit()
-            return int(result.rowcount or 0)
+            return True
+
+    def mark_batch_payment_timeout(self, batch_id: str, *, gateway_confirmed=False) -> int:
+        if gateway_confirmed is not True:
+            return 0
+        from sqlalchemy import update
+        with self._Session() as session:
+            # Same leader-first lock order as settlement avoids reversing locks
+            # when a gateway close and successful-payment callback race.
+            session.execute(update(JobRecord).where(
+                JobRecord.batch_id == batch_id, JobRecord.batch_index == "0",
+            ).values(status=JobRecord.status))
+            session.execute(update(JobRecord).where(
+                JobRecord.batch_id == batch_id, JobRecord.status == JobStatus.pending_payment.value,
+            ).values(status=JobRecord.status))
+            records = session.query(JobRecord).filter_by(batch_id=batch_id, status=JobStatus.pending_payment.value).all()
+            now = datetime.now(timezone.utc)
+            for record in records:
+                self._apply_payment_values(record, closed_values(_record_to_job(record), batch=True, now=now))
+            session.commit()
+            return len(records)
 
     def update_status(
         self,
@@ -808,64 +1253,56 @@ class PersistentJobStore:
         metrics_summary: Optional[str] = None,
         allow_cancelled_transition: bool = False,
         expected_attempt_id: Optional[str] = None,
+        expected_statuses=None,
+        expected_updated_at=None,
     ) -> Optional[Job]:
+        import json
+        from sqlalchemy import exists, select, update
         with self._Session() as session:
-            r = session.get(JobRecord, job_id)
-            if not r:
-                return None
-            if expected_attempt_id:
-                import json
-                current_stats = {}
-                try:
-                    current_stats = json.loads(r.translation_stats_json or "{}")
-                except Exception:
-                    current_stats = {}
-                if str((current_stats or {}).get("attempt_id") or "") != expected_attempt_id:
-                    return _record_to_job(r)
+            r = self._lock_execution_job(session, job_id)
+            if not self._check_write_locked(session, r, job_id, expected_attempt_id=expected_attempt_id,
+                                            expected_statuses=expected_statuses, expected_updated_at=expected_updated_at,
+                                            translation_stats=translation_stats):
+                return _record_to_job(r) if r else None
             if r.status == JobStatus.cancelled.value and status != JobStatus.cancelled and not allow_cancelled_transition:
                 return _record_to_job(r)
-            r.status = status.value
-            r.message = message
-            r.error_code = error_code
+            predicate = [JobRecord.id == job_id, JobRecord.status == r.status,
+                         JobRecord.updated_at == r.updated_at, JobRecord.translation_stats_json == r.translation_stats_json]
+            fence = current_job_write_fence()
+            if fence is not None:
+                predicate.append(exists(select(ExecutionRecord.execution_id).where(
+                    ExecutionRecord.job_id == job_id, ExecutionRecord.attempt_id == fence.attempt_id,
+                    ExecutionRecord.state == "running", ExecutionRecord.owner == fence.execution_owner)))
+            values = {"status": status.value, "message": message, "error_code": error_code,
+                      "updated_at": datetime.now(timezone.utc)}
             if output_path:
-                r.output_path = output_path
+                values["output_path"] = output_path
             if quality_stats:
-                import json
-                r.quality_stats_json = json.dumps(quality_stats.to_dict())
-            if translation_stats is not None:
-                import json
-                existing_stats = {}
-                if r.translation_stats_json:
-                    try:
-                        existing_stats = json.loads(r.translation_stats_json)
-                        if not isinstance(existing_stats, dict):
-                            existing_stats = {}
-                    except Exception:
-                        existing_stats = {}
-                merged = dict(existing_stats)
-                if isinstance(translation_stats, dict):
-                    merged.update(translation_stats)
-                else:
-                    merged = translation_stats
-                r.translation_stats_json = json.dumps(merged)
+                values["quality_stats_json"] = json.dumps(quality_stats.to_dict())
+            merged = translation_stats_for_status(_record_to_job(r), status, translation_stats)
+            if merged is not None:
+                values["translation_stats_json"] = json.dumps(merged)
+                if isinstance(merged, dict) and isinstance(merged.get("precision_polish"), dict):
+                    values["precision_polish_status"] = merged["precision_polish"].get("status") or "not_used"
             if metrics_summary is not None:
-                r.metrics_summary = metrics_summary
-            r.updated_at = datetime.now(timezone.utc)
+                values["metrics_summary"] = metrics_summary
+            changed = session.execute(update(JobRecord).where(*predicate).values(**values)
+                                      .execution_options(synchronize_session=False))
+            if (changed.rowcount or 0) != 1:
+                session.rollback()
+                reject_write()
+                return self.get(job_id)
             session.commit()
             session.refresh(r)
             return _record_to_job(r)
 
-    def upsert_chapter(self, chapter: JobChapter, expected_attempt_id: Optional[str] = None) -> JobChapter:
+    def upsert_chapter(self, chapter: JobChapter, expected_attempt_id: Optional[str] = None, *,
+                       expected_statuses=None, expected_updated_at=None) -> Optional[JobChapter]:
         with self._Session() as session:
-            if expected_attempt_id:
-                import json
-                job_record = session.get(JobRecord, chapter.job_id)
-                try:
-                    job_stats = json.loads(job_record.translation_stats_json or "{}") if job_record else {}
-                except Exception:
-                    job_stats = {}
-                if str((job_stats or {}).get("attempt_id") or "") != expected_attempt_id:
-                    return chapter
+            job_record = self._lock_execution_job(session, chapter.job_id)
+            if not self._check_write_locked(session, job_record, chapter.job_id, expected_attempt_id=expected_attempt_id,
+                                            expected_statuses=expected_statuses, expected_updated_at=expected_updated_at):
+                return None
             record_id = f"{chapter.job_id}:{chapter.chapter_id}"
             existing = session.get(ChapterRecord, record_id)
             if existing:
@@ -893,17 +1330,13 @@ class PersistentJobStore:
             rows = session.query(ChapterRecord).filter_by(job_id=job_id).order_by(ChapterRecord.chapter_id).all()
             return [_record_to_chapter(r) for r in rows]
 
-    def upsert_chunk(self, chunk: JobChunk, expected_attempt_id: Optional[str] = None) -> JobChunk:
+    def upsert_chunk(self, chunk: JobChunk, expected_attempt_id: Optional[str] = None, *,
+                     expected_statuses=None, expected_updated_at=None) -> Optional[JobChunk]:
         with self._Session() as session:
-            if expected_attempt_id:
-                import json
-                job_record = session.get(JobRecord, chunk.job_id)
-                try:
-                    job_stats = json.loads(job_record.translation_stats_json or "{}") if job_record else {}
-                except Exception:
-                    job_stats = {}
-                if str((job_stats or {}).get("attempt_id") or "") != expected_attempt_id:
-                    return chunk
+            job_record = self._lock_execution_job(session, chunk.job_id)
+            if not self._check_write_locked(session, job_record, chunk.job_id, expected_attempt_id=expected_attempt_id,
+                                            expected_statuses=expected_statuses, expected_updated_at=expected_updated_at):
+                return None
             record_id = f"{chunk.job_id}:{chunk.chunk_id}"
             existing = session.get(ChunkRecord, record_id)
             if existing:
@@ -934,12 +1367,18 @@ class PersistentJobStore:
             session.refresh(record)
             return _record_to_chunk(record)
 
-    def clear_translation_progress(self, job_id: str) -> None:
+    def clear_translation_progress(self, job_id: str, *, expected_attempt_id=None, expected_statuses=None,
+                                   expected_updated_at=None) -> bool:
         from sqlalchemy import delete
         with self._Session() as session:
+            job_record = self._lock_execution_job(session, job_id)
+            if not self._check_write_locked(session, job_record, job_id, expected_attempt_id=expected_attempt_id,
+                                            expected_statuses=expected_statuses, expected_updated_at=expected_updated_at):
+                return False
             session.execute(delete(ChunkRecord).where(ChunkRecord.job_id == job_id))
             session.execute(delete(ChapterRecord).where(ChapterRecord.job_id == job_id))
             session.commit()
+            return True
 
     def restart_translation_attempt(
         self,
@@ -969,7 +1408,7 @@ class PersistentJobStore:
         if failed_only:
             terminal_statuses = [JobStatus.failed.value]
         with self._Session() as session:
-            record = session.get(JobRecord, job_id)
+            record = self._lock_execution_job(session, job_id)
             if not record:
                 return None, "missing"
             if record.status not in terminal_statuses:
@@ -981,6 +1420,11 @@ class PersistentJobStore:
                               else record.updated_at.replace(tzinfo=timezone.utc))
                 if record_utc != expected_utc:
                     return _record_to_job(record), "active"
+            entitlement_error = restart_entitlement_reason(
+                _record_to_job(record), translation_quality=translation_quality, translation_model=translation_model,
+            )
+            if entitlement_error:
+                return _record_to_job(record), entitlement_error
             try:
                 previous = json.loads(record.translation_stats_json or "{}")
                 if not isinstance(previous, dict):
@@ -1011,6 +1455,7 @@ class PersistentJobStore:
                     output_path=None,
                     quality_stats_json="{}",
                     translation_stats_json=json.dumps(stats, ensure_ascii=False),
+                    precision_polish_status=(stats.get("precision_polish") or {}).get("status", "not_used"),
                     metrics_summary="",
                     translation_quality=translation_quality or record.translation_quality or "standard",
                     cache_policy=cache_policy or record.cache_policy or "reuse",
@@ -1026,6 +1471,8 @@ class PersistentJobStore:
                 return refreshed, "active"
             session.execute(delete(ChunkRecord).where(ChunkRecord.job_id == job_id))
             session.execute(delete(ChapterRecord).where(ChapterRecord.job_id == job_id))
+            session.expire_all()
+            self._ensure_dispatch_in_session(session, session.get(JobRecord, job_id), now=started_at)
             session.commit()
             refreshed = session.get(JobRecord, job_id)
             return (_record_to_job(refreshed) if refreshed else None), "ok"
@@ -1096,6 +1543,8 @@ class PersistentJobStore:
             if (result.rowcount or 0) != 1:
                 session.rollback()
                 return None
+            if status == JobStatus.pending:
+                self._ensure_dispatch_in_session(session, session.get(JobRecord, job_id))
             session.commit()
             record = session.get(JobRecord, job_id)
             return _record_to_job(record) if record else None
@@ -1128,8 +1577,13 @@ class PersistentJobStore:
             rows = query.order_by(ChunkRecord.chapter_id, ChunkRecord.sequence).all()
             return [_record_to_chunk(r) for r in rows]
 
-    def add_stage(self, stage: JobStage) -> JobStage:
+    def add_stage(self, stage: JobStage, *, expected_attempt_id=None, expected_statuses=None,
+                  expected_updated_at=None) -> Optional[JobStage]:
         with self._Session() as session:
+            job_record = self._lock_execution_job(session, stage.job_id)
+            if not self._check_write_locked(session, job_record, stage.job_id, expected_attempt_id=expected_attempt_id,
+                                            expected_statuses=expected_statuses, expected_updated_at=expected_updated_at):
+                return None
             record = _stage_to_record(stage)
             session.add(record)
             session.commit()

@@ -26,10 +26,19 @@ from app.models import ChunkStatus, ErrorCode, Job, JobChapter, JobChunk, JobSta
 from app.storage import job_store
 from app.job_runner import run_job
 from app.domain.translation_attempt import initial_translation_stats
+from app.domain.payment_entitlement import quote_entitlement
 from test_epub_fixture import minimal_epub_bytes
 
 # 创建任务需通过付款前容器/资源检查，使用无客户内容的合法 EPUB。
 MINIMAL_EPUB_BYTES = minimal_epub_bytes()
+
+
+def _add_paid_job(job):
+    """An explicit trusted-payment fixture; execution status is not a receipt."""
+    job.payment_entitlement = quote_entitlement(job)
+    job.payment_entitlement.update(state="paid", source="verified_query", amount=job.expected_amount or "5.99",
+                                   authorized_at=datetime.now(timezone.utc).isoformat())
+    job_store.add(job)
 
 
 class TestApiV2Skeleton(unittest.TestCase):
@@ -604,7 +613,7 @@ class TestApiV2Skeleton(unittest.TestCase):
                 "translation_attempt": 1,
             },
         )
-        job_store.add(job)
+        _add_paid_job(job)
 
         with patch.object(main_module, "_enqueue_conversion") as enqueue:
             res = self.client.post(
@@ -649,7 +658,7 @@ class TestApiV2Skeleton(unittest.TestCase):
                 "delivery_gate_failed": True,
             },
         )
-        job_store.add(job)
+        _add_paid_job(job)
 
         with patch.object(main_module, "_enqueue_conversion") as enqueue:
             res = self.client.post(
@@ -687,7 +696,7 @@ class TestApiV2Skeleton(unittest.TestCase):
                 "translation_attempt": 1,
             },
         )
-        job_store.add(job)
+        _add_paid_job(job)
 
         with patch.object(main_module, "_enqueue_conversion") as enqueue:
             res = self.client.post(
@@ -721,7 +730,7 @@ class TestApiV2Skeleton(unittest.TestCase):
             enable_translation=True,
             translation_stats={"free_retry_count": 1, "translation_attempt": 2},
         )
-        job_store.add(job)
+        _add_paid_job(job)
         job_store.upsert_chunk(JobChunk(
             job_id=job.id,
             chapter_id="c1",
@@ -768,7 +777,7 @@ class TestApiV2Skeleton(unittest.TestCase):
             translation_stats=old_stats,
             metrics_summary="old metrics",
         )
-        job_store.add(job)
+        _add_paid_job(job)
 
         with patch.object(main_module, "_enqueue_conversion"):
             res = self.client.post(

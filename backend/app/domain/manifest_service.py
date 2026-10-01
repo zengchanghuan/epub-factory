@@ -5,6 +5,8 @@ EPUB Manifest 服务：解包后按文件识别正文/非正文，生成标准 C
 """
 
 import re
+import hashlib
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 from ebooklib import epub
@@ -85,6 +87,29 @@ def _chapter_id_from_path(file_path: str) -> str:
     return safe or "chapter"
 
 
+def _unique_chapter_ids(file_paths: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Keep old unique IDs; resolve every sanitized-stem collision by full path."""
+    if len(file_paths) != len(set(file_paths)):
+        raise ValueError('Duplicate EPUB resource path in manifest')
+    bases = {path: _chapter_id_from_path(path) for path in file_paths}
+    counts = Counter(bases.values())
+    ambiguous = sorted(name for name, count in counts.items() if count > 1)
+    result = {path: name for path, name in bases.items() if counts[name] == 1 and len(name) <= 64}
+    used = set(result.values())
+    for path in sorted(set(file_paths) - result.keys()):
+        base = bases[path]
+        for nonce in range(len(file_paths) + 1):
+            source = path if not nonce else f'{path}\0{nonce}'
+            candidate = base[:14] + '_' + hashlib.sha256(source.encode('utf-8')).hexdigest()[:49]
+            if candidate not in used:
+                result[path] = candidate
+                used.add(candidate)
+                break
+        else:
+            raise ValueError('Unable to allocate unique EPUB chapter identities')
+    return result, ambiguous
+
+
 def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
     """
     解包 EPUB，识别每章类型，提取正文（及可选非正文）的 chunk，生成标准 manifest。
@@ -107,6 +132,9 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         "source_placeholder_documents_skipped": 0,
     }
     items = list(book.get_items())
+    chapter_ids, ambiguous_ids = _unique_chapter_ids([
+        item.get_name() for item in items if item is not None and item.get_type() == 9 and item.get_name()
+    ])
     # 仅处理文档类型（9 = ITEM_DOCUMENT），不处理 CSS 等
     for item in items:
         if item is None:
@@ -125,14 +153,14 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
                 content = content.encode("utf-8", errors="replace")
         except Exception:
             chapters.append({
-                "chapter_id": _chapter_id_from_path(file_name),
+                "chapter_id": chapter_ids[file_name],
                 "file_path": file_name,
                 "chapter_kind": kind.value,
                 "chunks": [],
             })
             continue
 
-        chapter_id = _chapter_id_from_path(file_name)
+        chapter_id = chapter_ids[file_name]
         # 仅正文提取 chunk，非正文保留空 chunks 便于 Reduce 按 file_path 回写
         chunk_list, extraction_stats = extract_chunks_with_stats(content, chapter_id)
         manifest_stats["image_note_chunks_skipped"] += int(extraction_stats.get("image_note_chunks_skipped") or 0)
@@ -164,4 +192,7 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
         })
 
     return {"job_id": job_id, "chapters": chapters, "stats": manifest_stats,
+            "ambiguous_legacy_chapter_ids": ambiguous_ids,
+            "renamed_legacy_chapter_ids": sorted({_chapter_id_from_path(path) for path, identity in chapter_ids.items()
+                                                   if identity != _chapter_id_from_path(path)}),
             "source_warnings": list(getattr(unpacker, "source_warnings", []) or [])}

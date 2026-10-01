@@ -269,6 +269,14 @@ def build_translation_qa_report(
         "source_warnings": source_warnings,
     }
 
+    if error_code == "WORKER_RECOVERY_EXHAUSTED":
+        report.update(status="failed", delivery_status="failed", score=None,
+                      can_deliver=False, retryable=(report["max_free_retries"] < 0
+                                                   or report["free_retry_count"] < report["max_free_retries"]),
+                      summary="执行器多次失联，自动恢复已停止，请手动重试或联系管理员。")
+        _flag(report, "worker_recovery_exhausted", report["summary"])
+        return report
+
     if error_code == "TRANSLATION_PROVIDER_UNAVAILABLE" or stats.get("provider_blocked"):
         report.update(status="blocked", delivery_status="blocked", score=None,
                       retryable=(report["max_free_retries"] < 0

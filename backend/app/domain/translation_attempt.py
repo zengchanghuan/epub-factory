@@ -124,6 +124,25 @@ def restarted_translation_stats(
     source_warnings = old.get("source_warnings")
     if isinstance(source_warnings, list):
         stats["source_warnings"] = list(source_warnings)
+    # The quoted source/adapter identity is not an execution counter. Preserve
+    # it so a retry cannot silently translate a replaced upload.
+    translation_input = old.get("translation_input")
+    if isinstance(translation_input, dict):
+        stats["translation_input"] = dict(translation_input)
+    # An add-on's frozen quote survives an administrator retry; execution
+    # counters and failure/delivery flags belong only to the previous attempt.
+    precision = old.get("precision_polish")
+    if isinstance(precision, dict):
+        stats["precision_polish"] = {
+            key: precision[key] for key in ("version", "order_no", "char_count", "quoted_amount")
+            if key in precision
+        }
+        stats["precision_polish"].update({
+            "status": "pending", "documents_scanned": 0, "paragraphs_scanned": 0,
+            "candidates": 0, "reviewed": 0, "changed": 0, "unchanged": 0,
+            "api_calls": 0, "retries": 0, "failed": 0, "reason": "",
+            "refund_required": False, "validation_passed": False,
+        })
     restart_summary = f"{action_label}已排队"
     stats["qa_report"] = {
         "status": "retrying",

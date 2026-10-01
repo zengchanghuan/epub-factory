@@ -18,16 +18,17 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.store = JobStore()
         self.stack.enter_context(patch.object(reconcile, "job_store", self.store))
         self.query = self.stack.enter_context(patch.object(reconcile, "query_verified_trade"))
+        self.close = self.stack.enter_context(patch.object(reconcile, "close_verified_trade", return_value=None))
         self.event = self.stack.enter_context(patch.object(reconcile, "record_event"))
         self.email = Mock()
         self.dispatch = Mock()
         service = ModuleType("app.domain.payment_email_service")
         service.queue_paid_order_email = self.email
-        pipeline = ModuleType("app.tasks.job_pipeline")
-        pipeline.run_conversion = SimpleNamespace(delay=self.dispatch)
+        pipeline = ModuleType("app.infra.job_dispatch_publisher")
+        pipeline.publish_conversion = self.dispatch
         self.stack.enter_context(patch.dict("sys.modules", {
             "app.domain.payment_email_service": service,
-            "app.tasks.job_pipeline": pipeline,
+            "app.infra.job_dispatch_publisher": pipeline,
         }))
         self.stack.enter_context(patch("socket.socket.connect", side_effect=AssertionError("Network forbidden")))
         self.stack.enter_context(patch.dict(os.environ, {"TRANSLATION_PRICE_CNY": "5.99"}))
@@ -53,7 +54,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.paid()
         result = self.run_task()
         self.assertEqual(result, {"checked": 1, "paid": 1, "closed": 0, "skipped": 0})
-        self.assertEqual(job.status, JobStatus.pending)
+        self.assertEqual(self.store.get(job.id).status, JobStatus.pending)
         self.query.assert_called_once_with(job.id)
         self.email.assert_called_once_with(job.id, "1.99", "conversion", file_count=1, is_test_order=False)
         self.event.assert_called_once_with(self.store, job.id, "payment_succeeded", "verified_query")
@@ -80,7 +81,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         job = self.add(batch_id="bundle", expected_amount="")
         self.paid("batch_bundle", "5.99")
         self.assertEqual(self.run_task()["skipped"], 1)
-        self.assertEqual(job.status, JobStatus.pending_payment)
+        self.assertEqual(self.store.get(job.id).status, JobStatus.pending_payment)
         self.email.assert_not_called()
         self.dispatch.assert_not_called()
 
@@ -96,7 +97,7 @@ class PaymentReconciliationTests(unittest.TestCase):
             with self.subTest(amount=amount):
                 self.paid(amount=amount)
                 self.assertEqual(self.run_task()["skipped"], 1)
-                self.assertEqual(job.status, JobStatus.pending_payment)
+                self.assertEqual(self.store.get(job.id).status, JobStatus.pending_payment)
         self.email.assert_not_called()
         self.event.assert_not_called()
         self.dispatch.assert_not_called()
@@ -108,7 +109,7 @@ class PaymentReconciliationTests(unittest.TestCase):
             with self.subTest(response=response):
                 self.query.return_value = response
                 self.assertEqual(self.run_task()["skipped"], 1)
-        self.assertEqual(job.status, JobStatus.pending_payment)
+        self.assertEqual(self.store.get(job.id).status, JobStatus.pending_payment)
         self.email.assert_not_called()
         self.dispatch.assert_not_called()
 
@@ -119,7 +120,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         with self.assertLogs(reconcile.logger, "WARNING") as logged:
             self.assertEqual(self.run_task()["paid"], 1)
         self.assertNotIn("smtp secret", " ".join(logged.output))
-        self.assertEqual(job.status, JobStatus.pending)
+        self.assertEqual(self.store.get(job.id).status, JobStatus.pending)
         self.dispatch.assert_called_once()
 
     def test_test_marker_reaches_service_for_suppression(self):
@@ -141,15 +142,17 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.assertEqual(self.run_task()["skipped"], 1)
         self.paid(status="TRADE_CLOSED")
         self.assertEqual(self.run_task()["closed"], 1)
-        self.assertEqual(job.status, JobStatus.cancelled)
+        self.assertEqual(self.store.get(job.id).status, JobStatus.cancelled)
         self.email.assert_not_called()
         self.dispatch.assert_not_called()
 
     def test_expired_unpaid_order_can_close_without_receipt(self):
         job = self.add(created_at=datetime.now(timezone.utc) - timedelta(hours=3))
         self.paid(status="WAIT_BUYER_PAY")
+        self.close.return_value = {"out_trade_no": job.id, "trade_no": "offline-closed"}
         self.assertEqual(self.run_task()["closed"], 1)
-        self.assertEqual(job.status, JobStatus.cancelled)
+        self.assertEqual(self.store.get(job.id).status, JobStatus.cancelled)
+        self.close.assert_called_once_with(job.id)
         self.email.assert_not_called()
 
 

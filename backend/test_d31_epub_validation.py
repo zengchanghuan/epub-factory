@@ -183,7 +183,7 @@ class EpubValidationTests(unittest.TestCase):
 
     def test_fast_preprocessing_failure_stops_before_model_preparation(self):
         job = SimpleNamespace(id="offline-validation", trace_id="offline", output_mode=OutputMode.simplified,
-                              target_lang="zh-CN", device=DeviceProfile.generic)
+                              target_lang="zh-CN", device=DeviceProfile.generic, translation_stats={})
         rejected = ConversionResult(validation_passed=False,
             message="无法完成 EPUB 校验：服务器缺少 Java 运行环境，结果不可交付",
             error_code=ErrorCode.EPUB_VALIDATION_UNAVAILABLE.value)

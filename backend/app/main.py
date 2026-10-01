@@ -37,6 +37,9 @@ from .order_events import BrowserEvent, record_event, make_event_router
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
+from .domain.payment_entitlement import (
+    quote_entitlement, grant_verified_entitlement, recover_legacy_entitlement, grant_test_entitlement,
+)
 from .domain.translation_strategy import TRANSLATION_STRATEGY_CHOICES
 from .domain.translation_preflight_service import build_translation_preflight
 from .infra.llm_usage_ledger import AccountingError, get_ledger, add_amount
@@ -461,7 +464,7 @@ def _job_can_download(job: Job) -> bool:
     return (
         job.status == JobStatus.success
         and bool(job.output_path)
-        and job.error_code != ErrorCode.PARTIAL_TRANSLATION.value
+        and job.error_code not in {ErrorCode.PARTIAL_TRANSLATION.value, ErrorCode.PRECISION_POLISH_FAILED.value}
     )
 
 
@@ -941,12 +944,15 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "status": _job_to_v2_status(job),
         "message": job.message,
         "source_filename": job.source_filename,
+        "payment_resolution": dict(getattr(job, "payment_resolution", None) or {}),
         "batch_id": getattr(job, "batch_id", "") or None,
         "batch_index": getattr(job, "batch_index", 0),
         "batch_size": getattr(job, "batch_size", 0),
         "output_mode": job.output_mode.value,
         "device": job.device.value,
         "enable_translation": job.enable_translation,
+        "enable_precision_polish": bool(getattr(job, "enable_precision_polish", False)),
+        "precision_polish": public_translation_stats.get("precision_polish"),
         "target_lang": job.target_lang,
         "bilingual": job.bilingual,
         "translation_model": getattr(job, "translation_model", "") or "",
@@ -1293,6 +1299,7 @@ async def create_job(
         token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
         creator_ip=get_real_ip(request),
         creator_session=client_session,
+        is_test_order=_skip_payment,
         enable_translation=enable_translation,
         target_lang=target_lang,
         bilingual=bilingual,
@@ -1306,12 +1313,10 @@ async def create_job(
             **({"source_warnings": source_warnings} if source_warnings else {}),
         },
     )
+    if enable_translation:
+        job.payment_entitlement = quote_entitlement(job, test_bypass=_skip_payment)
     job_store.add(job)
-    if _use_celery():
-        from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job.id, attempt_id_from_stats(job.translation_stats))
-    else:
-        background_tasks.add_task(process_job, job, attempt_id_from_stats(job.translation_stats))
+    await asyncio.to_thread(_enqueue_conversion, job, background_tasks)
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -1382,6 +1387,48 @@ def download_result(
 
 # ---------- API v2 骨架 ----------
 
+def _prepare_translation_request(*, input_path, source_name, job_id, target_lang,
+                                 translation_model, translation_quality,
+                                 translation_strategy, glossary, profile_confirmation):
+    """One normalized input for the quote and optional pre-payment analysis."""
+    from .domain.translation_input import normalized_translation_input, TranslationInputError
+
+    with normalized_translation_input(input_path, source_name=source_name) as normalized:
+        pricing = _estimate_translation_pricing(
+            str(normalized.epub_path), target_lang, glossary,
+            translation_quality=translation_quality, translation_model=translation_model,
+        )
+        if int(pricing.get("total_chars") or 0) <= 0:
+            raise TranslationInputError("unreadable_text", "未能读取可翻译正文，未创建支付订单，请检查文件")
+        preflight = None
+        if profile_confirmation:
+            preflight = build_translation_preflight(
+                epub_path=normalized.epub_path, job_id=job_id,
+                billing_engine=getattr(job_store, "_engine", None),
+                target_lang=target_lang, translation_model=translation_model,
+                requested_strategy=translation_strategy, user_glossary=glossary,
+            )
+        identity = {"version": normalized.normalization_version, "adapter": normalized.adapter,
+                    "source_sha256": normalized.source_sha256}
+        return pricing, preflight, identity, normalized.source_warnings
+
+
+def _translation_input_http_error(exc):
+    return HTTPException(status_code=503 if exc.reason == "service_disabled" else 400, detail=str(exc))
+
+
+def _parse_lexicon_domains_json(value: str | None) -> list[str]:
+    domains = ["general", "tech", "movie"]
+    if value:
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                domains = [str(domain) for domain in parsed]
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="lexicon_domains_json 格式错误，应为 JSON 数组字符串")
+    return domains
+
+
 @app.post("/api/v2/jobs")
 async def create_job_v2(
     request: Request,
@@ -1406,7 +1453,7 @@ async def create_job_v2(
     lexicon_domains_json: Optional[str] = Form(None),   # JSON 数组字符串，如 '["general","tech"]'
     enable_proper_noun: bool = Form(True),
     enable_precision_polish: bool = Form(False),         # L4 精校开关
-    polish_order_no: Optional[str] = Form(None),         # AI 精校支付宝订单号（开启 L4 时必填）
+    polish_order_no: Optional[str] = Form(None),         # Legacy client field; never payment evidence.
 ):
     """上传文件并创建后台任务。
 
@@ -1424,6 +1471,20 @@ async def create_job_v2(
     )
     _TEST_PRICE = "0.01"
     client_session = _get_client_session(request) or uuid.uuid4().hex
+    if enable_translation:
+        from .domain.translation_input import (
+            ensure_translation_executor_available, validate_translation_filename, TranslationInputError,
+        )
+        try:
+            ensure_translation_executor_available()
+            validate_translation_filename(file.filename or "")
+        except TranslationInputError as exc:
+            raise _translation_input_http_error(exc) from None
+    if polish_order_no:
+        raise HTTPException(status_code=400, detail="精校与转换使用同一订单，不允许客户端自带精校订单号")
+    if enable_precision_polish and (enable_translation or output_mode != OutputMode.simplified
+            or Path(file.filename or "").suffix.lower() != ".epub"):
+        raise HTTPException(status_code=400, detail="AI 精校目前仅支持 EPUB 的普通简体转换，不能与翻译或繁体输出合用")
     source_warnings = await asyncio.to_thread(_validate_upload_format, file)
 
     # 免费配额已关闭，所有转换均走付费流程
@@ -1452,14 +1513,7 @@ async def create_job_v2(
     )
 
     # 解析 lexicon_domains
-    lexicon_domains = ["general", "tech", "movie"]
-    if lexicon_domains_json:
-        try:
-            parsed_domains = json.loads(lexicon_domains_json)
-            if isinstance(parsed_domains, list):
-                lexicon_domains = [str(d) for d in parsed_domains]
-        except (json.JSONDecodeError, ValueError):
-            raise HTTPException(status_code=400, detail="lexicon_domains_json 格式错误，应为 JSON 数组字符串")
+    lexicon_domains = _parse_lexicon_domains_json(lexicon_domains_json)
 
     # 翻译任务不再强制登录：登录用户仍记录 user_id，匿名用户也可直接使用
     current_user = get_current_user_optional(request)
@@ -1521,32 +1575,36 @@ async def create_job_v2(
 
     pricing_info = {}
     translation_preflight = None
+    translation_input_identity = None
     conversion_base_amount = None
     precision_polish_amount = None
-    require_profile_confirmation = bool(
-        enable_translation
-        and profile_confirmation
-        and safe_name.lower().endswith(".epub")
-    )
-    if require_profile_confirmation:
+    polish_inspection = None
+    if enable_precision_polish:
+        from .domain.precision_polish_service import inspect_precision_polish_source
+        from .engine.cleaners.llm_polish import calculate_polish_price
         try:
-            translation_preflight = await asyncio.to_thread(
-                build_translation_preflight,
-                epub_path=input_path,
-                job_id=job_id,
-                billing_engine=getattr(job_store, "_engine", None),
-                target_lang=target_lang,
-                translation_model=translation_model,
-                requested_strategy=translation_strategy,
-                user_glossary=glossary,
+            polish_inspection = await asyncio.to_thread(
+                inspect_precision_polish_source, input_path,
+                traditional_variant=traditional_variant.value, lexicon_domains=lexicon_domains,
+                enable_proper_noun=enable_proper_noun,
             )
-            pricing_info = _estimate_translation_pricing(
-                str(input_path),
-                target_lang,
-                glossary,
-                translation_quality=translation_quality,
-                translation_model=translation_model,
+            estimated_chars = int(polish_inspection.get("char_count") or 0)
+            if estimated_chars <= 0 or not int(polish_inspection.get("candidates") or 0):
+                raise ValueError("未发现可精校的正文风险词，请关闭 AI 精校后使用普通转换；不会收取精校费")
+        except Exception as exc:
+            input_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=str(exc) or "无法分析精校正文，请检查 EPUB 文件")
+        precision_polish_amount = _TEST_PRICE if _is_admin_test else f"{calculate_polish_price(estimated_chars):.2f}"
+    require_profile_confirmation = bool(enable_translation and profile_confirmation)
+    if enable_translation:
+        try:
+            pricing_info, translation_preflight, translation_input_identity, input_warnings = await asyncio.to_thread(
+                _prepare_translation_request, input_path=input_path, source_name=safe_name,
+                job_id=job_id, target_lang=target_lang, translation_model=translation_model,
+                translation_quality=translation_quality, translation_strategy=translation_strategy,
+                glossary=glossary, profile_confirmation=require_profile_confirmation,
             )
+            source_warnings = list(dict.fromkeys([*source_warnings, *input_warnings]))
             estimated_chars = pricing_info.get("total_chars", 0)
             expected_amount = (
                 _TEST_PRICE
@@ -1556,7 +1614,11 @@ async def create_job_v2(
                     _calc_translation_price(estimated_chars, translation_quality, translation_model),
                 )
             )
-            job_status = JobStatus.awaiting_confirmation
+            if require_profile_confirmation:
+                job_status = JobStatus.awaiting_confirmation
+        except TranslationInputError as exc:
+            input_path.unlink(missing_ok=True)
+            raise _translation_input_http_error(exc) from None
         except (AccountingError, Exception) as exc:
             input_path.unlink(missing_ok=True)
             logger.error(
@@ -1568,22 +1630,11 @@ async def create_job_v2(
                 status_code=500,
                 detail="图书分析暂时失败，请稍后重试",
             )
-    elif not _skip_payment:
+    if not require_profile_confirmation and not _skip_payment:
         try:
             if enable_translation:
-                # 翻译：按 Token 动态定价 + 缓存命中率折扣
-                pricing_info = _estimate_translation_pricing(
-                    str(input_path),
-                    target_lang,
-                    glossary,
-                    translation_quality=translation_quality,
-                    translation_model=translation_model,
-                )
-                estimated_chars = pricing_info.get("total_chars", 0)
-                expected_amount = _TEST_PRICE if _is_admin_test else pricing_info.get(
-                    "price_cny",
-                    _calc_translation_price(estimated_chars, translation_quality, translation_model),
-                )
+                # Every format has already been normalized, inspected and
+                # quoted before any payment-side effect.
                 subject = f"EPUB AI 翻译服务 - {safe_name[:50]}"
                 pay_url = create_alipay_page_pay(
                     out_trade_no=job_id,
@@ -1597,16 +1648,9 @@ async def create_job_v2(
                 from .infra.alipay import create_alipay_precreate
                 base_amount = Decimal(_TEST_PRICE) if _is_admin_test else Decimal(CONVERSION_PRICE_CNY)
                 conversion_base_amount = f"{base_amount:.2f}"
-                precision_polish_amount = "0.00"
+                precision_polish_amount = precision_polish_amount or "0.00"
                 if enable_precision_polish:
-                    from .engine.cleaners.llm_polish import count_effective_chars, calculate_polish_price
-                    char_count = count_effective_chars(str(input_path))
-                    estimated_chars = char_count
-                    polish_price = Decimal(
-                        str(calculate_polish_price(char_count) if not _is_admin_test else _TEST_PRICE)
-                    )
-                    precision_polish_amount = f"{polish_price:.2f}"
-                    base_amount += polish_price
+                    base_amount += Decimal(precision_polish_amount)
                 expected_amount = f"{base_amount:.2f}"
                 subject = f"EPUB 格式转换服务 - {safe_name[:50]}"
                 disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
@@ -1648,7 +1692,7 @@ async def create_job_v2(
         token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
         creator_ip=client_ip,
         creator_session=client_session,
-        is_test_order=_is_admin_test,
+        is_test_order=_is_admin_test or _skip_payment,
         expected_amount=expected_amount,
         enable_translation=enable_translation,
         target_lang=target_lang,
@@ -1664,7 +1708,8 @@ async def create_job_v2(
         lexicon_domains=lexicon_domains,
         enable_proper_noun=enable_proper_noun,
         enable_precision_polish=enable_precision_polish,
-        precision_polish_order_no=polish_order_no or "",
+        precision_polish_order_no=job_id if enable_precision_polish else "",
+        polish_char_count=estimated_chars if enable_precision_polish else 0,
         user_id=current_user.id if current_user else None,
         status=job_status,
         message=(
@@ -1684,19 +1729,27 @@ async def create_job_v2(
                     if translation_preflight else {}
                 ),
             }
-            if enable_translation else {}
+            if enable_translation or enable_precision_polish else {}
         ),
     )
     if source_warnings:
         job.translation_stats["source_warnings"] = source_warnings
+    if translation_input_identity:
+        job.translation_stats["translation_input"] = translation_input_identity
+    if enable_precision_polish:
+        job.translation_stats["precision_polish"] = {
+            "version": 1, "status": "awaiting_payment" if job_status == JobStatus.pending_payment else "pending",
+            "order_no": job_id, "char_count": estimated_chars,
+            "quoted_amount": precision_polish_amount,
+            "candidates": int(polish_inspection.get("candidates") or 0),
+            "api_calls": 0, "reviewed": 0, "changed": 0, "refund_required": False,
+        }
+    if enable_translation or enable_precision_polish:
+        job.payment_entitlement = quote_entitlement(job, test_bypass=_skip_payment)
     job_store.add(job)
 
     if job_status == JobStatus.pending:
-        if _use_celery():
-            from app.tasks.job_pipeline import run_conversion
-            run_conversion.delay(job.id, attempt_id_from_stats(job.translation_stats))
-        else:
-            background_tasks.add_task(process_job, job, attempt_id_from_stats(job.translation_stats))
+        await asyncio.to_thread(_enqueue_conversion, job, background_tasks)
 
     return {
         "job_id": job.id,
@@ -1729,6 +1782,7 @@ async def create_job_v2(
         "amount": expected_amount,
         "base_amount": conversion_base_amount,
         "precision_polish_amount": precision_polish_amount,
+        "precision_polish": (job.translation_stats or {}).get("precision_polish"),
         "estimated_chars": estimated_chars,
         "pricing": pricing_info or None,
         "translation_preflight": translation_preflight,
@@ -1901,15 +1955,20 @@ def confirm_translation_profile_v2(
         )
     # Older unconfirmed uploads may predate the input gate. Check before the
     # confirmation CAS or payment call, preserving their state on rejection.
-    source_warnings = []
-    if str(job.input_path).lower().endswith('.epub'):
-        try:
-            with Path(job.input_path).open('rb') as source:
-                source_warnings = validate_epub_resources(source)
-        except EpubInputError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-        except OSError:
-            raise HTTPException(status_code=400, detail="原文件无法读取，请重新上传完整 EPUB。") from None
+    from .domain.translation_input import normalized_translation_input, TranslationInputError
+    try:
+        with normalized_translation_input(Path(job.input_path), source_name=job.source_filename) as normalized:
+            previous_input = (job.translation_stats or {}).get("translation_input") or {}
+            if previous_input.get("source_sha256") and previous_input["source_sha256"] != normalized.source_sha256:
+                raise TranslationInputError("source_changed", "原文件已变化，请重新上传并确认翻译设定")
+            with normalized.epub_path.open('rb') as source:
+                source_warnings = list(dict.fromkeys([*normalized.source_warnings, *validate_epub_resources(source)]))
+    except TranslationInputError as exc:
+        raise _translation_input_http_error(exc) from None
+    except EpubInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except OSError:
+        raise HTTPException(status_code=400, detail="原文件无法读取，请重新上传完整文件。") from None
     preflight = (job.translation_stats or {}).get("translation_preflight")
     confirmed, strategy, bilingual, glossary = _confirmed_translation_preflight(
         existing=preflight,
@@ -1934,6 +1993,11 @@ def confirm_translation_profile_v2(
     skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in (
         "1", "true", "yes",
     )
+    if skip_payment:
+        # Explicit server test configuration is an authorization fact; a public
+        # request field, execution status or is_test_order alone is not.
+        grant_test_entitlement(job_store, claimed)
+        claimed = job_store.get(claimed.id) or claimed
     amount = claimed.expected_amount or _calc_translation_price(0)
     pay_url = None
     try:
@@ -1983,8 +2047,9 @@ def confirm_translation_profile_v2(
                 "level": "info",
                 "strategy": strategy,
                 "context_version": confirmed["version"],
+                "attempt_id": attempt_id_from_stats(refreshed.translation_stats),
             },
-        ))
+        ), expected_attempt_id=attempt_id_from_stats(refreshed.translation_stats))
     if skip_payment:
         _enqueue_conversion(refreshed, background_tasks)
     response = _job_to_v2_detail(refreshed, None)
@@ -2055,6 +2120,7 @@ def _batch_payload(batch_id: str, jobs: Optional[list[Job]] = None) -> dict:
                 "message": job.message,
                 "source_warnings": (job.translation_stats or {}).get("source_warnings") or [],
                 "error_code": job.error_code,
+                "payment_resolution": dict(getattr(job, "payment_resolution", None) or {}),
                 "batch_index": getattr(job, "batch_index", 0),
                 "download_url": (
                     _attach_download_sig(job.id, f"/api/v2/jobs/{job.id}/download")
@@ -2077,17 +2143,33 @@ def _enqueue_batch(batch_id: str, background_tasks: BackgroundTasks | None = Non
             _enqueue_conversion(refreshed, background_tasks)
 
 
-def _release_batch(batch_id: str, background_tasks: BackgroundTasks | None = None) -> bool:
-    try_mark = getattr(job_store, "try_mark_batch_paid", None)
-    if not callable(try_mark) or not try_mark(batch_id):
+def _release_batch(batch_id: str, background_tasks: BackgroundTasks | None = None, *,
+                   source="verified_webhook", amount="") -> bool:
+    # Only called after a verified receipt. Each child intent is committed with
+    # the batch release; duplicate receipts may drain outstanding intents too.
+    jobs = _list_batch_jobs(batch_id)
+    leader = next((job for job in jobs if job.batch_index == 0), None)
+    if leader is None:
         return False
-    _enqueue_batch(batch_id, background_tasks)
-    return True
+    resolution = job_store.settle_verified_payment(
+        leader.id, batch_id=batch_id, source=source, amount=amount or leader.expected_amount)
+    won = bool(resolution["released"] or resolution["review"])
+    pending = [job for job in _list_batch_jobs(batch_id) if job.status == JobStatus.pending]
+    missing = [job for job in pending if not _current_dispatch(job)]
+    if pending:
+        _enqueue_batch(batch_id, background_tasks)
+    # Pre-outbox pending orders cannot win the payment-state CAS again. A
+    # freshly persisted intent is a real recovery even while its broker retries.
+    return won or any(_current_dispatch(job) is not None for job in missing)
 
 
 def _record_verified_payment(order_no, amount, order_kind, *, source="verified_webhook",
                              file_count=1, is_test_order=False, notify_owner=True):
     """Only call after verifying the payment identity and frozen order amount."""
+    if order_kind in {"translation", "conversion"}:
+        job = job_store.get(order_no)
+        if job:
+            grant_verified_entitlement(job_store, job, amount, source)
     record_event(job_store, order_no, "payment_succeeded", source)
     if not notify_owner:
         # A delayed callback for an order processed before mail was deployed
@@ -2230,7 +2312,7 @@ async def create_batch_v2(
         ))
 
     if job_status == JobStatus.pending:
-        _enqueue_batch(batch_id, background_tasks)
+        await asyncio.to_thread(_enqueue_batch, batch_id, background_tasks)
 
     payload = _batch_payload(batch_id)
     payload.update({
@@ -2260,7 +2342,15 @@ def recover_batch_payment_v2(batch_id: str, request: Request, background_tasks: 
         raise HTTPException(status_code=404, detail="批次不存在")
     if not _authorize_batch_access(request, jobs):
         raise HTTPException(status_code=403, detail="无权访问该批次")
-    if _batch_status(jobs) != "pending_payment":
+    waiting = [job for job in jobs if job.status == JobStatus.pending]
+    unresolved = any(job.status in {JobStatus.pending_payment, JobStatus.cancelled}
+                     and (getattr(job, "payment_resolution", None) or {}).get("state") != "paid_review"
+                     for job in jobs)
+    if waiting and not unresolved and all(_current_dispatch(job) for job in waiting):
+        published = sum(_dispatch_conversion(job.id, background_tasks)["sent"] for job in waiting)
+        return {**_batch_payload(batch_id), "recovered": bool(published)}
+    if not any(job.status in {JobStatus.pending_payment, JobStatus.pending, JobStatus.cancelled}
+               and (getattr(job, "payment_resolution", None) or {}).get("state") != "paid_review" for job in jobs):
         return {**_batch_payload(batch_id, jobs), "recovered": False}
     from .infra.alipay import query_verified_trade
     order_no = f"batch_{batch_id}"
@@ -2268,10 +2358,11 @@ def recover_batch_payment_v2(batch_id: str, request: Request, background_tasks: 
     trade_status = (trade or {}).get("trade_status")
     expected = (getattr(jobs[0], "expected_amount", "") or "").strip()
     recovered = False
-    if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and expected and _amount_equal(str(trade.get("total_amount") or ""), expected):
+    if (trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and trade.get("out_trade_no") == order_no
+            and expected and _amount_equal(str(trade.get("total_amount") or ""), expected)):
         _record_verified_payment(order_no, trade["total_amount"], "batch", source="verified_query",
                                  file_count=len(jobs), is_test_order=any(j.is_test_order for j in jobs))
-        recovered = _release_batch(batch_id, background_tasks)
+        recovered = _release_batch(batch_id, background_tasks, source="verified_query", amount=trade["total_amount"])
     return {**_batch_payload(batch_id), "recovered": recovered, "trade_status": trade_status}
 
 
@@ -2302,37 +2393,59 @@ def download_batch_v2(batch_id: str, request: Request):
 async def estimate_polish_price(
     request: Request,
     file: UploadFile = File(...),
+    output_mode: OutputMode = Form(OutputMode.simplified),
+    traditional_variant: TraditionalVariant = Form(TraditionalVariant.auto),
+    lexicon_domains_json: Optional[str] = Form(None),
+    enable_proper_noun: bool = Form(True),
 ):
     """
     上传 EPUB 文件，解析正文有效字数并返回 AI 精校报价。
     前端在用户勾选「AI 精校」时调用此接口，支付前先告知费用。
-    文件仅用于解析字数，不落盘保存。
+    文件仅用于临时解析，结束后删除；不创建订单或模型请求。
     """
-    from .engine.cleaners.llm_polish import count_effective_chars, calculate_polish_price
+    from .engine.cleaners.llm_polish import calculate_polish_price
+    from .domain.precision_polish_service import inspect_precision_polish_source
     import tempfile
 
     if not (file.filename and file.filename.lower().endswith(".epub")):
         raise HTTPException(status_code=400, detail="AI 精校仅支持 .epub 文件")
+    if output_mode != OutputMode.simplified:
+        raise HTTPException(status_code=400, detail="AI 精校仅支持普通简体转换")
+    lexicon_domains = _parse_lexicon_domains_json(lexicon_domains_json)
+
+    await asyncio.to_thread(_validate_upload_format, file)
 
     with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
         tmp_path = tmp.name
-        content = await file.read()
-        tmp.write(content)
-
-    try:
-        char_count = count_effective_chars(tmp_path)
-        price = calculate_polish_price(char_count)
-    finally:
-        import os as _os
         try:
-            _os.unlink(tmp_path)
-        except Exception:
-            pass
+            size = 0
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(status_code=413, detail="文件过大，无法估算精校费用")
+                tmp.write(chunk)
+            tmp.flush()
+            inspection = await asyncio.to_thread(
+                inspect_precision_polish_source, Path(tmp_path),
+                traditional_variant=traditional_variant.value, lexicon_domains=lexicon_domains,
+                enable_proper_noun=enable_proper_noun,
+            )
+            char_count = int(inspection.get("char_count") or 0)
+            if char_count <= 0 or not int(inspection.get("candidates") or 0):
+                raise ValueError("未发现可精校的正文风险词，请关闭 AI 精校后使用普通转换；不会收取精校费")
+            price = calculate_polish_price(char_count)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "无法分析精校正文")
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     return {
         "char_count": char_count,
         "price_cny": f"{price:.2f}",
         "tier": _get_polish_tier_label(char_count),
+        "candidates": int(inspection.get("candidates") or 0),
     }
 
 
@@ -2379,6 +2492,8 @@ def list_jobs_v2(request: Request, limit: int = 100):
             "batch_index": getattr(j, "batch_index", 0),
             "batch_size": getattr(j, "batch_size", 0),
             "enable_translation": j.enable_translation,
+            "enable_precision_polish": bool(getattr(j, "enable_precision_polish", False)),
+            "precision_polish": (j.translation_stats or {}).get("precision_polish"),
             "error_code": j.error_code,
             "created_at": j.created_at.isoformat(),
             "updated_at": j.updated_at.isoformat(),
@@ -3014,17 +3129,42 @@ def get_job_events_v2(job_id: str, request: Request, include_history: bool = Fal
     return {"items": _v2_job_events(job, current_attempt_only=not include_history)}
 
 
-def _enqueue_conversion(job: Job, background_tasks: BackgroundTasks | None = None) -> None:
-    expected_attempt_id = attempt_id_from_stats(job.translation_stats) if job.enable_translation else ""
+def _publish_conversion(job_id: str, expected_attempt_id: str, background_tasks: BackgroundTasks | None = None) -> None:
+    """Transport only. Production durability comes from the dispatch outbox."""
     if _use_celery():
-        from app.tasks.job_pipeline import run_conversion
-        run_conversion.delay(job.id, expected_attempt_id)
+        from .infra.job_dispatch_publisher import publish_conversion
+        publish_conversion(job_id, expected_attempt_id)
         return
+    job = job_store.get(job_id)
+    if not job:
+        return
+    # Local background execution is a development fallback, not a durable
+    # broker. Production starts the independent dispatcher only with a broker.
     if background_tasks is not None:
         background_tasks.add_task(process_job, job, expected_attempt_id)
         return
     import threading
     threading.Thread(target=run_job, args=(job.id, expected_attempt_id), daemon=True).start()
+
+
+def _current_dispatch(job: Job):
+    from .domain.dispatch_intent import dispatch_identity
+    return job_store.get_dispatch(dispatch_identity(job.id, attempt_id_from_stats(job.translation_stats)))
+
+
+def _dispatch_conversion(job_id: str, background_tasks: BackgroundTasks | None = None) -> dict:
+    """Drain only an existing intent; a pending status is not payment proof."""
+    from .domain.job_dispatch_service import dispatch_pending
+    return dispatch_pending(
+        job_store, lambda key, attempt: _publish_conversion(key, attempt, background_tasks),
+        job_id=job_id,
+    )
+
+
+def _enqueue_conversion(job: Job, background_tasks: BackgroundTasks | None = None) -> dict:
+    """Called only after an authorized creation, verified receipt or retry."""
+    job_store.ensure_dispatch(job.id)
+    return _dispatch_conversion(job.id, background_tasks)
 
 
 @app.post("/api/v2/jobs/{job_id}/retry-translation")
@@ -3131,6 +3271,9 @@ def _restart_translation_job(
         raise HTTPException(status_code=410, detail="原始上传文件已过期，无法重启翻译")
 
     now_utc = datetime.now(timezone.utc)
+    # Legacy orders may have a verified receipt but predate frozen plan data.
+    # Recovery is conservative and does not change the order's execution state.
+    recover_legacy_entitlement(job_store, job)
     max_retries = max_free_retries()
     restart_attempt = getattr(job_store, "restart_translation_attempt", None)
     if not callable(restart_attempt):
@@ -3146,11 +3289,18 @@ def _restart_translation_job(
         temperature=temperature,
         translation_model=translation_model,
         translation_strategy=translation_strategy,
+        expected_updated_at=job.updated_at,
     )
     if reason == "retry_limit":
         raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")
     if reason == "active":
         raise HTTPException(status_code=409, detail="任务已被其他请求重启，请勿重复提交")
+    if reason == "payment_required":
+        raise HTTPException(status_code=402, detail="该订单尚未核验付款，不能免费重译；请完成原订单支付")
+    if reason == "payment_review_required":
+        raise HTTPException(status_code=409, detail="该历史订单缺少可验证的原购权益，请联系管理员核验；已有文件仍可按原规则下载")
+    if reason == "entitlement_mismatch":
+        raise HTTPException(status_code=409, detail="重译只能使用原订单已购的质量档位与模型；升级请新建订单")
     if reason != "ok" or not refreshed:
         raise HTTPException(status_code=404, detail="任务不存在")
     restart_summary = f"{action_label}已排队"
@@ -3168,7 +3318,7 @@ def _restart_translation_job(
                 "level": "info",
                 "attempt_id": attempt_id_from_stats(refreshed.translation_stats),
             },
-        ))
+        ), expected_attempt_id=attempt_id_from_stats(refreshed.translation_stats))
     _enqueue_conversion(refreshed, background_tasks)
     return _job_to_v2_detail(refreshed, None)
 
@@ -3180,20 +3330,23 @@ def recover_job_payment(job_id: str, request: Request):
 
     工作流程：
     1) 鉴权：必须通过 _authorize_job_access（token / session / IP）
-    2) 仅对 pending_payment 状态有效；其它状态直接回当前状态，前端不要再轮询
-    3) 调支付宝 query API 主动查单：
-       - TRADE_SUCCESS / TRADE_FINISHED → try_mark_paid + 入队 run_conversion
-       - 其它 → 不动，让用户继续等 webhook
-    4) 此接口是补偿性的，与 webhook、reconcile cron 形成三层兜底，
-       即使支付宝异步通知挂了，用户回到页面就能在 1 秒内拿到正确状态。
+    2) 已有 pending 投递意图可重试；旧 pending 无意图必须重新验款
+    3) 查到匹配的真实付款后，将 pending 与投递意图一并提交
+    4) Broker 不可用仍保留已付款/待投递状态，由独立分发器退避重试
     """
     job = job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
-    if job.status != JobStatus.pending_payment:
-        return {"job_id": job_id, "status": _job_to_v2_status(job), "recovered": False}
+    if job.status == JobStatus.pending and _current_dispatch(job):
+        result = _dispatch_conversion(job_id)
+        return {"job_id": job_id, "status": _job_to_v2_status(job_store.get(job_id)),
+                "recovered": bool(result["sent"])}
+    if (job.status not in {JobStatus.pending_payment, JobStatus.pending, JobStatus.cancelled}
+            or (getattr(job, "payment_resolution", None) or {}).get("state") == "paid_review"):
+        return {"job_id": job_id, "status": _job_to_v2_status(job), "recovered": False,
+                "message": job.message, "payment_resolution": dict(getattr(job, "payment_resolution", None) or {})}
 
     from .infra.alipay import query_verified_trade
     trade = query_verified_trade(job_id)
@@ -3203,7 +3356,7 @@ def recover_job_payment(job_id: str, request: Request):
         extra={"job_id": job_id, "trade_status": trade_status or "unknown"},
     )
 
-    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED") or trade.get("out_trade_no") != job_id:
         return {
             "job_id": job_id,
             "status": _job_to_v2_status(job),
@@ -3219,38 +3372,22 @@ def recover_job_payment(job_id: str, request: Request):
                              "translation" if job.enable_translation else "conversion",
                              source="verified_query", is_test_order=job.is_test_order)
 
-    try_mark = getattr(job_store, "try_mark_paid", None)
-    won = bool(try_mark(job.id)) if callable(try_mark) else (
-        bool(job_store.update_status(job.id, JobStatus.pending, "支付成功，排队中..."))
-    )
-    if not won:
-        refreshed = job_store.get(job_id)
-        return {
-            "job_id": job_id,
-            "status": _job_to_v2_status(refreshed),
-            "recovered": False,
-            "trade_status": trade_status,
-        }
-
-    if _use_celery():
-        from app.tasks.job_pipeline import run_conversion
-        refreshed = job_store.get(job.id) or job
-        run_conversion.delay(job.id, attempt_id_from_stats(refreshed.translation_stats))
-    else:
-        import threading
-        refreshed = job_store.get(job.id) or job
-        threading.Thread(
-            target=run_job,
-            args=(job.id, attempt_id_from_stats(refreshed.translation_stats)),
-            daemon=True,
-        ).start()
+    resolution = job_store.settle_verified_payment(job.id, amount=trade["total_amount"], source="verified_query")
+    won = bool(resolution["released"] or resolution["review"])
+    # This gateway result also authorizes repairing a pre-outbox, paid pending
+    # order. Never infer this authorization from the pending status alone.
+    result = _enqueue_conversion(job_store.get(job.id) or job)
 
     refreshed = job_store.get(job_id)
     return {
         "job_id": job_id,
         "status": _job_to_v2_status(refreshed),
-        "recovered": True,
+        # A verified legacy pending order is durably recovered as soon as its
+        # missing intent is saved, even when transport must retry later.
+        "recovered": bool(won or result["sent"] or (refreshed and _current_dispatch(refreshed))),
         "trade_status": trade_status,
+        "message": refreshed.message,
+        "payment_resolution": dict(getattr(refreshed, "payment_resolution", None) or {}),
     }
 
 
@@ -3269,7 +3406,15 @@ def cancel_job_v2(job_id: str, request: Request):
     ):
         raise HTTPException(status_code=400, detail="当前状态不可取消")
     message = "用户已停止翻译" if job.enable_translation else "用户取消"
-    job_store.update_status(job_id, JobStatus.cancelled, message)
+    attempt_id = attempt_id_from_stats(job.translation_stats)
+    updated = job_store.update_status(
+        job_id, JobStatus.cancelled, message,
+        expected_attempt_id=attempt_id,
+        expected_statuses={JobStatus.awaiting_confirmation, JobStatus.pending, JobStatus.running},
+    )
+    if (not updated or updated.status != JobStatus.cancelled
+            or attempt_id_from_stats(updated.translation_stats) != attempt_id):
+        raise HTTPException(status_code=409, detail="任务状态或翻译尝试已变化，请刷新后再操作")
     add_stage = getattr(job_store, "add_stage", None)
     if add_stage:
         now = datetime.now(timezone.utc)
@@ -3282,10 +3427,9 @@ def cancel_job_v2(job_id: str, request: Request):
             metadata={
                 "message": message,
                 "level": "warning",
-                **({"attempt_id": attempt_id_from_stats(job.translation_stats)} if job.enable_translation else {}),
+                "attempt_id": attempt_id,
             },
-        ))
-    updated = job_store.get(job_id)
+        ), expected_attempt_id=attempt_id, expected_statuses={JobStatus.cancelled})
     return {
         "job_id": job_id,
         "status": "cancelled",
@@ -3534,7 +3678,7 @@ async def alipay_webhook(request: Request):
                 _record_verified_payment(out_trade_no, actual, "batch", file_count=len(batch_jobs),
                                          is_test_order=any(j.is_test_order for j in batch_jobs),
                                          notify_owner=batch_jobs[0].status == JobStatus.pending_payment)
-                if not _release_batch(batch_id):
+                if not await asyncio.to_thread(_release_batch, batch_id):
                     logger.info("Alipay batch webhook ignored (already processed)", extra={"job_id": out_trade_no})
                 else:
                     logger.info("Alipay batch payment verified", extra={"job_id": out_trade_no})
@@ -3560,29 +3704,10 @@ async def alipay_webhook(request: Request):
                                      is_test_order=job.is_test_order,
                                      notify_owner=job.status == JobStatus.pending_payment)
 
-            # 条件原子更新：只有"首次确认支付成功"的 webhook 会拿到 True，
-            # 后续重试 / 并发回调一律返回 False，避免重复入队 → 重复消费 Token。
-            try_mark = getattr(job_store, "try_mark_paid", None)
-            won_race = bool(try_mark(job.id)) if callable(try_mark) else (
-                job.status == JobStatus.pending_payment
-                and bool(job_store.update_status(job.id, JobStatus.pending, "支付成功，排队中..."))
-            )
-            if not won_race:
-                logger.info("Alipay webhook ignored (already processed)", extra={"job_id": out_trade_no})
-                return Response("success")
-
-            logger.info(f"Alipay payment verified, starting job {out_trade_no}")
-            if _use_celery():
-                from app.tasks.job_pipeline import run_conversion
-                refreshed = job_store.get(job.id) or job
-                run_conversion.delay(job.id, attempt_id_from_stats(refreshed.translation_stats))
-            else:
-                import threading
-                refreshed = job_store.get(job.id) or job
-                threading.Thread(
-                    target=process_job,
-                    args=(refreshed, attempt_id_from_stats(refreshed.translation_stats)),
-                ).start()
+            # Payment release and dispatch intent commit atomically. Repeated
+            # verified callbacks may drain the same intent; claims are fenced.
+            job_store.settle_verified_payment(job.id, amount=actual, source="verified_webhook")
+            await asyncio.to_thread(_enqueue_conversion, job_store.get(job.id) or job)
 
         return Response("success")
         
@@ -4393,6 +4518,10 @@ app.include_router(make_completion_email_router(
 _completion_email_worker = CompletionEmailWorker()
 from .domain.repair_payment_worker import RepairPaymentWorker
 _repair_payment_worker = RepairPaymentWorker(_repair_payment_tick)
+from .domain.job_dispatch_worker import JobDispatchWorker
+_job_dispatch_worker = JobDispatchWorker(lambda: job_store, _publish_conversion)
+from .domain.job_recovery_worker import JobRecoveryWorker
+_job_recovery_worker = JobRecoveryWorker(lambda: job_store, on_recovered=_job_dispatch_worker.wake)
 
 
 @app.on_event("startup")
@@ -4400,10 +4529,19 @@ def start_completion_email_worker():
     _completion_email_worker.start()
     payment_email_worker.start()
     _repair_payment_worker.start()
+    # Independent of the book queue: a broker outage cannot prevent the next
+    # retry tick. Memory-only/local fallback is not production durability.
+    if (_use_celery() and getattr(job_store, "_engine", None) is not None
+            and _os.environ.get("JOB_DISPATCH_ENABLED", "1").lower() not in {"0", "false", "no"}):
+        _job_dispatch_worker.start()
+        if _os.environ.get("JOB_RECOVERY_ENABLED", "1").lower() not in {"0", "false", "no"}:
+            _job_recovery_worker.start()
 
 
 @app.on_event("shutdown")
 def stop_completion_email_worker():
+    _job_recovery_worker.stop()
+    _job_dispatch_worker.stop()
     _repair_payment_worker.stop()
     payment_email_worker.stop()
     _completion_email_worker.stop()

@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from billiard.exceptions import SoftTimeLimitExceeded
 
 from app.storage import job_store
 from app.domain.manifest_service import build_manifest
@@ -18,6 +19,24 @@ from app.models import ChapterKind, ChunkStatus, JobChunk
 from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult
 from app.infra.llm_usage_ledger import usage_scope
 from app.domain.translation_attempt import attempt_id_from_stats
+from app.domain.job_write_fence import current_job_write_fence, JobWriteConflict
+from app.cancellation import JobCancelled
+from app.models import JobStatus
+
+
+def assert_chapter_execution(job_id: str):
+    """A chapter worker may use a captured owner, never adopt the latest one."""
+    fence = current_job_write_fence()
+    if fence is None or fence.job_id != job_id:
+        raise JobWriteConflict("章节执行必须提供已获准的尝试和执行器身份")
+    current = job_store.get(job_id)
+    execution = job_store.get_execution(job_id, fence.attempt_id)
+    if (not current or current.status != JobStatus.running
+            or attempt_id_from_stats(current.translation_stats) != fence.attempt_id
+            or not execution or execution.get('state') != 'running'
+            or execution.get('owner') != fence.execution_owner):
+        raise JobWriteConflict("章节执行身份已过期")
+    return current
 
 
 @dataclass
@@ -51,8 +70,10 @@ class ChapterTranslationResult:
     reduced_html: bytes | None = None  # 回写后的整章 HTML，供全书 Reduce 打包使用
 
 
-async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTranslationResult:
-    job = job_store.get(job_id)
+async def _translate_chapter_async(job_id: str, chapter_id: str, *, captured_job=None) -> ChapterTranslationResult:
+    job = captured_job if captured_job is not None else job_store.get(job_id)
+    if current_job_write_fence() is not None:
+        assert_chapter_execution(job_id)
     if not job:
         return ChapterTranslationResult(
             job_id=job_id,
@@ -104,6 +125,10 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
             chapter_kind=chapter["chapter_kind"],
             skipped=True,
         )
+    assert_chapter_execution(job_id)
+    def cancel_check():
+        assert_chapter_execution(job_id)
+        return False
     translator = SemanticsTranslator(
         target_lang=job.target_lang,
         bilingual=job.bilingual,
@@ -113,10 +138,14 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
         quality_mode=getattr(job, "translation_quality", "standard") or "standard",
         cache_policy=getattr(job, "cache_policy", "reuse") or "reuse",
     )
+    translator.cancel_check = cancel_check
     tasks = [translator.translate_single_chunk_async(c["html"]) for c in chunks_spec]
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert_chapter_execution(job_id)
     chunk_results: List[ChunkResult] = []
     for spec, res in zip(chunks_spec, results):
+        if isinstance(res, (JobCancelled, SoftTimeLimitExceeded, asyncio.CancelledError)):
+            raise res
         if isinstance(res, Exception):
             translator.stats.failed_chunks += 1
             translator.stats.last_error = str(res)
@@ -198,8 +227,10 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 created_at=now,
                 updated_at=now,
             )
-            upsert(job_chunk)
-            archive_failed_chunk(job_id=job_id, chapter_id=chapter_id, chunk=cr, status=status)
+            captured_attempt = current_job_write_fence().attempt_id
+            upsert(job_chunk, expected_attempt_id=captured_attempt)
+            archive_failed_chunk(job_id=job_id, chapter_id=chapter_id, chunk=cr, status=status,
+                                 attempt_id=captured_attempt)
     # 回写本节译文到整章 HTML，供全书 Reduce 使用
     try:
         unpacker = EpubUnpacker(job.input_path)
@@ -214,6 +245,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                 if isinstance(orig_content, str):
                     orig_content = orig_content.encode("utf-8", errors="replace")
                 reduced = apply_chunk_results(orig_content, chunk_results, job.bilingual)
+                assert_chapter_execution(job_id)
                 return ChapterTranslationResult(
                     job_id=job_id,
                     chapter_id=chapter_id,
@@ -222,6 +254,8 @@ async def _translate_chapter_async(job_id: str, chapter_id: str) -> ChapterTrans
                     chunks=chunk_results,
                     reduced_html=reduced,
                 )
+    except (JobCancelled, SoftTimeLimitExceeded):
+        raise
     except Exception:
         pass
     return ChapterTranslationResult(
@@ -243,5 +277,5 @@ def translate_chapter(job_id: str, chapter_id: str) -> ChapterTranslationResult:
         with usage_scope(job_id, attempt_id_from_stats(job.translation_stats) or "chapter_pipeline",
                          engine=getattr(job_store, "_engine", None),
                          existing_stats=job.translation_stats):
-            return asyncio.run(_translate_chapter_async(job_id, chapter_id))
-    return asyncio.run(_translate_chapter_async(job_id, chapter_id))
+            return asyncio.run(_translate_chapter_async(job_id, chapter_id, captured_job=job))
+    return asyncio.run(_translate_chapter_async(job_id, chapter_id, captured_job=job))

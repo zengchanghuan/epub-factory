@@ -78,6 +78,15 @@ _ledgers = {}
 _default_engine = None
 
 
+def require_usage_scope():
+    """Paid add-on callers must not dispatch outside a durable job ledger.
+
+    This opt-in assertion leaves legacy accounted_call/request semantics intact.
+    """
+    if _scope.get() is None:
+        raise AccountingError("精校请求缺少任务费用账本，未发起新的付费请求")
+
+
 def now():
     return datetime.now(timezone.utc)
 

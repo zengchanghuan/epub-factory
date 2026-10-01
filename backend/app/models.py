@@ -53,8 +53,12 @@ class ErrorCode(str, Enum):
     TRANSLATION_FAILED = "TRANSLATION_FAILED"
     TRANSLATION_PROVIDER_UNAVAILABLE = "TRANSLATION_PROVIDER_UNAVAILABLE"
     PARTIAL_TRANSLATION = "PARTIAL_TRANSLATION"
+    PRECISION_POLISH_FAILED = "PRECISION_POLISH_FAILED"
     EPUB_VALIDATION_FAILED = "EPUB_VALIDATION_FAILED"
     EPUB_VALIDATION_UNAVAILABLE = "EPUB_VALIDATION_UNAVAILABLE"
+    PAYMENT_EXPIRED = "PAYMENT_EXPIRED"
+    PAYMENT_REVIEW_REQUIRED = "PAYMENT_REVIEW_REQUIRED"
+    WORKER_RECOVERY_EXHAUSTED = "WORKER_RECOVERY_EXHAUSTED"
 
 
 class ChapterKind(str, Enum):
@@ -153,8 +157,10 @@ class Job:
     creator_ip: str = ""
     creator_session: str = ""
     user_id: Optional[str] = None  # 登录用户 ID，匿名任务为 None
-    is_test_order: bool = False  # Set only by a server-verified administrator test request.
+    is_test_order: bool = False  # Server-verified admin test request or explicit server test bypass.
     expected_amount: str = ""  # 下单时的应付金额（元），webhook 校验依据
+    payment_entitlement: Dict[str, Any] = field(default_factory=dict)  # Frozen purchase facts, never inferred from status.
+    payment_resolution: Dict[str, Any] = field(default_factory=dict)  # Verified close/late-payment disposition, not execution state.
     batch_id: str = ""  # 批量转换批次；空字符串表示普通单文件任务
     batch_index: int = 0
     batch_size: int = 0

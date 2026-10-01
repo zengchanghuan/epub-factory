@@ -1422,7 +1422,7 @@
         <div class="toggle-row">
           <div>
             <span>AI 精校 (处理两岸用词差异)</span><br/>
-            <span class="hint">DeepSeek大模型精校“窝心/机车”等歧义词，需按字数付费</span>
+            <span class="hint">仅 EPUB 转简体：DeepSeek 按上下文检查“窝心/机车”等风险词，按字数另计；无需修改的原文会保留</span>
           </div>
           <label class="toggle">
             <input type="checkbox" id="enablePrecisionPolish" />
@@ -1437,6 +1437,7 @@
           <div id="precisionPolishPriceHint" style="font-size:13px; color:var(--muted); margin-top:10px; display:none;">
             预估字数：<strong id="polishCharCount" style="color:var(--text);">-</strong> 字<br/>
             精校附加费：<strong id="polishPrice" style="color:var(--text);">-</strong> 元
+            <div id="polishQuoteMessage" role="status"></div>
           </div>
         </div>
       </div>
@@ -1745,6 +1746,7 @@
             </div>
             <div class="translation-diagnostics" id="translationDiagnostics"></div>
           </div>
+          <div id="precisionPolishReport" class="pricing-notice" style="display:none; margin-top:12px;" role="status"></div>
           <div class="progress-log" id="progressLog"></div>
 
           <!-- 质量统计卡片 -->
@@ -2352,6 +2354,20 @@
         });
     }
 
+    function renderPrecisionPolishReport(data) {
+      const element = $("precisionPolishReport");
+      if (!element) return;
+      const report = data && (data.precision_polish || data.translation_stats?.precision_polish);
+      element.style.display = report ? "block" : "none";
+      if (!report) { element.textContent = ""; return; }
+      const labels = { awaiting_payment: "等待付款", pending: "等待执行", running: "正在检查风险词",
+        completed: "检查完成", no_candidates: "未发现可精校风险段", failed: "未完成", cancelled: "已停止" };
+      let message = `AI 精校：${labels[report.status] || "待核验"}。已检查 ${Number(report.reviewed || 0)} 段，修改 ${Number(report.changed || 0)} 段。`;
+      if (report.status === "completed" && !Number(report.changed || 0)) message += " 已检查的原文无需修改。";
+      if (report.refund_required) message += " 精校费用待人工核验，请联系客服；尚未自动退款。";
+      element.textContent = message;
+    }
+
     function renderQaReport(data) {
       const report = data && data.qa_report;
       const terminalStatuses = new Set(["completed", "partial_completed", "qa_failed", "failed", "cancelled"]);
@@ -2584,6 +2600,7 @@
         $("precisionPolishOptions").style.display = "none";
       }
       setTaskUiMode(isTranslation);
+      syncPrecisionPolishAvailability();
       updateSubmitButton();
       _updatePriceHint();
     }
@@ -2595,6 +2612,7 @@
       translationRadio.disabled = !supported;
       translationModeCard.title = selectedFiles.length > 1 ? "批量模式当前仅支持转换与排版处理" : "";
       if (!supported && getTaskMode() === "translate") setTaskMode("convert");
+      syncPrecisionPolishAvailability();
     }
 
     // ─── 视图切换：上传 / 任务中心 ────────────────────────────────────────────
@@ -2632,7 +2650,7 @@
             const time = j.created_at ? new Date(j.created_at).toLocaleString() : "";
             const safeFilename = escapeHtml(j.source_filename || "-");
             const safeMessage = escapeHtml(j.message || "");
-            const taskKind = j.enable_translation ? "翻译" : "转换";
+            const taskKind = j.enable_translation ? "翻译" : j.enable_precision_polish ? "转换 + AI 精校" : "转换";
             const batchMeta = j.batch_id ? `批次 ${escapeHtml(j.batch_id)} · ${Number(j.batch_index || 0) + 1}/${j.batch_size || "?"}` : "";
             const metaParts = [taskKind, batchMeta, time, safeMessage].filter(Boolean).join(" · ");
             const actionText = j.status === "completed" ? "下载" : "查看";
@@ -2896,6 +2914,7 @@
             $("errorCodeMsg").style.display = "block";
           }
           renderQaReport(data);
+          renderPrecisionPolishReport(data);
           renderTranslationTiming(data.translation_timing);
           if (s !== "pending_payment" && !isTerminalFailureStatus(s)) {
             if (!$("queueNotice").querySelector("#goToTasksBtn")) {
@@ -3368,8 +3387,7 @@
       fileNameEl.style.display = "block";
       refreshTaskModeAvailability();
       if (!isTranslationSupportedForSelectedFile()) setTaskMode("convert");
-      enablePrecisionPolish.disabled = nextFiles.length > 1;
-      if (nextFiles.length > 1) enablePrecisionPolish.checked = false;
+      syncPrecisionPolishAvailability();
       updateSubmitButton();
       _updatePriceHint();
       estimatePolishPrice();
@@ -3434,24 +3452,46 @@
       $("translationStrategyHint").textContent = hints[strategy] || hints.auto;
     });
 
+    let polishQuoteRequestId = 0;
+    function syncPrecisionPolishAvailability() {
+      const ext = getSelectedFileExt();
+      const supported = selectedFiles.length <= 1 && (!ext || ext === ".epub")
+        && $("outputMode").value === "simplified" && !enableTranslation.checked;
+      enablePrecisionPolish.disabled = !supported;
+      enablePrecisionPolish.title = supported ? "" : "AI 精校仅支持单个 EPUB 的普通简体转换";
+      if (!supported) {
+        enablePrecisionPolish.checked = false;
+        $("precisionPolishOptions").style.display = "none";
+      }
+    }
+
     async function estimatePolishPrice() {
-      if (!selectedFile || selectedFiles.length > 1 || !enablePrecisionPolish.checked) {
+      const requestId = ++polishQuoteRequestId;
+      const file = selectedFile;
+      if (!file || selectedFiles.length > 1 || !enablePrecisionPolish.checked || enablePrecisionPolish.disabled) {
         $("precisionPolishPriceHint").style.display = "none";
         return;
       }
       $("precisionPolishPriceHint").style.display = "block";
       $("polishCharCount").textContent = "估算中...";
       $("polishPrice").textContent = "估算中...";
+      $("polishQuoteMessage").textContent = "";
       const form = new FormData();
-      form.append("file", selectedFile);
+      form.append("file", file);
+      form.append("output_mode", $("outputMode").value);
+      form.append("traditional_variant", $("traditionalVariant").value || "auto");
       try {
         const res = await fetch(`${API}/api/v2/estimate-polish`, { method: "POST", body: form });
         const data = await res.json();
+        if (requestId !== polishQuoteRequestId || selectedFile !== file || !enablePrecisionPolish.checked) return;
+        if (!res.ok) throw new Error(data.detail || "无法估算精校费用");
         $("polishCharCount").textContent = data.char_count;
         $("polishPrice").textContent = data.price_cny;
       } catch (err) {
+        if (requestId !== polishQuoteRequestId || selectedFile !== file || !enablePrecisionPolish.checked) return;
         $("polishCharCount").textContent = "估算失败";
         $("polishPrice").textContent = "估算失败";
+        $("polishQuoteMessage").textContent = err.message || "请检查文件后重试";
       }
     }
 
@@ -3465,8 +3505,12 @@
       const [mode, variant] = ($("conversionMode").value || "simplified|tw").split("|");
       $("outputMode").value = mode;
       $("traditionalVariant").value = variant || "auto";
+      syncPrecisionPolishAvailability();
     }
-    $("conversionMode").addEventListener("change", syncConversionMode);
+    $("conversionMode").addEventListener("change", () => {
+      syncConversionMode();
+      estimatePolishPrice();
+    });
     syncConversionMode();
     refreshTaskModeAvailability();
     setTaskMode("convert");
@@ -3485,6 +3529,7 @@
       setRunningActionsVisible(false);
       setRestartActionsVisible(false);
       hideQaReport();
+      renderPrecisionPolishReport(null);
       hideTranslationTiming();
     }
 

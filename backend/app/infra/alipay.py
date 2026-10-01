@@ -9,9 +9,11 @@ from alipay.aop.api.DefaultAlipayClient import DefaultAlipayClient
 from alipay.aop.api.domain.AlipayTradePagePayModel import AlipayTradePagePayModel
 from alipay.aop.api.domain.AlipayTradePrecreateModel import AlipayTradePrecreateModel
 from alipay.aop.api.domain.AlipayTradeQueryModel import AlipayTradeQueryModel
+from alipay.aop.api.domain.AlipayTradeCloseModel import AlipayTradeCloseModel
 from alipay.aop.api.request.AlipayTradePagePayRequest import AlipayTradePagePayRequest
 from alipay.aop.api.request.AlipayTradePrecreateRequest import AlipayTradePrecreateRequest
 from alipay.aop.api.request.AlipayTradeQueryRequest import AlipayTradeQueryRequest
+from alipay.aop.api.request.AlipayTradeCloseRequest import AlipayTradeCloseRequest
 from alipay.aop.api.util.SignatureUtils import verify_with_rsa
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
@@ -207,4 +209,31 @@ def query_verified_trade(out_trade_no: str) -> Optional[dict]:
         # SDK signature errors may embed a complete response. Never interpret that
         # unverified payload as payment evidence or write it to application logs.
         logger.warning("Verified Alipay payment query unavailable", extra={"job_id": out_trade_no})
+        return None
+
+
+def close_verified_trade(out_trade_no: str) -> Optional[dict]:
+    """Return proof only after this exact order is successfully closed by Alipay.
+
+    Unknown/nonexistent orders, a paid-order close refusal and every transport or
+    signature failure remain unknown, not evidence that local expiry is safe.
+    This does not modify a local order or change any product's payment window.
+    """
+    if not _alipay_client or not isinstance(out_trade_no, str) or not out_trade_no.strip() or out_trade_no != out_trade_no.strip():
+        return None
+    try:
+        model = AlipayTradeCloseModel()
+        model.out_trade_no = out_trade_no
+        result = _alipay_client.execute(AlipayTradeCloseRequest(biz_model=model))
+        data = _verified_business_response(result, "alipay_trade_close_response")
+        trade_no = data.get("trade_no")
+        if (data.get("code") != "10000" or data.get("out_trade_no") != out_trade_no
+                or not isinstance(trade_no, str) or not trade_no.strip() or trade_no != trade_no.strip()):
+            logger.warning("Verified Alipay close response did not prove closure")
+            return None
+        return {"out_trade_no": out_trade_no, "trade_no": trade_no}
+    except Exception:
+        # SDK errors may contain signed/unsigned full response bodies. Neither
+        # those bodies nor exception messages are closure evidence or safe logs.
+        logger.warning("Verified Alipay trade close unavailable")
         return None

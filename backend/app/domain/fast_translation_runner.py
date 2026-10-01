@@ -28,12 +28,14 @@ from bs4 import BeautifulSoup
 
 from app.cancellation import CancelCheck, raise_if_cancelled, JobCancelled
 from app.converter import converter
-from app.domain.book_reduce_service import make_get_chapter_content, reduce_and_package, set_chapter_output
+from app.domain.book_reduce_service import (make_get_chapter_content, reduce_and_package, set_chapter_output,
+                                            _epub_resource_path)
 from app.domain.book_profile_service import profile_book
 from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.chapter_translation_service import ChunkResult
 from app.domain.failed_chunk_archive import archive_failed_chunk
-from app.domain.translation_attempt import attempt_id_from_stats
+from app.domain.translation_attempt import attempt_id_from_stats, new_attempt_id
+from app.domain.job_write_fence import current_job_write_fence, JobWriteConflict
 from app.domain.translation_checkpoints import TranslationCheckpoints, book_resume_key, fingerprint
 from app.domain.manifest_service import build_manifest
 from app.domain.translation_quality_audit import audit_translation_chunk
@@ -272,7 +274,7 @@ def _chapter_status(chunk_results: list[ChunkResult]) -> ChapterStatus:
 def _upsert_chapter(chapter: JobChapter, *, expected_attempt_id: str = "") -> None:
     upsert = getattr(job_store, "upsert_chapter", None)
     if upsert:
-        upsert(chapter, expected_attempt_id=expected_attempt_id or None)
+        upsert(chapter, expected_attempt_id=expected_attempt_id)
 
 
 def _upsert_chunk(
@@ -311,7 +313,7 @@ def _upsert_chunk(
         error_message=cr.error,
         created_at=now,
         updated_at=now,
-    ), expected_attempt_id=expected_attempt_id or None)
+    ), expected_attempt_id=expected_attempt_id)
     archive_failed_chunk(
         job_id=job_id,
         chapter_id=chapter_id,
@@ -409,6 +411,24 @@ def _translation_delivery_gate_result(
     )
 
 
+def _validate_manifest_identity(manifest: dict, chapter_strategy_overrides: dict | None = None) -> None:
+    chapter_ids, chunk_ids, paths = set(), set(), set()
+    for chapter in manifest.get('chapters', []):
+        identity, path = chapter.get('chapter_id'), _epub_resource_path(chapter.get('file_path'))
+        if not isinstance(identity, str) or not identity or identity in chapter_ids or path in paths:
+            raise ValueError('Manifest chapter identities or resource paths are duplicated/invalid')
+        chapter_ids.add(identity)
+        paths.add(path)
+        for chunk in chapter.get('chunks') or []:
+            identity = chunk.get('chunk_id')
+            if not isinstance(identity, str) or not identity or identity in chunk_ids:
+                raise ValueError('Manifest chunk identities are duplicated/invalid')
+            chunk_ids.add(identity)
+    renamed = set(manifest.get('renamed_legacy_chapter_ids') or []) | set(manifest.get('ambiguous_legacy_chapter_ids') or [])
+    if set(chapter_strategy_overrides or {}) & renamed:
+        raise ValueError('原确认的章节标识已变更或存在同名歧义，请重新确认章节策略后再翻译。')
+
+
 async def _translate_manifest_async(
     *,
     job,
@@ -424,8 +444,23 @@ async def _translate_manifest_async(
     progress_callback: ProgressCallback,
     cancel_check: CancelCheck | None = None,
     resume_key: str | None = None,
+    attempt_id: str | None = None,
+    reduce_attempt_id: str | None = None,
+    execution_owner: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     chapter_strategy_overrides = dict(chapter_strategy_overrides or {})
+    _validate_manifest_identity(manifest, chapter_strategy_overrides)
+    expected_attempt_id = attempt_id if attempt_id is not None else attempt_id_from_stats(job.translation_stats)
+    write_fence = current_job_write_fence()
+    if write_fence is not None:
+        if (write_fence.job_id != job.id or write_fence.attempt_id != expected_attempt_id
+                or (execution_owner is not None and execution_owner != write_fence.execution_owner)):
+            raise JobWriteConflict("翻译执行身份与写入作用域不一致")
+        execution_owner = write_fence.execution_owner
+    reduce_attempt_id = reduce_attempt_id or expected_attempt_id or new_attempt_id()
+    reduce_job_id = str(job.id)
+    # Validate scope before constructing clients or dispatching model requests.
+    make_get_chapter_content(reduce_job_id, attempt_id=reduce_attempt_id, execution_owner=execution_owner)
     quality_mode = getattr(job, "translation_quality", "standard") or "standard"
     cache_policy = getattr(job, "cache_policy", "reuse") or "reuse"
     translator = SemanticsTranslator(
@@ -442,7 +477,6 @@ async def _translate_manifest_async(
         preserved_terms=confirmed_preserved_terms(getattr(job, "glossary", {})),
     )
     translator.cancel_check = cancel_check
-    expected_attempt_id = attempt_id_from_stats(job.translation_stats)
 
     body_chapters = [
         ch for ch in manifest.get("chapters", [])
@@ -675,9 +709,10 @@ async def _translate_manifest_async(
             if enable_term_highlights:
                 reduced, highlighted = highlight_confirmed_terms(reduced, glossary)
                 term_highlight_count += highlighted
-            set_chapter_output(job.id, chapter["file_path"], reduced)
+            set_chapter_output(reduce_job_id, chapter["file_path"], reduced, attempt_id=reduce_attempt_id,
+                               **({"execution_owner": execution_owner} if execution_owner is not None else {}))
         else:
-            emit_progress(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
+            raise RuntimeError(f"章节回写失败：{chapter['file_path']} 原始内容缺失")
 
     def _finish_chapter(
         chapter: dict,
@@ -794,7 +829,7 @@ async def _translate_manifest_async(
                 current_status,
                 current_message,
                 translation_stats=stats,
-                expected_attempt_id=attempt_id_from_stats(job.translation_stats) or None,
+                expected_attempt_id=expected_attempt_id,
             )
         except JobCancelled:
             raise
@@ -1218,9 +1253,17 @@ def run_fast_translation_job(
     cancel_check: CancelCheck | None = None,
 ) -> ConversionResult:
     """
-    执行快速翻译主链路。仅面向 EPUB 翻译任务；调用方负责非 EPUB 的回退。
+    执行统一翻译主链路。调用方先将支持的源格式归一化为 EPUB；不回退旧翻译器。
     """
     timings: list[tuple[str, float]] = []
+    expected_attempt_id = attempt_id_from_stats(job.translation_stats)
+    write_fence = current_job_write_fence()
+    if write_fence is not None and (write_fence.job_id != job.id or write_fence.attempt_id != expected_attempt_id):
+        raise JobWriteConflict("翻译任务与写入作用域不一致")
+    execution_owner = write_fence.execution_owner if write_fence is not None else None
+    reduce_attempt_id = expected_attempt_id or new_attempt_id()
+    reduce_job_id = str(job.id)
+    make_get_chapter_content(reduce_job_id, attempt_id=reduce_attempt_id, execution_owner=execution_owner)
     started_all = time.monotonic()
     _log_job_id.set(str(getattr(job, "id", "") or ""))
     _log_trace_id.set(str(getattr(job, "trace_id", "") or ""))
@@ -1274,6 +1317,11 @@ def run_fast_translation_job(
             progress_callback(f"生成章节 Manifest 失败：{_short_log(manifest['error'])}")
             stage_callback("mapping_failed", f"生成章节 Manifest 失败：{_short_log(manifest['error'])}", None)
             raise RuntimeError(manifest["error"])
+        preflight_for_identity = (job.translation_stats or {}).get('translation_preflight') or {}
+        if not isinstance(preflight_for_identity, dict):
+            preflight_for_identity = {}
+        _validate_manifest_identity(manifest, preflight_for_identity.get('chapter_strategy_overrides')
+                                    if preflight_for_identity.get('confirmed') else None)
         content_by_file = _load_content_by_file(str(preprocessed))
         original_book_title = _extract_book_title(str(preprocessed))
         timings.append(("Manifest", (time.monotonic() - t) * 1000))
@@ -1376,7 +1424,7 @@ def run_fast_translation_job(
                         (confirmed_preflight or {}).get("version") or 0
                     ),
                 },
-                expected_attempt_id=attempt_id_from_stats(job.translation_stats) or None,
+                expected_attempt_id=expected_attempt_id,
             )
         raise_if_cancelled(cancel_check)
 
@@ -1488,6 +1536,9 @@ def run_fast_translation_job(
             progress_callback=progress_callback,
             cancel_check=cancel_check,
             resume_key=resume_key,
+            attempt_id=expected_attempt_id,
+            reduce_attempt_id=reduce_attempt_id,
+            execution_owner=execution_owner,
         ))
         translation_stats.update({
             "source_warnings": list(manifest.get("source_warnings") or []),
@@ -1557,11 +1608,15 @@ def run_fast_translation_job(
         ok = reduce_and_package(
             str(preprocessed),
             str(output_path),
-            make_get_chapter_content(job.id),
+            make_get_chapter_content(reduce_job_id, attempt_id=reduce_attempt_id, execution_owner=execution_owner, required_files=[
+                chapter['file_path'] for chapter in manifest.get('chapters', [])
+                if chapter.get('chapter_kind') == ChapterKind.body.value and chapter.get('chunks')
+            ]),
             book_title=translated_book_title if translated_book_title != original_book_title else None,
             original_book_title=original_book_title,
             target_lang=job.target_lang,
             glossary=glossary,
+            source_warnings=translation_stats.setdefault("source_warnings", []),
         )
         timings.append(("ReducePackage", (time.monotonic() - t) * 1000))
         _log_stage("reducing", timings[-1][1])

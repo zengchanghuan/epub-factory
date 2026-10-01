@@ -199,6 +199,14 @@ class TestDeliveryRecovery(unittest.TestCase):
 
     def test_provider_pause_keeps_progress_and_has_operational_error(self):
         job = self.make_job()
+        # Reaching a provider failure requires a readable source first. Other
+        # tests intentionally retain the missing-file fixture for early exits.
+        from test_epub_fixture import minimal_epub_bytes
+        source_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(source_dir.cleanup)
+        source = Path(source_dir.name) / 'book.epub'
+        source.write_bytes(minimal_epub_bytes())
+        job.input_path = str(source)
         store = JobStore()
         store.add(job)
         with patch('app.job_runner.job_store', store), \
@@ -206,6 +214,7 @@ class TestDeliveryRecovery(unittest.TestCase):
                    side_effect=ProviderAccountUnavailable('deepseek')), \
              patch('app.job_runner.report_error'), patch('app.job_runner.notify_job_completed'):
             run_job(job.id, 'attempt')
+        job = store.get(job.id)
         self.assertEqual(job.status, JobStatus.failed)
         self.assertEqual(job.error_code, ErrorCode.TRANSLATION_PROVIDER_UNAVAILABLE)
         self.assertEqual(job.translation_stats['translated_chunks'], 7)
@@ -393,6 +402,7 @@ class TestDeliveryRecovery(unittest.TestCase):
             with self.assertRaises(ProviderAccountUnavailable):
                 asyncio.run(_translate_manifest_async(job=job, manifest=manifest,
                     content_by_file={}, glossary={}, progress_callback=lambda msg: None))
+        job = store.get(job.id)
         self.assertTrue(job.translation_stats['provider_blocked'])
         self.assertEqual(job.translation_stats['provider_error'], 'insufficient_balance')
 

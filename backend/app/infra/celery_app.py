@@ -94,3 +94,8 @@ def build_celery_app() -> Celery:
 
 
 celery_app = build_celery_app()
+
+# Worker parents load the store while importing task modules; connections from
+# that setup must never be reused by prefork children or replacement workers.
+from .worker_db_lifecycle import register_worker_db_lifecycle
+register_worker_db_lifecycle()
