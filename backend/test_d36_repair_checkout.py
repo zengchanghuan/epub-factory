@@ -36,9 +36,6 @@ class RepairCheckoutTests(unittest.TestCase):
             'ALIPAY_APP_ID': 'app', 'ALIPAY_SELLER_ID': 'seller', 'ALIPAY_DISABLE_PRECREATE': '0'}))
         self.stack.enter_context(patch.object(socket.socket, 'connect', side_effect=AssertionError('Network forbidden')))
         self.stack.enter_context(patch.object(main, '_REPAIR_UPLOAD_DIR', Path(self.temp)))
-        self.stack.enter_context(patch.object(main, '_repair_jobs', {}))
-        self.stack.enter_context(patch.object(main, '_repair_active_jobs', set()))
-        self.stack.enter_context(patch.object(main, '_repair_last_gateway_check', 0))
         self.clock = self.stack.enter_context(patch.object(main, '_repair_now', return_value=1_000_000))
         self.ready = self.stack.enter_context(patch.object(main, '_repair_gateway_available', return_value=True))
         self.repair = self.stack.enter_context(patch.object(main, '_ensure_repair_running'))
@@ -87,7 +84,6 @@ class RepairCheckoutTests(unittest.TestCase):
         response = self.upload(minimal_epub_bytes())
         self.assertFalse(response['can_pay'])
         job = response['job_id']
-        main._repair_jobs.clear()
         self.assertFalse(self.client.get(self.path(job, 'status')).json()['can_pay'])
         self.assertEqual(self.pay(job).status_code, 409)
         self.gateway.assert_not_called()
@@ -100,7 +96,6 @@ class RepairCheckoutTests(unittest.TestCase):
             with self.subTest(size=len(content)):
                 info = self.upload(content)
                 self.assertFalse(info['can_pay'])
-                main._repair_jobs.clear()
                 self.assertEqual(self.pay(info['job_id']).status_code, 409)
         self.gateway.assert_not_called()
 
@@ -111,7 +106,6 @@ class RepairCheckoutTests(unittest.TestCase):
         saved = json.loads((Path(self.temp) / job / 'order.json').read_text())
         self.assertEqual(saved['report']['fixable_count'], 1)
         self.assertTrue(saved['can_pay'])
-        main._repair_jobs.clear()
         self.assertTrue(self.client.get(self.path(job, 'status')).json()['can_pay'])
         self.assertEqual(self.pay(job).json()['price_cny'], '2.99')
         saved = main._repair_job_get(job)
@@ -166,7 +160,6 @@ class RepairCheckoutTests(unittest.TestCase):
         result = self.recover(job)
         self.assertEqual(result['payment_check'], 'unavailable')
         self.assertGreater(result['retry_after_seconds'], 0)
-        main._repair_jobs.clear()
         self.assertEqual(self.recover(job)['payment_check'], 'throttled')
         self.query.assert_called_once()
         self.assertEqual(main._repair_job_get(job)['status'], 'pending_payment')
@@ -183,7 +176,6 @@ class RepairCheckoutTests(unittest.TestCase):
         job = self.upload()['job_id']
         self.pay(job)
         self.advance(11)
-        main._repair_jobs.clear()
         self.query.return_value = self.paid_trade(job)
         main._repair_payment_tick()
         self.assertEqual(main._repair_job_get(job)['status'], 'paid')
@@ -364,7 +356,6 @@ class RepairCheckoutTests(unittest.TestCase):
         self.assertTrue(main._repair_job_get(job)['payment_confirmation_pending'])
         confirmed_at = self.receipt.call_args.kwargs['paid_at']
         self.repair.assert_called_once_with(job)
-        main._repair_jobs.clear()
         self.advance(31)
         self.receipt.return_value = True
         main._repair_payment_tick()

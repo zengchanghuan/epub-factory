@@ -3885,16 +3885,28 @@ _REPAIR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # 修复单价（元）
 REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "2.99").strip() or "2.99"
 
-# 修复任务元数据与源文件同目录持久化，确保进程重启后仍按下单金额验款。
-# {job_id: {"status": "pending_payment"|"paid"|"repaired"|"failed",
-#           "out_trade_no": str, "filename": str, "qr_code": str|None}}
-_repair_jobs: dict = {}
-_repair_jobs_lock = _threading.Lock()
-_repair_active_jobs: set[str] = set()
-_repair_payment_query_lock = _threading.Lock()
-_repair_last_gateway_check = 0.0
+# order.json is authoritative across API processes, never a process-local cache.
+# Paid records form the durable waiting queue; admission is globally bounded.
+from .domain.repair_repository import RepairRepository, RepairMetadataError
+from .domain.repair_executor import RepairExecutor
+from .domain.repair_runner import run_repair, source_path as repair_source_path, artifact_path as repair_artifact_path
+
+_repair_executor = None
+_repair_executor_lock = _threading.Lock()
 _REPAIR_CHECK_WINDOW = 48 * 60 * 60
 _REPAIR_CHECK_DELAYS = (15, 30, 60, 120, 300, 600, 1800, 3600)
+
+
+def _repair_repository():
+    return RepairRepository(_REPAIR_UPLOAD_DIR)
+
+
+def _get_repair_executor():
+    global _repair_executor
+    with _repair_executor_lock:
+        if _repair_executor is None or _repair_executor.closed:
+            _repair_executor = RepairExecutor(concurrency=int(os.environ.get("REPAIR_CONCURRENCY", "1")))
+        return _repair_executor
 
 
 def _repair_now() -> float:
@@ -3902,16 +3914,7 @@ def _repair_now() -> float:
 
 
 def _repair_source_path(job_id: str, job: dict) -> Optional[Path]:
-    directory = _REPAIR_UPLOAD_DIR / job_id
-    filename = job.get("filename")
-    if filename and Path(filename).name == filename:
-        candidate = directory / filename
-        if candidate.is_file() and not candidate.is_symlink():
-            return candidate
-    # Old memory-only tasks may have no filename. Never guess among multiple files.
-    sources = [p for p in directory.glob("*.epub")
-               if "_fixed" not in p.stem and not p.is_symlink() and p.is_file()]
-    return sources[0] if len(sources) == 1 else None
+    return repair_source_path(_REPAIR_UPLOAD_DIR, job_id, job)
 
 
 def _repair_diagnosis(job_id: str, job: dict, *, refresh=False) -> tuple[dict, bool]:
@@ -3963,17 +3966,14 @@ def _repair_check_response(job_id: str, payment_check: str, *, recovered=False,
 
 
 def _repair_store_check(job_id: str, state: str) -> None:
-    with _repair_jobs_lock:
-        job = _repair_job_get_locked(job_id)
+    with _repair_repository().transaction(job_id) as job:
         if job and job.get("status") == "pending_payment":
             job["payment_check"] = state
-            _repair_job_save_locked(job_id)
 
 
 def _repair_publish_confirmation(job_id: str) -> None:
     """Retry only confirmations explicitly marked by the new payment path."""
-    with _repair_jobs_lock:
-        job = _repair_job_get_locked(job_id)
+    with _repair_repository().transaction(job_id) as job:
         now = _repair_now()
         if (not job or not job.get("payment_confirmation_pending")
                 or float(job.get("next_confirmation_attempt_at") or 0) > now):
@@ -3981,9 +3981,9 @@ def _repair_publish_confirmation(job_id: str) -> None:
         attempts = int(job.get("confirmation_attempts") or 0)
         if attempts >= 8:
             return
-        job.update(confirmation_attempts=attempts + 1,
+        confirmation_owner = uuid.uuid4().hex
+        job.update(confirmation_owner=confirmation_owner, confirmation_attempts=attempts + 1,
                    next_confirmation_attempt_at=now + min(300, 30 * 2 ** attempts))
-        _repair_job_save_locked(job_id)
         snapshot = dict(job)
     order_no = f"repair_{job_id}"
     try:
@@ -4006,8 +4006,9 @@ def _repair_publish_confirmation(job_id: str) -> None:
                 receipt_saved = PaymentEmailRepository(job_store).get(order_no) is not None
         except Exception:
             receipt_saved = False
-    with _repair_jobs_lock:
-        current = _repair_job_get_locked(job_id)
+    with _repair_repository().transaction(job_id) as current:
+        if not current or current.get("confirmation_owner") != confirmation_owner:
+            return
         if event_saved and receipt_saved:
             current.update(payment_confirmation_pending=False,
                            confirmation_delivery="not_required" if test_order or not mail_enabled else "queued")
@@ -4016,13 +4017,11 @@ def _repair_publish_confirmation(job_id: str) -> None:
             logger.warning("Repair payment notification persistence needs attention", extra={"job_id": job_id})
         else:
             current["confirmation_delivery"] = "retry"
-        _repair_job_save_locked(job_id)
 
 
 def _repair_confirm_payment(job_id: str, amount: str, source: str) -> bool:
     """Serialize confirmation and keep receipt retries independent of repair work."""
-    with _repair_jobs_lock:
-        current = _repair_job_get_locked(job_id)
+    with _repair_repository().transaction(job_id) as current:
         if not current or not _amount_equal(amount, _repair_expected_amount(current)):
             return False
         first = current.get("status") == "pending_payment"
@@ -4032,7 +4031,6 @@ def _repair_confirm_payment(job_id: str, amount: str, source: str) -> bool:
             current.update(status="paid", payment_confirmed_at=_repair_now(), payment_check="verified_paid",
                            payment_confirmed_source=source, payment_confirmation_pending=True,
                            confirmation_attempts=0, next_confirmation_attempt_at=0)
-            _repair_job_save_locked(job_id)
     if first:
         try:
             _repair_publish_confirmation(job_id)
@@ -4067,16 +4065,17 @@ def _repair_check_payment(job_id: str, *, background=False) -> dict:
     retry = max(0, int(float(job.get("next_payment_check_at") or 0) - now + 1))
     if retry:
         return _repair_check_response(job_id, "throttled", retry_after_seconds=retry)
-    if not _repair_payment_query_lock.acquire(blocking=False):
-        return _repair_check_response(job_id, "throttled", retry_after_seconds=5)
-    try:
-        global _repair_last_gateway_check
+    repository = _repair_repository()
+    with repository.lock("payment-query", blocking=False) as acquired:
+        if not acquired:
+            return _repair_check_response(job_id, "throttled", retry_after_seconds=5)
         now = _repair_now()
-        # All manual requests and the dispatcher share this process-wide budget.
-        if now - _repair_last_gateway_check < 1:
+        # Shared by manual requests and every API process on this repair volume.
+        if not repository.reserve_gateway(now):
             return _repair_check_response(job_id, "throttled", retry_after_seconds=2)
-        with _repair_jobs_lock:
-            current = _repair_job_get_locked(job_id)
+        with repository.transaction(job_id) as current:
+            if not current:
+                raise HTTPException(status_code=404, detail="任务不存在或已过期")
             if current.get("status") != "pending_payment":
                 return {"job_id": job_id, "status": current.get("status"), "recovered": False,
                         "payment_check": "verified_paid", "retry_after_seconds": 0}
@@ -4088,10 +4087,8 @@ def _repair_check_payment(job_id: str, *, background=False) -> dict:
             delay = _REPAIR_CHECK_DELAYS[min(attempts, len(_REPAIR_CHECK_DELAYS) - 1)]
             current.update(payment_check_attempts=attempts + 1, last_payment_check_at=now,
                            next_payment_check_at=now + delay)
-            _repair_job_save_locked(job_id)
             order_no = current.get("out_trade_no") or f"repair_{job_id}"
             expected = _repair_expected_amount(current)
-        _repair_last_gateway_check = now
         from .infra.alipay import query_verified_trade
         try:
             trade = query_verified_trade(order_no)
@@ -4113,8 +4110,6 @@ def _repair_check_payment(job_id: str, *, background=False) -> dict:
             return _repair_check_response(job_id, "unavailable", retry_after_seconds=delay)
         first = _repair_confirm_payment(job_id, str(trade["total_amount"]), "verified_query")
         return _repair_check_response(job_id, "verified_paid", recovered=first, trade_status=trade_status)
-    finally:
-        _repair_payment_query_lock.release()
 
 
 def _repair_gateway_available() -> bool:
@@ -4130,7 +4125,11 @@ def _repair_payment_tick() -> None:
     resumed = 0
     for metadata in _REPAIR_UPLOAD_DIR.glob("*/order.json"):
         job_id = metadata.parent.name
-        job = _repair_job_get(job_id)
+        try:
+            job = _repair_job_get(job_id)
+        except (OSError, ValueError, RepairMetadataError):
+            logger.warning("Repair metadata requires attention", extra={"job_id": job_id})
+            continue
         if not job:
             continue
         if job.get("payment_confirmation_pending"):
@@ -4139,8 +4138,7 @@ def _repair_payment_tick() -> None:
             except Exception:
                 logger.warning("Repair receipt retry deferred", extra={"job_id": job_id})
         if job.get("status") == "paid" and resumed < 3:
-            _ensure_repair_running(job_id)
-            resumed += 1
+            resumed += bool(_ensure_repair_running(job_id))
         elif gateway_available and job.get("status") == "pending_payment" and job.get("checkout_started_at"):
             if now - float(job["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
                 if job.get("payment_check") != "manual_review_required":
@@ -4148,47 +4146,15 @@ def _repair_payment_tick() -> None:
                 continue
             if float(job.get("next_payment_check_at") or 0) <= now:
                 candidates.append((float(job.get("next_payment_check_at") or 0), job_id))
-    # One gateway read per tick (5 s) globally, persisted per-order exponential backoff.
+    # One candidate per process tick, plus a shared 1 s gateway budget and
+    # persisted per-order exponential backoff across all API processes.
     if candidates:
         _repair_check_payment(min(candidates)[1], background=True)
 
 
 
-def _repair_job_get_locked(job_id: str) -> Optional[dict]:
-    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
-        return None
-    if job_id not in _repair_jobs:
-        metadata = _REPAIR_UPLOAD_DIR / job_id / "order.json"
-        try:
-            saved = json.loads(metadata.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(saved, dict):
-            return None
-        _repair_jobs[job_id] = saved
-    return _repair_jobs[job_id]
-
-
-def _repair_job_save_locked(job_id: str) -> None:
-    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
-        raise ValueError("Invalid repair job id")
-    directory = _REPAIR_UPLOAD_DIR / job_id
-    directory.mkdir(parents=True, exist_ok=True)
-    temporary = directory / f".order-{uuid.uuid4().hex}.tmp"
-    try:
-        with temporary.open("x", encoding="utf-8") as handle:
-            temporary.chmod(0o600)
-            json.dump(_repair_jobs[job_id], handle, ensure_ascii=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(directory / "order.json")
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _repair_job_get(job_id: str) -> Optional[dict]:
-    with _repair_jobs_lock:
-        return _repair_job_get_locked(job_id)
+    return _repair_repository().get(job_id)
 
 
 def _repair_expected_amount(job: dict) -> str:
@@ -4197,62 +4163,22 @@ def _repair_expected_amount(job: dict) -> str:
 
 
 def _repair_job_set(job_id: str, **kwargs) -> None:
-    with _repair_jobs_lock:
-        job = _repair_job_get_locked(job_id)
-        if job is None:
-            job = _repair_jobs.setdefault(job_id, {})
+    with _repair_repository().transaction(job_id, create=True) as job:
         job.update(kwargs)
-        _repair_job_save_locked(job_id)
 
 
-def _ensure_repair_running(job_id: str) -> None:
-    """Resume a confirmed local repair after restart, once per API process."""
-    with _repair_jobs_lock:
-        job = _repair_job_get_locked(job_id)
-        if not job or job.get("status") != "paid" or job_id in _repair_active_jobs:
-            return
-        _repair_active_jobs.add(job_id)
+def _ensure_repair_running(job_id: str) -> bool:
+    """Wake bounded execution; no capacity means the paid disk queue retains it."""
+    return _get_repair_executor().submit(_repair_repository(), job_id, _run_repair_owned)
 
-    def run_and_release():
-        try:
-            _do_repair_async(job_id)
-        finally:
-            with _repair_jobs_lock:
-                _repair_active_jobs.discard(job_id)
 
-    try:
-        _threading.Thread(target=run_and_release, daemon=True).start()
-    except Exception:
-        with _repair_jobs_lock:
-            _repair_active_jobs.discard(job_id)
-        raise
+def _run_repair_owned(repository, job_id, owner):
+    run_repair(repository, job_id, owner, on_completed=_queue_repair_completion_email)
 
 
 def _do_repair_async(job_id: str) -> None:
-    """后台线程：执行实际修复，完成后更新状态。"""
-    job_dir = _REPAIR_UPLOAD_DIR / job_id
-    try:
-        input_path = _repair_source_path(job_id, _repair_job_get(job_id) or {})
-        if not input_path:
-            _repair_job_set(job_id, status="failed", error="原始文件不存在")
-            return
-        fixed_name = input_path.stem + "_fixed.epub"
-        output_path = job_dir / fixed_name
-        if not output_path.exists():
-            from .engine.epub_repairer import repair as do_repair
-            temporary_output = job_dir / (input_path.stem + "_fixed.pending.epub")
-            try:
-                do_repair(str(input_path), str(temporary_output))
-                temporary_output.replace(output_path)
-            finally:
-                temporary_output.unlink(missing_ok=True)
-        _repair_job_set(job_id, status="repaired", download_filename=fixed_name)
-        _queue_repair_completion_email(job_id, "repaired")
-        logger.info("epub_repair done", extra={"job_id": job_id})
-    except Exception as e:
-        logger.error("epub_repair async failed", exc_info=True, extra={"job_id": job_id})
-        _repair_job_set(job_id, status="failed", error=str(e))
-        _queue_repair_completion_email(job_id, "failed")
+    """Internal synchronous entry, subject to the exact same execution admission."""
+    _get_repair_executor().run_inline(_repair_repository(), job_id, _run_repair_owned)
 
 
 def _queue_repair_completion_email(job_id: str, status: str) -> None:
@@ -4338,7 +4264,9 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
     )
     if _skip_payment:
         # 开发模式：直接标记已付款并触发修复
-        _repair_job_set(job_id, status="paid")
+        with _repair_repository().transaction(job_id) as current:
+            if current and current.get("status") not in {"paid", "repaired"}:
+                current.update(status="paid", is_test_order=True)
         _ensure_repair_running(job_id)
         return {"job_id": job_id, "status": "paid", "qr_code": None}
 
@@ -4346,8 +4274,12 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
     out_trade_no = f"repair_{job_id}"
     # Freeze before contacting the gateway. Retrying the same merchant order must
     # retain its amount even after a price/config change or a process restart.
-    with _repair_jobs_lock:
-        current = _repair_job_get_locked(job_id)
+    with _repair_repository().transaction(job_id) as current:
+        if not current:
+            raise HTTPException(status_code=404, detail="任务不存在或已过期")
+        # The proof may arrive after diagnosis but before this transaction.
+        if current.get("status") in {"paid", "repaired"}:
+            return {"job_id": job_id, "status": current["status"]}
         if current.get("expected_amount") or current.get("out_trade_no"):
             repair_price = _repair_expected_amount(current)
         else:
@@ -4357,7 +4289,6 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
         if not current.get("checkout_started_at") or now - float(current["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
             current.update(checkout_started_at=now, next_payment_check_at=now + 10, payment_check_attempts=0)
         current.update(expected_amount=repair_price, out_trade_no=out_trade_no)
-        _repair_job_save_locked(job_id)
     try:
         disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
         try:
@@ -4411,6 +4342,7 @@ async def repair_status(job_id: str):
     pending = job.get("status") == "pending_payment"
     diagnosis, can_pay = (await asyncio.to_thread(_repair_diagnosis, job_id, job)
                           if pending else ({"report": job.get("report")}, False))
+    job = _repair_job_get(job_id) or job
     pending = job.get("status") == "pending_payment"
     return {
         "job_id": job_id,
@@ -4437,26 +4369,24 @@ async def repair_download(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在或已过期，请重新上传文件")
 
-    _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
-    if not _skip_payment and job.get("status") not in ("repaired",):
+    if job.get("status") != "repaired":
         raise HTTPException(status_code=402, detail="请先完成支付并等待修复完成")
 
-    job_dir = _REPAIR_UPLOAD_DIR / job_id
-    fixed_files = [f for f in job_dir.glob("*_fixed.epub")]
-    if not fixed_files:
+    fixed_file = repair_artifact_path(_REPAIR_UPLOAD_DIR, job_id, job)
+    if fixed_file is None:
         raise HTTPException(status_code=404, detail="修复文件不存在，请稍后重试")
 
-    fixed_file = fixed_files[0]
     # RFC 5987 编码处理含中文的文件名
     import urllib.parse
-    encoded_name = urllib.parse.quote(fixed_file.name)
+    download_name = job.get("download_filename") or fixed_file.name
+    encoded_name = urllib.parse.quote(download_name)
     return FileResponse(
         str(fixed_file),
         media_type="application/epub+zip",
         headers={
             "Content-Disposition": (
                 f"attachment; filename*=UTF-8''{encoded_name}; "
-                f"filename=\"{fixed_file.name.encode('ascii', 'replace').decode()}\""
+                f"filename=\"{download_name.encode('ascii', 'replace').decode()}\""
             )
         },
     )
@@ -4543,6 +4473,8 @@ def stop_completion_email_worker():
     _job_recovery_worker.stop()
     _job_dispatch_worker.stop()
     _repair_payment_worker.stop()
+    if _repair_executor is not None:
+        _repair_executor.shutdown(wait=False)
     payment_email_worker.stop()
     _completion_email_worker.stop()
 

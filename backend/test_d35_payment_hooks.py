@@ -33,7 +33,6 @@ class PaymentHookTests(unittest.TestCase):
         self.stack.enter_context(patch.object(main, 'job_store', self.store))
         self.stack.enter_context(patch.object(mail, 'job_store', self.store))
         self.stack.enter_context(patch.object(main, '_REPAIR_UPLOAD_DIR', Path(self.temp)))
-        self.stack.enter_context(patch.object(main, '_repair_jobs', {}))
         self.events = self.stack.enter_context(patch.object(main, 'record_event'))
         self.verify = self.stack.enter_context(patch.object(main, 'verify_alipay_notification', return_value=True))
         self.stack.enter_context(patch.object(main, '_use_celery', return_value=True))

@@ -94,6 +94,9 @@ D_SUITE = [
     "test_d47_queue_process.py",
     "test_d47_worker_control.py",
     "test_d47_worker_environment.py",
+    "test_d48_repair_repository.py",
+    "test_d48_repair_executor.py",
+    "test_d48_repair_contract.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

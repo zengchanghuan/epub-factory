@@ -2,7 +2,7 @@
 title: 架构优化与逐项历史书稿回归
 date: 2026-10-01
 base_revision: 5d1705c9fed54b93403d34f2a4b70f4bcfc2e3b8
-status: r9-verified
+status: r10-complete
 ---
 
 # 架构优化与逐项历史书稿回归
@@ -31,7 +31,7 @@ status: r9-verified
 - [x] R7 Worker 失联恢复闭环：持久心跳、同租约限次恢复、未开始补投和真实进程/三书/全套门禁通过。
 - [x] R8 数据库状态及 attempt 原子更新：事务写入守卫、owner 与成品隔离，专项/三书/全套离线门禁通过。
 - [x] R9 长短任务队列隔离：运行时控制、配置加载、shebang 识别及数据库生命周期补修后，全套离线与三书历史门禁重新通过。
-- [ ] R10 独立修复的执行隔离与并发限制：R9 门禁已放行，本次仅修 R9，尚未开始。
+- [x] R10 独立修复的执行隔离与并发限制：同主机共享目录事务、有界执行及 owner 发布，边界补修后专项/历史/全套门禁通过；本地未提交部署。
 - [ ] R11 旧页面结账入口统一：等待前项放行。
 - [ ] R12 所有模型阶段统一限流与调用边界：等待前项放行。
 - [ ] R13 通知鉴权与分页：等待前项放行。
@@ -389,7 +389,7 @@ R6 历史测试 `test_d44_payment_lifecycle_history.py` 继承 R5 的真实成�
 
 ### R9：长短任务队列隔离
 
-状态：**补修四处启动/运行时边界缺口后，本地专项、完整后端及三书历史门禁重新通过。** 以下前轮证据保留追溯，本轮结论见末尾追加记录。本项尚未提交、推送或部署，未开始 R10。
+状态：**补修四处启动/运行时边界缺口后，本地专项、完整后端及三书历史门禁重新通过。** 随后按用户请求提交并推送为 `8817e46`，本地 HEAD 与 `origin/main` 已核验一致；未部署。R10 在该推送完成后开始，下文保留 R9 当时验收证据。
 
 #### 改动边界
 
@@ -453,6 +453,59 @@ R6 历史测试 `test_d44_payment_lifecycle_history.py` 继承 R5 的真实成�
 
 完整后端结果：`/private/tmp/fixepub-r9-final.WeYEf4/full/results.json` 及 `full/logs/`；D17 为 `extra/logs/`。历史日志为 `/private/tmp/fixepub-r9-final-history-20261001.log`、`/private/tmp/fixepub-r9-final-r1-history-20261001.log` 等；前端和部署为 `/private/tmp/fixepub-r9-final-frontend.log`、`/private/tmp/fixepub-r9-final-worker-services.log`、`/private/tmp/fixepub-r9-final-deploy.log`。以上 `/private/tmp` 证据仅在当前 Mac 临时保存，跨 Mac 复核应按下方命令重新执行。
 
+### R10：独立修复执行隔离与并发限制
+
+状态：**实现及最终离线验收完成；未提交、推送或部署 R10，不开始 R11。** R9 已先推送为 `8817e46`。保留现有单体和 `order.json` 持久格式，不迁移历史付款事实，不修改修复引擎或收费规则。
+
+- [x] `RepairRepository` 收口最新状态读取与跨进程文件事务，移除权威内存缓存；已付状态不能被旧快照覆盖。
+- [x] 独立有界线程池加共享执行槽及每单执行锁；满载时订单留在持久 `paid` 队列，不无限排队或创建线程。
+- [x] 每次执行使用唯一 owner、临时文件和成品指针；只有当前 owner 可提交终态，遗留文件不能充当成功证明。
+- [x] 付款查询预算和付款确认事务跨 API 进程共享；保留旧金额、管理员测试价、商户回执及无浏览器恢复。
+- [x] 双 API／重复付款／进程重启／大量已付任务／崩溃恢复专项，并对三份固定 SHA 真书执行独立修复链回归。
+- [x] 完成后重跑关联历史及全套离线门禁，记录原件与成品保护边界后才验收。
+
+实现目标为同主机、共享本地修复目录的多 API 进程；不把文件锁方案称为跨主机/NFS 支持或独立 OS 进程。两本历史原稿没有本引擎可修问题，只能用于合法历史已付恢复/no-op 的保护测试，不能因此放开新单收费门禁。独立修复范围小于转换器，EPUBCheck 结果须与原稿/旧修复路径对照，不沿用转换链零错误结论。
+
+#### 验收中发现的边界补修
+
+首轮专项和三书历史通过后，追加只读审计发现：随机查询不存在的合法任务 ID，也会生成永久 order 锁；100 次请求生成 100 个文件，形成无需上传/付款的 inode 消耗入口。已在安全目录句柄下先检查元数据存在性，缺失读/非创建事务不写文件，已有记录仍获取稳定锁后重新读取；不删除既有锁 inode。存储 25 项连续 15 轮（375 项）通过；HTTP 100 个随机 ID、200 次状态/下载请求均 404 且目录树不变。重新冻结业务进行最终门禁；首次快照 `/private/tmp/fixepub-r10-final.5zhIM6/current`（90 套后端通过）仅作中间证据，不充作最终验收。
+
+另以真实 `Thread.start()` 故障发现：`ThreadPoolExecutor.submit()` 先入队再创建线程，提交抛错并不保证 work item 不存在；下一次启动 worker 可执行已被拒绝、已释放租约的旧回调。现用显式 handoff Event 确认提交完成后才能执行/释放租约；失败残留项直接丢弃，失效 pool 退役且不取消已接受任务，后续 API 自动重建。专项真实覆盖首次/第二线程启动失败、已有 worker 取到残留项、锁/容量一次释放和 paid 订单恢复。新增测试初轮因夹具两笔订单误用了相同 ID 未进入目标路径，修正为不同 ID 后 17 项通过；没有放宽并发断言。加 HTTP 恢复后 D48 为 25 + 17 + 18 = 60 项。第二次快照 `/private/tmp/fixepub-r10-verified.QodicD/current` 及对应历史通过结果仍仅作中间证据，最后一轮以补修后源码重新执行。
+
+#### 独立修复的真实成品边界
+
+D48 三书历史最终 4/4 方法通过（31.808 秒、0 跳过）：三份原稿分别经合法旧版 paid 元数据恢复、真实有界 admission/原修复引擎、刷新查询及 HTTP 下载；另测旧 repaired 成品不重跑、新上传收费资格不放宽。六份原稿/历史成品 SHA 未变，新成品正文、图片字节、目录、锚点和 ZIP 成员均按白名单精确核对。
+
+| 书稿 | 可修问题数 | 原稿 / 旧独立修复 / R10 成品 ERROR | R10 WARNING / FATAL |
+|---|---:|---|---|
+| Double Helix | 0 | 2 / 2 / 2 | 0 / 0 |
+| 責任與判斷 | 0 | 6 / 6 / 6 | 0 / 0 |
+| 別把你的錢留到死 | 1（旧 DOCTYPE） | 2 / 1 / 1 | 1 / 0 |
+
+上述均为真实 EPUBCheck 5.1.0 输出，不是模拟通过。残余错误来自既有书稿且超出独立修复引擎范围；本轮不改引擎，也不把转换器的零错误结果移用到这里。前两本作为新订单均拒绝收费（409），第三本真实可修问题允许原价报价；未调用真实支付宝。最终历史日志 `/private/tmp/fixepub-r10-release-history.log`。
+
+#### 最终冻结门禁
+
+最终快照 `/private/tmp/fixepub-r10-release.R2dIWk/current`。业务代码及本轮测试逐文件比对一致，结果记录完成前未再变动；仅文档在收尾时补记。R10 四个业务文件按 `main.py → repair_repository.py → repair_executor.py → repair_runner.py` 顺序执行 `shasum -a 256`，再对输出（含相对路径）执行同一命令的聚合值为 `159b34c32b1b6bebd5f52b2ea57796889fb0f44d50227b4f44cd123ed2a7117a`；历史运行前后相同。
+
+| 门禁 | 最终结果 | 验证范围 |
+|---|---|---|
+| R10 存储 / 执行器 / API 契约 | 25 + 17 + 18 = 60/60 | 真实多进程事务/共享槽、重复回调、原生线程启动失败、SIGKILL、owner 迟到、提交前后故障、无效 ID 零文件增量 |
+| 已有修复价格 / 收款钩子 / 结账 | 19 + 12 + 30 = 61/61 | 旧 5.99 / 当前报价 / 0.01 管理员测试金额、回执与查询预算、重启与迟到回调保持 |
+| 完整后端 catalog | 90/90 脚本返回成功 | 含 7 个既有 opt-in 样本跳过，未算作真实样本验证；隔离代码副本、SQLite、HOME、运行目录、合成基础夹具，外网守卫 |
+| D17 批量附加门禁 | 6/6 | 不在原 catalog 的批量付款与转换契约 |
+| 前端 | 29 套、209/209 | 无前端行为改动，仍全量复跑 |
+| Worker 与部署脚本离线检查 | 25 + 11 = 36/36 | 角色、运行环境、发布/恢复及旧修复状态保护；不是生产部署 |
+| R10 三书独立修复历史 | 4/4，31.808 秒 | 无跳过；原收费资格、合法旧单恢复、唯一执行、刷新下载及上述原始 QA 残余 |
+| R9 三书及继承保护 | 16/16，233.528 秒 | 无跳过；真实双队列/R7 失联恢复/R8 晚到写入；转换成品 EPUBCheck 0 ERROR/FATAL |
+| R1 权益历史 | 4/4，8.823 秒 | 无跳过；三书原件/旧成品、未付拒重启、付款原档权限及刷新下载 |
+| R3 精校历史 | 17/17，135.737 秒 | 无跳过；三书 0/58/57 候选、115 受控请求经过真实账本；五组词库报价/执行一致，拒绝半成功成品 |
+| R4 翻译计划历史 | 16/16，69.275 秒 | 无跳过；三书 211 章/221 文档/4581 块回放，3 份历史 Markdown（2 份唯一内容）规范化、报价和清理 |
+
+所有最终历史均核验原稿及历史成品固定 SHA 未变，正文、图片、目录/锚点及 HTTP 下载保护通过。完整后端和历史外网守卫没有连接/DNS 拦截记录。未调用收费模型、未真实收款、未测试生产 Redis/PostgreSQL、未验证 iBooks 视觉效果；无历史 DOCX 样本，不把受控模型回放当作新的翻译质量验收。修复仍使用同主机目录和 API 内有界线程，不宣称跨主机或统一 JobStore/Celery 迁移完成。
+
+最终后端证据为 `/private/tmp/fixepub-r10-release.R2dIWk/full/results.json`、`full/logs/`，附加 D17 为 `extra/logs/`；其他为 `/private/tmp/fixepub-r10-release-{history,r9-history,r1-history,r3-history,r4-history,frontend,worker-services,deploy}.log`。临时证据不随 Git 同步，跨 Mac 请提供同 SHA 原书并重新执行测试。架构图、配置样例与部署约束均同步更新；生产持久目录迁移、跨主机统一队列及孤儿文件清理仍未实施。
+
 ## 可重复执行的命令与证据
 
 在仓库根目录执行（目录不提供时历史测试明确跳过，不算通过）：
@@ -468,6 +521,11 @@ EPUB_HISTORY_UPLOAD_DIR="$PWD/backend/uploads" \
 EPUB_HISTORY_OUTPUT_DIR="$PWD/backend/outputs" \
 EPUB_HISTORY_BASELINE_DIR=/路径/同源基线目录 \
 backend/.venv/bin/python backend/test_d47_queue_history.py
+
+# R10 独立修复历史（真实原书，必须配置 Java + EPUBCheck；无需模型）。
+EPUB_HISTORY_UPLOAD_DIR="$PWD/backend/uploads" \
+EPUB_HISTORY_OUTPUT_DIR="$PWD/backend/outputs" \
+backend/.venv/bin/python backend/test_d48_repair_history.py
 ```
 
 本机隔离证据目录：`/private/tmp/fixepub-arch-20261001.RmFzTr`，包含 `inventory.json`、干净基线、`baseline-report.json`、`r1-report.json` 和逐书成品校验 JSON。该目录是临时证据，未加入 Git；六份输入/历史输出的固定哈希保存在 opt-in 历史测试中，可在两台 Mac 提供同一书稿后复测。

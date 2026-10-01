@@ -2,7 +2,7 @@
 title: EPUB Factory 当前代码架构
 status: current
 updated: 2026-10-01
-code_revision: 3e88b7f7b8f19a1ac02f329546161711120d55f4
+code_revision: 8817e4606ac4a1777525a57738b4d38c46a26f35 plus local R10
 scope: local-code-and-offline-verification
 ---
 
@@ -10,7 +10,7 @@ scope: local-code-and-offline-verification
 
 本文依据上述提交的本地代码与离线核验，描述实际接通的调用链，不代表已经核验生产配置或部署版本。历史设计见 [AI 翻译设计](AI-TRANSLATION-DESIGN.md)，本轮缺陷与改进顺序见 [架构审查：2026-10-01](ARCHITECTURE-REVIEW-2026-10-01.md)。
 
-R1–R8 及历史导航/表格兼容修复已提交并推送至上述版本，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复，以及旧执行器写入和成品保护。本地工作区继续实现 R9：书籍与维护任务分队列、分 Worker，并增加启动及部署前的角色检查。以下主链路包含 R9 工作区改动，最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
+R1–R9 及历史导航/表格兼容修复已提交并推送至 `8817e46`，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、旧执行器写入和成品保护，以及书籍与维护任务分队列/分 Worker。以下主链路另包含本地 R10：独立修复的跨进程文件事务、有界执行器和 owner 成品发布；最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
 
 当前形态是**模块化单体 API + 整本 Celery 任务 + Worker 内章节并发**；独立 EPUB 修复仍在 API 进程内执行。图中的虚线表示条件启用或旁路调用，不表示已经完成分布式改造。
 
@@ -52,10 +52,14 @@ flowchart TB
   Fence --> Store
   Preflight --> Ledger["逐请求费用账本<br/>与主库共用 SQLAlchemy engine"]
   Translator --> Ledger
-  API --> Repair["独立修复 API<br/>order.json + 进程内缓存"]
-  Repair --> RepairWorker["API 内修复支付轮询线程<br/>确认已付后启动修复线程"]
-  RepairWorker -->|"查单"| Pay
-  RepairWorker --> RepairEngine["epub_repairer<br/>REPAIR_UPLOAD_DIR 下成品"]
+  API --> Repair["独立修复 API<br/>RepairRepository：最新读取 + 文件事务"]
+  Repair --> RepairStore["共享本机 REPAIR_UPLOAD_DIR<br/>order.json：paid 持久等待 / 冻结金额"]
+  RepairWorker["API 内修复支付轮询线程<br/>全局网关锁及预算 / 恢复已付"] -->|"查单"| Pay
+  RepairWorker --> RepairStore
+  Repair --> RepairExecutor["RepairExecutor 有界线程池<br/>每单锁 + 跨 API 共享 N 个槽"]
+  RepairWorker --> RepairExecutor
+  RepairExecutor --> RepairEngine["原 epub_repairer<br/>唯一临时文件 / owner 守卫发布指针"]
+  RepairEngine --> RepairStore
   Store --> Mail["API 内邮件分发线程<br/>完成通知 / 商户收款通知"]
   Mail --> SMTP["邮件服务"]
   Beat["Celery Beat"] -->|"对账 / 余额：独立维护队列"| HouseQueue
@@ -82,6 +86,7 @@ FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本�
 | Worker 失联及未开始恢复 | 工作区 R7：持久心跳、同租约限次恢复及延迟补投；需要持久库与 Broker |
 | 旧执行器写入与成品保护 | 工作区 R8：父任务锁内 attempt/owner 守卫、独占成品目录及提交未知时保守清理；专项和历史门禁通过，未部署 |
 | 长短任务队列隔离 | 工作区 R9：整书保留 `celery`；对账/余额/ping 使用 `housekeeping`，独立消费者与启动门禁；尚未部署 |
+| 独立修复多进程一致性与有界执行 | 本地 R10：共享本机目录事务、全局槽、付款扫描恢复、owner 成品提交；未入主 JobStore/Celery，未部署 |
 | Celery 分布式章节执行 | 存在另一章节任务入口，未接整书主链 |
 | PDF 翻译、图片像素 OCR 与重绘 | 尚未实现/未开放，不画入执行链 |
 
@@ -416,16 +421,21 @@ Manifest 会记录 `image_note_chunks_skipped`、`image_caption_chunks`、`refer
 | 段落翻译缓存 | 本地 `translation_cache.db` | 更换任务主库不会自动迁走此 SQLite |
 | 画像/术语/书名/风格和 chunk 检查点 | 默认复用缓存 DB，可配置独立检查点路径 | 必须保留输入与配置指纹，不能跨配置盲目复用 |
 | 上传、成品、章节回写文件 | 本机 `uploads`、`outputs`、`reduce_work` | 独立主机 Worker 需要共享存储；当前不是对象存储架构 |
-| 独立修复订单与文件 | `REPAIR_UPLOAD_DIR/<id>` 下 `order.json` 与成品，默认 `/tmp/epub-repair` | 不在主 JobStore；临时目录生命周期与数据库备份不同 |
+| 独立修复订单与文件 | `REPAIR_UPLOAD_DIR/<id>` 下 `order.json`、原稿、隐藏的 owner 成品；根目录保留锁/全局配置/查单预算 | 不在主 JobStore；默认 `/tmp/epub-repair`，需单独备份整个持久目录（含隐藏文件） |
 | 队列、执行租约、可选全局限流/健康 | Redis；开发执行租约可退回文件锁 | 队列存在不等于端到端“恰好一次”履约 |
 
-API 与 Worker 多进程能使用同一数据库，不意味着当前工程已经支持多机无状态扩容。文件、本地 SQLite、修复进程内状态都需要一起纳入扩容方案。
+API 与 Worker 多进程能使用同一数据库，不意味着当前工程已经支持多机无状态扩容。文件、本地 SQLite、修复的共享本机目录和 flock 都需要一起纳入扩容方案。
 
 ## 7. 辅助与修复链路
 
 - `/api/v2/repair/*` 是独立的 EPUB 诊断/修复产品流，不进入主转换 Job 表。
-- 修复订单已持久化为 `order.json`，通过临时文件、fsync 和 rename 原子替换；API 同时保留进程内缓存与锁。`RepairPaymentWorker` 默认每 5 秒轮询查单、恢复已付修复；实际修复通过 API 内线程执行，不经过 Celery 或主任务执行租约。
-- 修复当前只具备同进程执行去重，不能直接增加 API workers；缓存不跨进程刷新、修复线程无统一总并发上限，见审查 R10。
+- `RepairRepository` 每次在独立稳定锁文件下读取最新 `order.json`，事务修改后 fsync/原子替换；不保留权威进程内缓存。付款确认、报价冻结、回执意图及查询退避共用该边界，历史金额不迁移。
+- `RepairPaymentWorker` 默认每 5 秒每进程选一单查款；根目录全局查询锁和 1 秒预算同时约束手动恢复与多 API 进程。已付记录不需要浏览器存活；满载时留在 `paid` 持久等待队列，下次扫描再次尝试。
+- `RepairExecutor` 使用有界线程池和本机共享 flock：每单最多一位执行者，同目录全局最多 `REPAIR_CONCURRENCY`（默认 1，上限 4）。同一目录首次固定并发配置，不匹配时拒绝执行并保留付款；稳定锁文件运行中不得删除。
+- 执行线程须等待明确提交 handoff 才拥有执行权；原生线程创建失败时退役 pool，残留 work item 不得执行，也不取消已接受的其他任务。后续 API 重建执行器，仍 paid 的订单再次恢复；不存在订单的查询不分配永久锁文件。
+- 原修复引擎不变，每次 owner 独占临时/最终文件。只有仍为 paid 且 owner 匹配的事务可发布 `repaired + artifact_file + SHA256`；下载只解析已提交指针（兼容历史 `download_filename`），不会扫描并复用遗留 `_fixed.epub`。状态和下载响应均 `no-store`。
+- 进程退出自动释放执行锁，扫描器从原稿重做仍为 paid 的任务；最多 3 次实际执行，继续中断则保留付款并转人工处理。明确的引擎失败立即进入 failed，不以反复自动重做掩盖源文件问题。已提交而返回未知时不补偿删除成品，孤儿文件暂不自动清理。
+- 这是保持现有产品流的有限范围修复，不是独立 OS Worker、统一 JobStore/Celery 迁移或 NFS/跨主机执行。仅当所有 API 共享同一私有本机目录时成立；部署仍维持现有 API 拓扑，不能由此推断全站可多机扩容。独立引擎只修 mimetype/旧 DOCTYPE/OPF namespace，不承诺修复所有 EPUBCheck 原有错误。
 - 完成邮件和商户收款邮件分别由 API 启动的后台分发器消费持久化待发送记录，具有重试/认领机制；它们不占用整书 Celery 消费槽。
 - `image_caption_repair.py` 是对既有成品进行文本型 caption 补译的维护工具，保留图片字节与 EPUB `mimetype` 规则，并在写出后执行相同的成品 QA；正常新任务不依赖该工具。
 - Celery Beat 负责支付对账与模型余额监控，不参与单本书的章节编排。

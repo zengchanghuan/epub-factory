@@ -1,7 +1,7 @@
 """Offline price-change regressions: new amounts, frozen old payments and restart continuity."""
 import os
 import tempfile
-import types
+import threading
 import unittest
 import uuid
 from contextlib import ExitStack
@@ -24,11 +24,30 @@ class RepairPricingTests(unittest.TestCase):
                                                 'ALIPAY_APP_ID': '', 'ALIPAY_SELLER_ID': '',
                                                 'ALIPAY_DISABLE_PRECREATE': '0'}))
         self.stack.enter_context(patch.object(main, '_REPAIR_UPLOAD_DIR', Path(self.runtime.name)))
-        self.stack.enter_context(patch.object(main, '_repair_jobs', {}))
-        self.stack.enter_context(patch.object(main, '_repair_active_jobs', set()))
-        self.stack.enter_context(patch.object(main, '_repair_last_gateway_check', 0))
+        self.clock = self.stack.enter_context(patch.object(main, '_repair_now', return_value=1_000_000))
+        # Keep real bounded admission active while price assertions observe a
+        # paid order. R10 owns process/engine tests; no Thread constructor mock.
+        from app.domain.repair_executor import RepairExecutor
+        executor = RepairExecutor()
+        release, entered = threading.Event(), threading.Event()
         self.thread = Mock()
-        self.stack.enter_context(patch.object(main, '_threading', types.SimpleNamespace(Thread=self.thread)))
+        self.real_runner = main._run_repair_owned
+        def blocked_runner(*args):
+            self.thread(*args)
+            entered.set()
+            if not release.wait(30):
+                raise AssertionError('Pricing fixture did not release repair')
+        self.stack.enter_context(patch.object(main, '_run_repair_owned', side_effect=blocked_runner))
+        self.stack.enter_context(patch.object(main, '_get_repair_executor', return_value=executor))
+        real_submit = executor.submit
+        def submit(*args):
+            accepted = real_submit(*args)
+            if accepted:
+                self.assertTrue(entered.wait(5))
+            return accepted
+        self.stack.enter_context(patch.object(executor, 'submit', side_effect=submit))
+        self.stack.callback(executor.shutdown)
+        self.stack.callback(release.set)
         self.client = self.stack.enter_context(TestClient(main.app))
 
     def webhook(self, order, amount):
@@ -159,7 +178,6 @@ class RepairPricingTests(unittest.TestCase):
                 job_id = self.repair_job(**values)
                 metadata = Path(self.runtime.name) / job_id / 'order.json'
                 saved = metadata.read_bytes()
-                main._repair_jobs.clear()
                 response = self.client.get(f'/api/v2/repair/{job_id}/status')
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()['price_cny'], expected)
@@ -176,7 +194,6 @@ class RepairPricingTests(unittest.TestCase):
         with patch('app.infra.alipay.create_alipay_precreate', side_effect=gateway):
             response = self.client.post(f'/api/v2/repair/{job_id}/pay')
         self.assertEqual(response.json()['price_cny'], '0.99')
-        main._repair_jobs.clear()  # Simulate an API process restart, with no network/model calls.
         with patch.object(main, 'REPAIR_PRICE_CNY', '2.99'), patch(
                 'app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
             response = self.client.post(f'/api/v2/repair/{job_id}/pay')
@@ -185,7 +202,6 @@ class RepairPricingTests(unittest.TestCase):
         self.assertEqual(self.webhook(f'repair_{job_id}', '2.99').text, 'fail')
         self.assertEqual(self.webhook(f'repair_{job_id}', '0.99').text, 'success')
         self.assertEqual(self.thread.call_count, 1)
-        main._repair_jobs.clear()
         self.assertEqual(main._repair_job_get(job_id)['status'], 'paid')
         self.assertEqual(self.webhook(f'repair_{job_id}', '0.99').text, 'success')
         self.assertEqual(self.thread.call_count, 1)
@@ -194,7 +210,6 @@ class RepairPricingTests(unittest.TestCase):
         for amount in ('5.99', '1.99', '0.99'):
             with self.subTest(amount=amount):
                 job_id = self.repair_job(expected_amount=amount)
-                main._repair_jobs.clear()
                 with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
                     self.assertEqual(self.client.post(f'/api/v2/repair/{job_id}/pay').json()['price_cny'], amount)
                 self.assertEqual(create.call_args.kwargs['total_amount'], amount)
@@ -206,16 +221,14 @@ class RepairPricingTests(unittest.TestCase):
         for amount in ('5.99', '1.99', '0.99'):
             with self.subTest(amount=amount):
                 job_id = self.repair_job(quoted_amount=amount)
-                main._repair_jobs.clear()
                 with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
                     response = self.client.post(f'/api/v2/repair/{job_id}/pay')
                 self.assertEqual(response.json()['price_cny'], amount)
                 self.assertEqual(create.call_args.kwargs['total_amount'], amount)
 
-    def test_legacy_in_memory_repair_has_original_599_amount(self):
+    def test_migrated_legacy_repair_has_original_599_amount(self):
         job_id = self.repair_job()
-        main._repair_jobs[job_id] = {'status': 'pending_payment', 'filename': 'fixture.epub',
-                                   'out_trade_no': f'repair_{job_id}'}
+        main._repair_job_set(job_id, out_trade_no=f'repair_{job_id}')
         with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline'):
             self.assertEqual(self.client.post(f'/api/v2/repair/{job_id}/pay').json()['price_cny'], '5.99')
         self.assertEqual(self.webhook(f'repair_{job_id}', '1.99').text, 'fail')
@@ -236,19 +249,18 @@ class RepairPricingTests(unittest.TestCase):
         for trade in (None, {'out_trade_no': f'repair_{job_id}',
                              'trade_status': 'TRADE_SUCCESS', 'total_amount': '1.99'}):
             main._repair_job_set(job_id, next_payment_check_at=0)
-            main._repair_last_gateway_check = 0
+            self.clock.return_value += 2
             with patch('app.infra.alipay.query_verified_trade', return_value=trade):
                 response = self.client.post(f'/api/v2/repair/{job_id}/recover')
             self.assertFalse(response.json()['recovered'])
             self.assertEqual(main._repair_job_get(job_id)['status'], 'pending_payment')
         main._repair_job_set(job_id, next_payment_check_at=0)
-        main._repair_last_gateway_check = 0
+        self.clock.return_value += 2
         with patch('app.infra.alipay.query_verified_trade', return_value={
                 'out_trade_no': f'repair_{job_id}',
                 'trade_status': 'TRADE_SUCCESS', 'total_amount': '5.99'}):
             response = self.client.post(f'/api/v2/repair/{job_id}/recover')
         self.assertTrue(response.json()['recovered'])
-        main._repair_jobs.clear()
         self.assertEqual(main._repair_job_get(job_id)['status'], 'paid')
         self.assertEqual(self.thread.call_count, 1)
 
@@ -259,7 +271,6 @@ class RepairPricingTests(unittest.TestCase):
     def test_paid_repair_resumes_once_on_explicit_recovery_after_process_restart(self):
         job_id = self.repair_job(expected_amount='5.99')
         main._repair_job_set(job_id, status='paid')
-        main._repair_jobs.clear()
         for _ in range(2):
             self.assertEqual(self.client.get(f'/api/v2/repair/{job_id}/status').json()['status'], 'paid')
         self.thread.assert_not_called()
@@ -277,7 +288,6 @@ class RepairPricingTests(unittest.TestCase):
         with patch('app.infra.alipay.create_alipay_precreate', side_effect=gateway):
             response = self.client.post(f'/api/v2/repair/{job_id}/pay')
         self.assertEqual(response.json()['status'], 'repaired')
-        main._repair_jobs.clear()
         self.assertEqual(main._repair_job_get(job_id)['status'], 'repaired')
 
     def test_incomplete_repair_output_is_never_published(self):
@@ -288,7 +298,8 @@ class RepairPricingTests(unittest.TestCase):
         def interrupted(source, target):
             Path(target).write_bytes(b'partial zip')
             raise ValueError('offline simulated repair failure')
-        with patch('app.engine.epub_repairer.repair', side_effect=interrupted):
+        with patch('app.engine.epub_repairer.repair', side_effect=interrupted), \
+                patch.object(main, '_run_repair_owned', self.real_runner):
             main._do_repair_async(job_id)
         self.assertEqual(main._repair_job_get(job_id)['status'], 'failed')
         self.assertFalse((directory / 'fixture_fixed.epub').exists())
