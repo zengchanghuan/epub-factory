@@ -1820,11 +1820,15 @@
   <script src="lib.js?v=20260918-corpus-fixes"></script>
   <script src="return-later.js?v=20260918"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
+  <script src="tool-entry.js?v=20261001-r11"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
 
     document.addEventListener("DOMContentLoaded", () => {
       const $ = (id) => document.getElementById(id);
+    const toolEntry = window.FixEpubToolEntry && window.FixEpubToolEntry.capture({
+      location, history, form: $("uploadCard"),
+    });
     const localStorage = FixEpubReturnLater.safeStorage(window);
     const sessionStorage = FixEpubReturnLater.safeStorage(window, "sessionStorage");
     const JOB_TOKEN_STORE_KEY = "job_access_tokens_v1";
@@ -3513,7 +3517,16 @@
     });
     syncConversionMode();
     refreshTaskModeAvailability();
-    setTaskMode("convert");
+    setTaskMode(getTaskMode());
+    // Apply a landing-page preset once, after default setup; never override a
+    // restored task, selected files, or browser-restored/user-edited settings.
+    if (toolEntry) toolEntry.apply({
+      hasActiveTask: !!(currentJobId || currentBatchId),
+      hasFiles: selectedFiles.length > 0,
+      setMode: setTaskMode,
+      setConversion(value) { $("conversionMode").value = value; syncConversionMode(); },
+      showTasks() { showView("tasks"); },
+    });
 
     function setStatus(status, message) {
       statusCard.classList.add("visible");
@@ -3675,7 +3688,7 @@
       }
     }
 
-    // ─── 核心提交逻辑（被免费按钮和 PayPal 共同调用） ─────────────────────────
+    // ─── 统一提交逻辑：创建任务后按后端状态进入确认、支付或处理 ───────────────
     async function submitJob() {
       if (!selectedFiles.length) return;
       renderSourceWarnings();

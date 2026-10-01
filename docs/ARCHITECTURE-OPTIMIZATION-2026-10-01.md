@@ -2,7 +2,7 @@
 title: 架构优化与逐项历史书稿回归
 date: 2026-10-01
 base_revision: 5d1705c9fed54b93403d34f2a4b70f4bcfc2e3b8
-status: r10-complete
+status: r11-complete
 ---
 
 # 架构优化与逐项历史书稿回归
@@ -31,8 +31,8 @@ status: r10-complete
 - [x] R7 Worker 失联恢复闭环：持久心跳、同租约限次恢复、未开始补投和真实进程/三书/全套门禁通过。
 - [x] R8 数据库状态及 attempt 原子更新：事务写入守卫、owner 与成品隔离，专项/三书/全套离线门禁通过。
 - [x] R9 长短任务队列隔离：运行时控制、配置加载、shebang 识别及数据库生命周期补修后，全套离线与三书历史门禁重新通过。
-- [x] R10 独立修复的执行隔离与并发限制：同主机共享目录事务、有界执行及 owner 发布，边界补修后专项/历史/全套门禁通过；本地未提交部署。
-- [ ] R11 旧页面结账入口统一：等待前项放行。
+- [x] R10 独立修复的执行隔离与并发限制：专项/历史/全套门禁通过，已提交并推送 `332ab09`；未部署。
+- [x] R11 旧页面结账入口统一：静态介绍页/专用生成器/一次性预设，浏览器及三书历史和全套门禁通过；本地未提交部署。
 - [ ] R12 所有模型阶段统一限流与调用边界：等待前项放行。
 - [ ] R13 通知鉴权与分页：等待前项放行。
 
@@ -455,7 +455,7 @@ R6 历史测试 `test_d44_payment_lifecycle_history.py` 继承 R5 的真实成�
 
 ### R10：独立修复执行隔离与并发限制
 
-状态：**实现及最终离线验收完成；未提交、推送或部署 R10，不开始 R11。** R9 已先推送为 `8817e46`。保留现有单体和 `order.json` 持久格式，不迁移历史付款事实，不修改修复引擎或收费规则。
+状态：**实现及最终离线验收完成；随后按用户请求提交并推送为 `332ab09`，HEAD 与 `origin/main` 已核验一致；未部署。** 推送前重新通过 121 项边界专项及三书独立修复 4/4，业务源码与下文最终快照一致。R11 在推送后开始。R9 已先推送为 `8817e46`。保留现有单体和 `order.json` 持久格式，不迁移历史付款事实，不修改修复引擎或收费规则。
 
 - [x] `RepairRepository` 收口最新状态读取与跨进程文件事务，移除权威内存缓存；已付状态不能被旧快照覆盖。
 - [x] 独立有界线程池加共享执行槽及每单执行锁；满载时订单留在持久 `paid` 队列，不无限排队或创建线程。
@@ -506,6 +506,45 @@ D48 三书历史最终 4/4 方法通过（31.808 秒、0 跳过）：三份原�
 
 最终后端证据为 `/private/tmp/fixepub-r10-release.R2dIWk/full/results.json`、`full/logs/`，附加 D17 为 `extra/logs/`；其他为 `/private/tmp/fixepub-r10-release-{history,r9-history,r1-history,r3-history,r4-history,frontend,worker-services,deploy}.log`。临时证据不随 Git 同步，跨 Mac 请提供同 SHA 原书并重新执行测试。架构图、配置样例与部署约束均同步更新；生产持久目录迁移、跨主机统一队列及孤儿文件清理仍未实施。
 
+### R11：旧页面结账入口统一
+
+状态：**本地实现、专项、浏览器、三书历史及全套离线门禁均通过；未提交、推送或部署 R11，不开始 R12。** R10 已先推送为 `332ab09`。
+
+#### 收口边界
+
+- 三个 SEO 工具页改为静态功能介绍，保留专属标题、canonical、格式限制、基础转换价/AI 精校另计、FAQ、客服及备案。移除旧 PayPal、独立上传、状态轮询与错误的部分完成下载分支，只有主页处理订单与结果。
+- 生成器只读取专用模板及配置，不再克隆 `index.html`。新增 `--check`、隔离输出测试与 CI 门禁，不能通过重跑生成器把旧业务复制回来。删除工具页中未经核实的免费、评分、成功率和耗时宣传，不改主页其余文案。
+- 共享入口适配器仅做同源导航和白名单意图，不发 API。翻译预选翻译、竖转横使用现有转换设置、繁转简选择 `simplified|auto`；不自动启用收费精校。任务/批次恢复和已有表单设置优先，预设只执行一次。
+- 旧任务链接保留任务标识、本机授权和 fragment token，由主页原有逻辑导入/恢复；不会把令牌挪到 query 或因跳转创建订单。无 JS 时保留原生主页/任务中心链接；适配器缺失不阻塞主页初始化。
+- 后端业务代码与 R10 推送版本保持一致；不修改支付费率、状态机、转换内容或模型。单独增加 opt-in 历史测试，不把私有书稿提交到仓库。
+
+#### 验证范围与未覆盖事项
+
+真实 Chrome 使用独立临时 profile、仅监听 loopback 的 HTTP 服务、合成上传/下载文件及 API 替身；禁止页面外网请求。验证页面实际脚本、FormData、支付前确认、待付款/运行/完成/取消与 QA 失败状态、fragment/batch 授权、任务中心、刷新与下载 SHA，以及 390px 无横向溢出。它不是生产支付或真实书籍转换证据。
+
+历史门禁单独使用固定 SHA 三份真实书稿及既有成品：Double Helix、別把你的錢留到死、責任與判斷。真实上传、计价、持久化、可靠投递、转换、打包及 EPUBCheck；网关/模型/transport 受控。翻译交付场景使用实际章节身份回放产物并注入受控终态，**不是重新英译中，不假称通过语义 QA 或新的翻译质量验证**。转换入口的历史测试显式选择 `auto` 来源，默认 `tw`/入口实际 FormData 由浏览器门禁覆盖。
+
+已知保留边界：原主页刷新未付任务会恢复状态与查单，但不会重新签发丢失的付款链接；本项不新增续付 API。生产 Nginx 路由、真实支付宝、外部浏览器/iBooks 及另一台 Mac 尚未核验；CI 仅新增门禁配置，未声称远端 CI 已运行。
+
+#### 最终验收证据
+
+| 门禁 | 最终结果 | 范围 |
+|---|---|---|
+| 前端全量 | 30 套、226/226 | 含 F29 新增 16 项，以及原 PDF、费用、下载与任务模式保障 |
+| 静态页生成器 | 7/7；`--check` 一致 | 幂等、过期/缺失时非零退出且不改文件、脱离主页也能生成、无独立交易脚本 |
+| 实际 Chrome / loopback HTTP | 18/18，0 JS 异常 | 4 入口总共仅创建 4 个合成任务、1 次画像确认；未付/已付/完成/取消/QA 失败恢复、批次优先、实际下载 SHA、手机宽度 |
+| D49 三书历史 | 14/14、114.959 秒，0 跳过 | 6 次真实转换各投递/执行 1 次；3 份身份回放交付；9 个已付取消/刷新场景；继承 11 项结构保护 |
+| 完整后端目录 | 90/90 脚本退出成功 | 7 项原有可选样本跳过：D21×2、D26、D27、D28、D29×2，不计为样本验收 |
+| 附加 D17 批量 | 6/6 | 全目录外的批量入口专项 |
+| Worker / 部署脚本 | 25/25 + 11/11 | 本地离线单元门禁，不代表生产部署成功 |
+| 业务冻结与原稿保护 | 通过 | 后端业务无修改；三书原稿及三份既有成品固定 SHA 未变；图片/正文/锚点/目录保持 |
+
+三书本轮普通转换和章节身份回放成品全部通过 EPUBCheck（0 ERROR/FATAL）；历史原稿自身错误仍保留在原文件，本项没有修改它们。Double Helix / 別把你的錢留到死 / 責任與判斷分别有 171 / 23 / 17 个正文章节经过身份回放，每章读取一次；不把英文章节原样回放当成有效中文翻译。
+
+本轮冻结快照 `/private/tmp/fixepub-r11-release.uPIRS3/current` 与最终工作区的前端、后端业务、生成器、浏览器/历史测试逐文件一致；仅文档在之后补记。`index.html → tool-entry.js → generate_seo_pages.py → tool-landing.html → epub-translator.html → vertical-to-horizontal.html → traditional-to-simplified.html` 使用各自仓库相对路径，顺序执行 `shasum -a 256` 并对输出再哈希，聚合值 `a06d3ff59ce986ae1f4b726de06865a093c4af4ed019da0b116f549d04883e44`。D49 测试 SHA 为 `7787985e046abbc7da7c476a6af282dd6f4d39e74ed8ba4dafb32922d1fc1e91`。
+
+临时证据：`/private/tmp/fixepub-r11-release.uPIRS3/{full,extra}/results.json` 和各自 `logs/`；`/private/tmp/fixepub-r11-{frontend,browser,d49-final,worker-services,deploy}.log`。浏览器合成下载和三张手机宽度截图在 `/var/folders/5k/8g5362hj591cjpltbwhyhvcm0000gn/T/fixepub-r11-browser-WGk3LP`；已检查翻译页截图，三页均通过宽度断言。完整后端/历史外网审计无调用记录；浏览器阻止 68 次外部页面资源请求，页面业务只访问本机替身。上述临时证据不随 Git 同步，两台 Mac 可按下列命令提供同 SHA 书稿重新执行。
+
 ## 可重复执行的命令与证据
 
 在仓库根目录执行（目录不提供时历史测试明确跳过，不算通过）：
@@ -526,6 +565,18 @@ backend/.venv/bin/python backend/test_d47_queue_history.py
 EPUB_HISTORY_UPLOAD_DIR="$PWD/backend/uploads" \
 EPUB_HISTORY_OUTPUT_DIR="$PWD/backend/outputs" \
 backend/.venv/bin/python backend/test_d48_repair_history.py
+
+# R11 静态生成器及浏览器（Node 22 + 本机 Chrome；不连接生产或真实网关）。
+backend/.venv/bin/python scripts/test_tool_landing.py
+backend/.venv/bin/python scripts/generate_seo_pages.py --check
+node frontend/tests/runner.js test_f29_tool_entry.js
+node scripts/test_tool_entry_browser.cjs
+
+# R11 三书：与 R9 相同的固定 SHA 原书、历史成品及 baseline-corpus。
+EPUB_HISTORY_UPLOAD_DIR="$PWD/backend/uploads" \
+EPUB_HISTORY_OUTPUT_DIR="$PWD/backend/outputs" \
+EPUB_HISTORY_BASELINE_DIR=/路径/同源基线目录 \
+backend/.venv/bin/python backend/test_d49_entry_history.py
 ```
 
 本机隔离证据目录：`/private/tmp/fixepub-arch-20261001.RmFzTr`，包含 `inventory.json`、干净基线、`baseline-report.json`、`r1-report.json` 和逐书成品校验 JSON。该目录是临时证据，未加入 Git；六份输入/历史输出的固定哈希保存在 opt-in 历史测试中，可在两台 Mac 提供同一书稿后复测。

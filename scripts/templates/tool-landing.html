@@ -4,24 +4,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI EPUB 电子书翻译与双语对照 – FixEpub</title>
-  <meta name="description" content="使用 FixEpub 翻译 EPUB、DOCX 和 Markdown，支持双语对照。前往主页统一上传、确认报价、付款并查看结果；暂不支持 PDF。" />
-  <link rel="canonical" href="https://fixepub.com/epub-translator.html" />
+  <title>$title</title>
+  <meta name="description" content="$description" />
+  <link rel="canonical" href="$canonical" />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="AI EPUB 电子书翻译与双语对照 – FixEpub" />
-  <meta property="og:description" content="使用 FixEpub 翻译 EPUB、DOCX 和 Markdown，支持双语对照。前往主页统一上传、确认报价、付款并查看结果；暂不支持 PDF。" />
-  <meta property="og:url" content="https://fixepub.com/epub-translator.html" />
+  <meta property="og:title" content="$title" />
+  <meta property="og:description" content="$description" />
+  <meta property="og:url" content="$canonical" />
   <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="AI EPUB 电子书翻译与双语对照 – FixEpub" />
-  <meta name="twitter:description" content="使用 FixEpub 翻译 EPUB、DOCX 和 Markdown，支持双语对照。前往主页统一上传、确认报价、付款并查看结果；暂不支持 PDF。" />
-  <script type="application/ld+json">{
-  "@context": "https://schema.org",
-  "@type": "WebPage",
-  "name": "AI EPUB 电子书翻译与双语对照 – FixEpub",
-  "description": "使用 FixEpub 翻译 EPUB、DOCX 和 Markdown，支持双语对照。前往主页统一上传、确认报价、付款并查看结果；暂不支持 PDF。",
-  "url": "https://fixepub.com/epub-translator.html",
-  "inLanguage": "zh-CN"
-}</script>
+  <meta name="twitter:title" content="$title" />
+  <meta name="twitter:description" content="$description" />
+  <script type="application/ld+json">$schema</script>
   <script src="tool-entry.js?v=20261001-r11" defer></script>
   <style>
     :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #243247; background: #f6f8fb; }
@@ -43,7 +36,7 @@
     @media (max-width: 640px) { .hero { padding-top: 28px; } .features { grid-template-columns: 1fr; gap: 12px; } section.panel { padding: 20px; } .topbar nav { gap: 12px; font-size: 14px; } }
   </style>
 </head>
-<body data-tool-entry="translate">
+<body data-tool-entry="$tool">
   <header class="topbar">
     <a class="brand" href="./">FixEpub</a>
     <nav aria-label="主导航"><a href="./?view=tasks" data-entry-link="tasks">任务中心</a><a href="/contact.html">联系我们</a></nav>
@@ -51,10 +44,10 @@
   <main>
     <section class="hero" aria-labelledby="page-title">
       <p class="eyebrow">电子书转换与 AI 翻译</p>
-      <h1 id="page-title">AI 电子书翻译与双语对照</h1>
-      <p class="lead">将英文电子书翻译为中文，或生成原文与译文对照版本。上传、翻译选项、当前报价、支付和任务结果均在主页统一管理。</p>
+      <h1 id="page-title">$heading</h1>
+      <p class="lead">$intro</p>
       <div class="actions">
-        <a class="button primary" href="./?tool=translate" data-entry-link="upload">前往主页开始翻译</a>
+        <a class="button primary" href="./?tool=$tool" data-entry-link="upload">$action</a>
         <a class="button" href="./?view=tasks" data-entry-link="tasks">查看已有任务与下载</a>
       </div>
       <p class="notice">本页为功能介绍。上传、报价、付款、进度与下载统一在主页完成。</p>
@@ -63,15 +56,13 @@
     <section class="panel" aria-labelledby="features-title">
       <h2 id="features-title">功能与适用范围</h2>
       <div class="features">
-        <article><h3>选择翻译方式</h3><p>在主页选择目标语言、翻译档位和策略；需要对照阅读时可开启双语版本。</p></article>
-        <article><h3>术语与结构</h3><p>可提供术语对照表。系统会处理目录、正文和可识别的说明文字，并执行成品质检；复杂原书仍建议人工核对。</p></article>
-        <article><h3>关闭页面后返回</h3><p>任务在服务端执行。使用同一浏览器进入主页任务中心，可继续查看状态并下载已完成的文件。</p></article>
+$features
       </div>
     </section>
     <section class="panel" aria-labelledby="pricing-title">
       <h2 id="pricing-title">格式与费用</h2>
-      <p>AI 翻译按主页当前报价收费。上传后查看报价与翻译选项，付款前确认最终金额；本页不收款，也不创建任务。</p>
-      <p class="formats">翻译支持 .epub、.docx、.md 和 .markdown。DOCX 与 Markdown 会先规范化为 EPUB；缺失资源、外部图片或不支持的内容会在检查时提示。MOBI / AZW3 不提供直接翻译，请先准备 EPUB。</p>
+      <p>$pricing</p>
+      <p class="formats">$formats</p>
       <p class="warning"><strong>暂不支持 PDF。</strong>请准备受支持的源文件；本页不会接收文件或创建收费订单。</p>
     </section>
     <section class="panel" aria-labelledby="steps-title">
@@ -81,13 +72,11 @@
         <li>检查文件提示与当前报价，确认需要的服务后再付款。</li>
         <li>在主页任务中心查看进度，任务完成并通过交付检查后下载文件。</li>
       </ol>
-      <div class="actions"><a class="button primary" href="./?tool=translate" data-entry-link="upload">前往主页开始翻译</a></div>
+      <div class="actions"><a class="button primary" href="./?tool=$tool" data-entry-link="upload">$action</a></div>
     </section>
     <section class="panel" aria-labelledby="faq-title">
       <h2 id="faq-title">常见问题</h2>
-      <details><summary>图片里的文字也会翻译吗？</summary><p>可识别的 HTML 图片说明可进入翻译流程；嵌在图片像素里的文字暂不翻译，OCR 与图文重绘仍是后续计划。</p></details>
-      <details><summary>翻译费用在哪里确认？</summary><p>在主页上传文件并选择翻译选项后查看当前报价，确认后再付款。本页不提供固定每本翻译价。</p></details>
-      <details><summary>已有任务在哪里找？</summary><p>前往主页任务中心，使用原来上传文件的浏览器查看。旧任务链接会由统一入口接续；不要重新上传或重复付款。</p></details>
+$faqs
     </section>
     <section class="panel" aria-labelledby="contact-title">
       <h2 id="contact-title">需要帮助？</h2>

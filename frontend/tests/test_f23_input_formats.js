@@ -6,10 +6,20 @@ for (const page of ['index.html', 'epub-translator.html', 'vertical-to-horizonta
   test(`PDF gate: ${page} disables upload and unsupported advertising`, () => {
     const html = fs.readFileSync(path.join(__dirname, '..', page), 'utf8');
     const accepts = [...html.matchAll(/accept="([^"]+)"/g)].map(match => match[1]);
-    assert(accepts.length > 0);
+    if (page === 'index.html') {
+      assert(accepts.length > 0);
+      assert(html.includes('lib.js?v=20260918-corpus-fixes'));
+    } else {
+      assert.strictEqual(accepts.length, 0, 'Static tool descriptions must not duplicate uploads');
+      assert(!/<input\b[^>]*type=["']file["']/i.test(html));
+      assert(!/\b(?:fetch\s*\(|FormData\s*\(|paypal\.Buttons)/i.test(html));
+      assert(!html.includes('paypal.com/sdk'));
+      assert(html.includes('tool-entry.js?v=20261001-r11'));
+      assert(html.includes('data-entry-link="upload"'));
+      assert(html.includes('data-entry-link="tasks"'));
+    }
     assert(accepts.every(value => !value.toLowerCase().includes('.pdf')));
     assert(html.includes('暂不支持 PDF'));
-    assert(html.includes('lib.js?v=20260918-corpus-fixes'));
     assert(!html.includes('"PDF 转换"'));
     assert(!html.includes('FixEpub 支持将 PDF'));
     assert(!html.includes('一键上传 EPUB/PDF'));

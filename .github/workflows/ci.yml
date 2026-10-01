@@ -18,6 +18,16 @@ jobs:
           for test in frontend/tests/test_*.js; do
             node frontend/tests/runner.js "$(basename "$test")" || exit 1
           done
+      - name: Check static tool pages cannot regenerate checkout copies
+        run: |
+          python3 scripts/test_tool_landing.py
+          python3 scripts/generate_seo_pages.py --check
+      - name: Exercise unified tool entries in isolated Chrome
+        # Hosted ubuntu runner Chrome; all APIs/payment are loopback fixtures.
+        # No npm install, production credentials or customer files are used.
+        env:
+          CHROME_BIN: google-chrome
+        run: node scripts/test_tool_entry_browser.cjs
 
   regression:
     runs-on: ubuntu-latest

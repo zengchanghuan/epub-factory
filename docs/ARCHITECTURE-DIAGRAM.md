@@ -2,7 +2,7 @@
 title: EPUB Factory 当前代码架构
 status: current
 updated: 2026-10-01
-code_revision: 8817e4606ac4a1777525a57738b4d38c46a26f35 plus local R10
+code_revision: 332ab09043b13acf9744f9bd1439fbdcdadd5cfe plus local R11
 scope: local-code-and-offline-verification
 ---
 
@@ -10,7 +10,7 @@ scope: local-code-and-offline-verification
 
 本文依据上述提交的本地代码与离线核验，描述实际接通的调用链，不代表已经核验生产配置或部署版本。历史设计见 [AI 翻译设计](AI-TRANSLATION-DESIGN.md)，本轮缺陷与改进顺序见 [架构审查：2026-10-01](ARCHITECTURE-REVIEW-2026-10-01.md)。
 
-R1–R9 及历史导航/表格兼容修复已提交并推送至 `8817e46`，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、旧执行器写入和成品保护，以及书籍与维护任务分队列/分 Worker。以下主链路另包含本地 R10：独立修复的跨进程文件事务、有界执行器和 owner 成品发布；最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
+R1–R10 及历史导航/表格兼容修复已提交并推送至 `332ab09`，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、旧执行器写入和成品保护、书籍与维护任务分队列，以及独立修复的跨进程文件事务、有界执行器和 owner 成品发布。以下主链路另包含本地 R11：三个工具介绍页收口到主页的统一上传、支付与恢复流程；最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
 
 当前形态是**模块化单体 API + 整本 Celery 任务 + Worker 内章节并发**；独立 EPUB 修复仍在 API 进程内执行。图中的虚线表示条件启用或旁路调用，不表示已经完成分布式改造。
 
@@ -20,7 +20,8 @@ PDF 公共入口仍拒绝输入；[PDF 翻译技术架构](PDF-TRANSLATION-ARCHI
 
 ```mermaid
 flowchart TB
-  U["浏览器<br/>静态 HTML / JS"] --> API["FastAPI 单体<br/>上传 / 确认 / 支付 / 任务 / 下载<br/>账号 / 看板 / 反馈"]
+  SEO["三个静态工具介绍页<br/>翻译 / 竖转横 / 繁转简"] -->|"同源入口预设或旧任务链接"| U["浏览器主页 index.html<br/>统一上传 / 付款 / 恢复 / 下载"]
+  U --> API["FastAPI 单体<br/>上传 / 确认 / 支付 / 任务 / 下载<br/>账号 / 看板 / 反馈"]
   API --> Preflight["API 侧输入归一化 / 报价 / 可选预分析<br/>画像 / 术语 / 角色 / 文体策略"]
   Preflight --> LLM["OpenAI 兼容模型接口<br/>DeepSeek 优先 / 配置后备路由"]
   API <-->|"下单 / 验签回调 / 主动查单"| Pay["支付宝"]
@@ -87,8 +88,18 @@ FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本�
 | 旧执行器写入与成品保护 | 工作区 R8：父任务锁内 attempt/owner 守卫、独占成品目录及提交未知时保守清理；专项和历史门禁通过，未部署 |
 | 长短任务队列隔离 | 工作区 R9：整书保留 `celery`；对账/余额/ping 使用 `housekeeping`，独立消费者与启动门禁；尚未部署 |
 | 独立修复多进程一致性与有界执行 | 本地 R10：共享本机目录事务、全局槽、付款扫描恢复、owner 成品提交；未入主 JobStore/Celery，未部署 |
+| 三个工具页的结账与任务入口 | 本地 R11：静态专用模板生成介绍页，共享适配器只负责同源导航；不再独立上传、PayPal 支付或轮询 |
 | Celery 分布式章节执行 | 存在另一章节任务入口，未接整书主链 |
 | PDF 翻译、图片像素 OCR 与重绘 | 尚未实现/未开放，不画入执行链 |
+
+### 1.2 统一工具入口（R11）
+
+- `epub-translator.html`、`vertical-to-horizontal.html`、`traditional-to-simplified.html` 只保留功能说明、格式/费用边界、FAQ 和客服链接。其专用模板由 `generate_seo_pages.py` 生成，不再复制整份主页；`--check` 和 CI 防止重新引入第二套结账流程。
+- `tool-entry.js` 不调用 API、不存储订单或付款状态。普通 CTA 进入主页并使用白名单 `tool=translate / horizontal / simplified`：分别预选翻译、现有转换模式、通用繁体转简体；横排入口不擅自选择另一文字方向或新增“只改排版”参数。
+- 旧 `job_id / batch_id` 链接跳转固定同源主页，现有本机任务授权保持；`access_token` 仍在 fragment，经主页原有导入器存储后移除，不搬到 query。批次/任务恢复优先，不因入口重新下单。
+- 主页先捕获已恢复的表单/文件，再按既有路径恢复任务；默认初始化后仅应用一次入口预设。已有任务、文件或用户设置不被预设覆盖，消费后的 `tool` 不随任务链接传播。`view=tasks` 只打开任务中心。
+- 适配器加载失败时，介绍页原生链接仍可进入主页，主页自身不因适配器缺失而停止初始化。禁用 JS 时不承诺 token 自动恢复，页面提示用原浏览器进入主页任务中心；没有任何旧支付组件回退。
+- 本项不修改后端订单、费率、任务或 QA 规则。原有主页的未付任务刷新只恢复状态及主动查单，不会重新签发丢失的付款链接；需要继续支付的恢复 UI 仍是独立后续项，不能据本项声称已经补齐。
 
 ## 2. 任务生命周期与 attempt 隔离
 
@@ -475,6 +486,8 @@ API 与 Worker 多进程能使用同一数据库，不意味着当前工程已�
 | 模块 | 主要职责 |
 |---|---|
 | `backend/app/main.py` | FastAPI 路由、任务创建/重启/取消、调度与诊断接口 |
+| `frontend/index.html` / `tool-entry.js` | 唯一主工具事务 UI / 白名单同源入口及一次性预设 |
+| `scripts/generate_seo_pages.py` / `scripts/templates/tool-landing.html` | 不含业务引擎的静态工具介绍页生成与一致性检查 |
 | `backend/app/job_runner.py` | 整本任务生命周期、attempt 隔离、最终成品门禁与通知 |
 | `backend/app/domain/fast_translation_runner.py` | EPUB 快速翻译编排、章节并发、chunk QA、失败救援、Reduce 与校验 |
 | `backend/app/domain/book_profile_service.py` | 图书探针抽样、结构化画像、证据审计与非阻塞回退 |
