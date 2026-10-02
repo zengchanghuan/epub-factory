@@ -3,7 +3,7 @@
 #
 # 用途：本地/CI 复刻线上依赖树，消除「本地能跑、线上不行」类不一致。
 # 基准：腾讯云生产机 ~/epub-factory/backend/.venv 的 `pip freeze`
-# Python：3.10.12（见 .python-version；解释器版本不一致是最大坑，务必先对齐）
+# Python：3.10.12（显式选择解释器；仓库不提供 .python-version 自动切换）
 # 生成：2026-06-25
 #
 # 重建本地环境（需先 `pyenv install 3.10.12`）：
@@ -12,6 +12,7 @@
 #   pip install -r requirements.lock
 #
 # 注意：
+# - Python 包锁不锁定 SQLite/libxml2 等原生库；隔离门禁另外记录实际运行版本。
 # - requirements.txt 仍是「人类维护的直接依赖（部分用 >=）」；本文件是「机器锁定的完整快照」。
 # - 升级依赖时改 requirements.txt 安装后，再在生产同版本环境重新 `pip freeze > requirements.lock`。
 # - pip 管不到系统级依赖：java（epubcheck）、calibre（ebook-convert）需在机器/镜像层单独保证。

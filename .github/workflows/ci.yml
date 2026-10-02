@@ -156,6 +156,8 @@ jobs:
               python ../scripts/test_worker_services.py || fail=1
               python ../scripts/test_audit_production_config.py || fail=1
               python ../scripts/test_deploy_lock.py || fail=1
+              python ../scripts/test_release_runtime.py || fail=1
+              python ../scripts/test_release_gate.py || fail=1
               exit $fail
             '
 

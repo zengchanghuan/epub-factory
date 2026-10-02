@@ -14,6 +14,7 @@ C1 测试：排版增强器（TypographyEnhancer）与引擎降级策略
 import sys
 import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -128,8 +129,6 @@ def test_safe_mode_on_pipeline_failure():
         print("  ⏭️ SKIP: test_en.epub not found")
         return True
 
-    output = "/tmp/test_c1_safemode.epub"
-
     # mock EpubPackager.save 在第一次调用时抛异常（模拟 Full Pipeline 失败）
     original_run_full = ExtremeCompiler._run_full_pipeline
     call_count = {"n": 0}
@@ -138,24 +137,26 @@ def test_safe_mode_on_pipeline_failure():
         call_count["n"] += 1
         raise RuntimeError("模拟 Full Pipeline 崩溃")
 
-    with patch.object(ExtremeCompiler, "_run_full_pipeline", fake_full_pipeline):
-        c = ExtremeCompiler(
-            input_path=str(test_epub),
-            output_path=output,
-            output_mode="simplified",
-        )
-        success = c.run()
+    with TemporaryDirectory(prefix="epub-c1-safemode-") as directory:
+        output = str(Path(directory) / "safemode.epub")
+        with patch.object(ExtremeCompiler, "_run_full_pipeline", fake_full_pipeline):
+            c = ExtremeCompiler(
+                input_path=str(test_epub),
+                output_path=output,
+                output_mode="simplified",
+            )
+            success = c.run()
 
-    assert success, "Safe Mode 应成功产出文件"
-    assert Path(output).exists(), "Safe Mode 输出文件不存在"
+        assert success, "Safe Mode 应成功产出文件"
+        assert Path(output).exists(), "Safe Mode 输出文件不存在"
 
-    # 验证输出是合法 EPUB（能被 zipfile 打开）
-    with zipfile.ZipFile(output, "r") as zf:
-        names = zf.namelist()
-    assert "mimetype" in names, "Safe Mode 输出应含 mimetype"
+        # 验证输出是合法 EPUB（能被 zipfile 打开）
+        with zipfile.ZipFile(output, "r") as zf:
+            names = zf.namelist()
+        assert "mimetype" in names, "Safe Mode 输出应含 mimetype"
 
-    print(f"  Full Pipeline 触发异常次数: {call_count['n']}")
-    print(f"  Safe Mode 输出文件: {output} ({Path(output).stat().st_size} bytes)")
+        print(f"  Full Pipeline 触发异常次数: {call_count['n']}")
+        print(f"  Safe Mode 输出文件: {output} ({Path(output).stat().st_size} bytes)")
     print("  ✅ PASS: Safe Mode 降级成功")
     return True
 
@@ -170,26 +171,26 @@ def test_cleaner_isolation():
         print("  ⏭️ SKIP: test_en.epub not found")
         return True
 
-    output = "/tmp/test_c1_isolation.epub"
-
     # 让 CssSanitizer.process 每次调用都抛异常
     from app.engine.cleaners.css_sanitizer import CssSanitizer
-    with patch.object(CssSanitizer, "process", side_effect=RuntimeError("模拟 CSS 清洗崩溃")):
-        c = ExtremeCompiler(
-            input_path=str(test_epub),
-            output_path=output,
-            output_mode="simplified",
-        )
-        success = c.run()
+    with TemporaryDirectory(prefix="epub-c1-isolation-") as directory:
+        output = str(Path(directory) / "isolation.epub")
+        with patch.object(CssSanitizer, "process", side_effect=RuntimeError("模拟 CSS 清洗崩溃")):
+            c = ExtremeCompiler(
+                input_path=str(test_epub),
+                output_path=output,
+                output_mode="simplified",
+            )
+            success = c.run()
 
-    assert success, "单个 Cleaner 崩溃后整体任务应仍然成功"
-    assert Path(output).exists(), "输出文件应存在"
+        assert success, "单个 Cleaner 崩溃后整体任务应仍然成功"
+        assert Path(output).exists(), "输出文件应存在"
 
-    with zipfile.ZipFile(output, "r") as zf:
-        names = zf.namelist()
-    assert "mimetype" in names, "输出应为合法 EPUB"
+        with zipfile.ZipFile(output, "r") as zf:
+            names = zf.namelist()
+        assert "mimetype" in names, "输出应为合法 EPUB"
 
-    print(f"  输出文件: {output} ({Path(output).stat().st_size} bytes)")
+        print(f"  输出文件: {output} ({Path(output).stat().st_size} bytes)")
     print("  ✅ PASS: 清洗器异常被隔离，整体任务完成")
     return True
 

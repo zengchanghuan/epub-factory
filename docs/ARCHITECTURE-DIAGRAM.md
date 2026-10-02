@@ -2,7 +2,7 @@
 title: EPUB Factory 当前代码架构
 status: current
 updated: 2026-10-02
-code_revision: 2e65889 plus local D55 manual-order-review changes
+code_revision: 1970d76 (D55 pushed, not deployed)
 scope: local-code-and-offline-verification
 ---
 
@@ -16,7 +16,7 @@ R1–R11 及历史导航/表格兼容修复已提交并推送至 `9c8cac6`，尚
 
 PDF 公共入口仍拒绝输入；[PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md) 与图片像素 OCR/重绘均为规划，不属于已实现能力。
 
-2026-10-02 最新状态：R13、报价与续付修复以及基础设施迁移已部署，随后提交推送 `2e65889`，见 [顺序验收与生产证据](INFRA-AND-PDF-EXECUTION-2026-10-02.md)。上面的 R1–R12 交付段落及下文各项“未部署”是当时历史检查点，不代表当前生产状态。D55 异常订单人工处理是其后的本地改动，尚未部署。用户要求 PDF 只处理可靠文本层，当前仍未接通、未开放入口；图片像素 OCR、翻译与重绘继续暂缓，图片保持原样。
+2026-10-02 最新状态：R13、报价与续付修复以及基础设施迁移已部署，随后提交推送 `2e65889`，见 [顺序验收与生产证据](INFRA-AND-PDF-EXECUTION-2026-10-02.md)。上面的 R1–R12 交付段落及下文各项“未部署”是当时历史检查点，不代表当前生产状态。其后 D55 异常订单人工处理已提交推送 `1970d76`，尚未部署。隔离回归工具不改变业务架构；第二台 Mac 实测按用户要求延期。用户要求 PDF 只处理可靠文本层，当前仍未接通、未开放入口；图片像素 OCR、翻译与重绘继续暂缓，图片保持原样。
 
 ## 1. 系统边界
 

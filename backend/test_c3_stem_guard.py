@@ -18,6 +18,7 @@ C3 测试：STEM 内容守卫（StemGuard）
 import sys
 import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).parent))
 from app.engine.cleaners.stem_guard import StemGuard
@@ -189,22 +190,23 @@ def test_integration_pipeline_with_table():
 
     from app.engine.compiler import ExtremeCompiler
 
-    output = "/tmp/test_c3_pipeline.epub"
-    c = ExtremeCompiler(
-        input_path=str(test_epub),
-        output_path=output,
-        output_mode="simplified",
-    )
-    success = c.run()
+    with TemporaryDirectory(prefix="epub-c3-pipeline-") as directory:
+        output = str(Path(directory) / "pipeline.epub")
+        c = ExtremeCompiler(
+            input_path=str(test_epub),
+            output_path=output,
+            output_mode="simplified",
+        )
+        success = c.run()
 
-    assert success, "Pipeline 应成功"
+        assert success, "Pipeline 应成功"
 
-    # 验证 CSS 已含表格规则
-    with zipfile.ZipFile(output, "r") as zf:
-        css_content = ""
-        for name in zf.namelist():
-            if name.endswith(".css"):
-                css_content += zf.read(name).decode("utf-8", errors="ignore")
+        # 验证 CSS 已含表格规则
+        with zipfile.ZipFile(output, "r") as zf:
+            css_content = ""
+            for name in zf.namelist():
+                if name.endswith(".css"):
+                    css_content += zf.read(name).decode("utf-8", errors="ignore")
 
     assert "epub-table-wrap" in css_content, "输出 CSS 应含表格滚动规则"
     assert "StemGuard" in [type(cl).__name__ for cl in c.cleaners], \

@@ -12,6 +12,7 @@ C2 测试：Pipeline 阶段耗时埋点（PipelineMetrics）
 
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -85,12 +86,13 @@ def test_full_pipeline_records_stages():
     if _skip_if_no_epub():
         return True
 
-    c = ExtremeCompiler(
-        input_path=str(TEST_EPUB),
-        output_path="/tmp/test_c2_full.epub",
-        output_mode="simplified",
-    )
-    success = c.run()
+    with TemporaryDirectory(prefix="epub-c2-full-") as directory:
+        c = ExtremeCompiler(
+            input_path=str(TEST_EPUB),
+            output_path=str(Path(directory) / "full.epub"),
+            output_mode="simplified",
+        )
+        success = c.run()
 
     assert success, "Pipeline 应成功"
     stage_names = [s.name for s in c.metrics.stages]
@@ -111,12 +113,13 @@ def test_all_elapsed_ms_positive():
     if _skip_if_no_epub():
         return True
 
-    c = ExtremeCompiler(
-        input_path=str(TEST_EPUB),
-        output_path="/tmp/test_c2_ms.epub",
-        output_mode="simplified",
-    )
-    c.run()
+    with TemporaryDirectory(prefix="epub-c2-ms-") as directory:
+        c = ExtremeCompiler(
+            input_path=str(TEST_EPUB),
+            output_path=str(Path(directory) / "ms.epub"),
+            output_mode="simplified",
+        )
+        c.run()
 
     for s in c.metrics.stages:
         assert s.elapsed_ms >= 0, f"阶段 {s.name} elapsed_ms 为负: {s.elapsed_ms}"
@@ -135,12 +138,13 @@ def test_total_ms_gte_sum_of_stages():
     if _skip_if_no_epub():
         return True
 
-    c = ExtremeCompiler(
-        input_path=str(TEST_EPUB),
-        output_path="/tmp/test_c2_total.epub",
-        output_mode="simplified",
-    )
-    c.run()
+    with TemporaryDirectory(prefix="epub-c2-total-") as directory:
+        c = ExtremeCompiler(
+            input_path=str(TEST_EPUB),
+            output_path=str(Path(directory) / "total.epub"),
+            output_mode="simplified",
+        )
+        c.run()
 
     stage_sum = sum(s.elapsed_ms for s in c.metrics.stages)
     print(f"  total_ms={c.metrics.total_ms:.1f}  stage_sum={stage_sum:.1f}")
@@ -158,11 +162,11 @@ def test_safe_mode_metrics():
     if _skip_if_no_epub():
         return True
 
-    with patch.object(ExtremeCompiler, "_run_full_pipeline",
-                      side_effect=RuntimeError("强制触发 Safe Mode")):
+    with TemporaryDirectory(prefix="epub-c2-safe-") as directory, patch.object(
+            ExtremeCompiler, "_run_full_pipeline", side_effect=RuntimeError("强制触发 Safe Mode")):
         c = ExtremeCompiler(
             input_path=str(TEST_EPUB),
-            output_path="/tmp/test_c2_safe.epub",
+            output_path=str(Path(directory) / "safe.epub"),
             output_mode="simplified",
         )
         success = c.run()
@@ -185,12 +189,13 @@ def test_summary_printed_to_stdout(capsys=None):
     if _skip_if_no_epub():
         return True
 
-    c = ExtremeCompiler(
-        input_path=str(TEST_EPUB),
-        output_path="/tmp/test_c2_summary.epub",
-        output_mode="simplified",
-    )
-    c.run()
+    with TemporaryDirectory(prefix="epub-c2-summary-") as directory:
+        c = ExtremeCompiler(
+            input_path=str(TEST_EPUB),
+            output_path=str(Path(directory) / "summary.epub"),
+            output_mode="simplified",
+        )
+        c.run()
 
     summary = c.metrics.summary()
     assert "ms" in summary, "summary 应含 ms 单位"

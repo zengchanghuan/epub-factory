@@ -170,42 +170,21 @@ python3 -m http.server 5173
 
 ## 运行测试
 
+推荐从仓库根目录使用隔离门禁，避免旧测试导入应用时读取工作区 `.env` 或数据库。门禁只复制白名单源码，使用临时数据库/缓存与假密钥，阻止 Python 子进程联网；不会部署或安装依赖。
+
 ```bash
-cd backend
-
-# 一键回归（D1–D13 + C1–C6，推荐）
-.venv/bin/python run_regression.py
-
-# 或按文件单独运行
-.venv/bin/python test_d1_celery_bootstrap.py
-.venv/bin/python test_d2_task_data_models.py
-.venv/bin/python test_d3_api_v2_skeleton.py
-.venv/bin/python test_d4_celery_job_pipeline.py
-.venv/bin/python test_d5_stage_events.py
-.venv/bin/python test_d6_manifest.py
-.venv/bin/python test_d7_translate_chapter.py
-.venv/bin/python test_d8_reduce.py
-.venv/bin/python test_d9_book_reduce.py
-.venv/bin/python test_d10_status_resolver.py
-.venv/bin/python test_d11_notifications.py
-.venv/bin/python test_d12_translation_enhancement.py
-.venv/bin/python test_d13_regression.py
-.venv/bin/python test_c1_typography_and_fallback.py
-.venv/bin/python test_c2_pipeline_metrics.py
-.venv/bin/python test_c3_stem_guard.py
-.venv/bin/python test_c4_bilingual.py
-.venv/bin/python test_c5_persistent_store.py
-.venv/bin/python test_c6_glossary_rag.py
-.venv/bin/python test_e6_payment_gate.py
-
-# 前端测试（F1-F6，共 53 个用例，零依赖）
-cd frontend/tests
-node runner.js test_f1_bilingual.js
-node runner.js test_f2_metrics.js
-node runner.js test_f3_cost.js
-node runner.js test_f4_f5_safemode_errorcode.js
-node runner.js test_f6_history.js
+# evidence-dir 必须不存在，且位于仓库外；请换成本次唯一目录。
+backend/.venv/bin/python scripts/release-gate.py \
+  --python "$PWD/backend/.venv/bin/python" \
+  --node node \
+  --epubcheck-jar "$PWD/tools/epubcheck-5.1.0/epubcheck.jar" \
+  --evidence-dir /private/tmp/fixepub-release-new-run \
+  --profile offline
 ```
+
+`offline` 运行完整后端 catalog 与前端单元测试，不代表真实书验收；`history` 额外要求三本历史书的原稿、旧成品和基线共 9 份文件全部匹配固定 SHA，并实际转换、检查和下载。缺文件必须失败，不能用跳过代替通过。
+
+依赖要求、真实样本参数和双 Mac 交接见 [隔离回归与交接](docs/RELEASE-GATE-HANDOFF.md)。第二台 Mac 的真实运行验收按用户要求延期；本机通过不代表双机、生产支付或收费模型效果已验证。
 
 ## 待实现（Roadmap）
 
