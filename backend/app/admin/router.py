@@ -1,20 +1,23 @@
 import hmac
+import hashlib
 import logging
 import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from .auth import (AdminBase, AdminSession, COOKIE, credential_version, credentials,
                    digest_token, reject_cross_origin, require_session, throttle, verify_password)
 from .orders import PaymentCheck, money, order_view, safe_file
-from ..storage_db import JobRecord, _record_to_job
+from .reviews import OrderReviewError, OrderReviewService
+from ..storage_db import JobRecord, OrderReviewRecord, _record_to_job, _sqlite_schema_lock
 from ..models import JobStage, JobStatus, StageStatus
 from ..domain.translation_attempt import new_attempt_id, attempt_id_from_stats
 from ..domain.payment_entitlement import grant_verified_entitlement
@@ -34,12 +37,29 @@ class RetryBody(BaseModel):
     acknowledge_cost: bool = False
 
 
+class ReviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["note", "fulfill", "record_external_refund", "close_review"]
+    request_id: UUID
+    expected_revision: int = Field(ge=0)
+    expected_context: str = Field(pattern=r"^[a-f0-9]{64}$")
+    note: str = Field(default="", max_length=4000)
+    evidence: str = Field(default="", max_length=4000)
+    refund_reference: str = Field(default="", max_length=256)
+    acknowledge_cost: bool = False
+
+
 def make_router(store, upload_dir, output_dir, enqueue):
     router = APIRouter(prefix="/api/admin", tags=["admin-orders"])
     engine = getattr(store, "_engine", None)
     if engine is not None:
-        AdminBase.metadata.create_all(engine)
+        with _sqlite_schema_lock(engine):
+            AdminBase.metadata.create_all(engine)
     ledger = get_ledger(engine) if engine is not None else None
+    reviews = (OrderReviewService(store, upload_dir,
+               cost_provider=lambda job: ledger.summary(job.id, job.translation_stats))
+               if engine is not None else None)
 
     def available():
         if engine is None:
@@ -50,10 +70,58 @@ def make_router(store, upload_dir, output_dir, enqueue):
         return require_session(engine, request, write=write)
 
     def get_job(job_id):
-        job = store.get(job_id)
+        try:
+            job = store.get(job_id)
+        except (TypeError, ValueError, OverflowError):
+            # Historical malformed metadata is not an executable order. Never
+            # repair it implicitly or leak the failing value/provider payload.
+            raise HTTPException(409, "订单历史元数据异常，已禁止操作，请人工核对原记录",
+                                headers={"Cache-Control": "no-store"}) from None
         if not job:
             raise HTTPException(404, "订单不存在")
         return job
+
+    def invalid_record_view(row):
+        """Read-only diagnostic projection; deliberately never constructs a Job."""
+        number = f"batch_{row.batch_id}" if row.batch_id else row.id
+        expected, scope_count = row.expected_amount, 1
+        price_scope = "原记录金额（历史元数据待核对）"
+        if row.batch_id:
+            with Session(engine) as session:
+                scope_count = session.query(JobRecord).filter_by(batch_id=row.batch_id).count()
+                leaders = session.query(JobRecord).filter_by(
+                    batch_id=row.batch_id, batch_index="0").limit(2).all()
+                if len(leaders) == 1:
+                    expected = leaders[0].expected_amount
+                    price_scope = "整批冻结价格，勿重复相加（历史元数据待核对）"
+        message = "订单历史元数据异常；仅展示原记录摘要，下载及付款、重试、人工处置均已禁止"
+        return {
+            "id": row.id, "order_no": number, "filename": row.source_filename,
+            "created_at": row.created_at.isoformat() if isinstance(row.created_at, datetime) else None,
+            "updated_at": row.updated_at.isoformat() if isinstance(row.updated_at, datetime) else None,
+            "status": row.status, "price_cny": expected or None, "price_scope": price_scope,
+            "batch_id": row.batch_id or None, "translation": bool(row.enable_translation),
+            "model": None, "error_code": "ORDER_METADATA_INVALID", "message": message,
+            "metadata_invalid": True,
+            "cost": {"estimated_usd": None, "known_attempts": None, "attempts": None,
+                     "prompt_tokens": None, "completion_tokens": None, "ledger": None,
+                     "note": "历史元数据不可解析，模型用量及费用未知，不按零费用处理。"},
+            "payment": {"status": "unknown", "amount": None, "checked_at": None},
+            "payment_resolution": {}, "checkout": {}, "files": {"source": False, "output": False},
+            "stages": [],
+            "review": {"order_no": number, "revision": 0,
+                       "context": hashlib.sha256(("metadata_invalid:" + row.id).encode()).hexdigest(),
+                       "state": "open", "needs_attention": True,
+                       "reasons": [{"code": "metadata_invalid", "label": message}],
+                       "allowed_actions": [], "scope_count": scope_count},
+        }
+
+    def record_view(row, review_cache=None):
+        try:
+            job = _record_to_job(row)
+        except (TypeError, ValueError, OverflowError):
+            return invalid_record_view(row)
+        return view(job, review_cache)
 
     def order_identity(job):
         if job.batch_id:
@@ -62,7 +130,7 @@ def make_router(store, upload_dir, output_dir, enqueue):
                 return f"batch_{job.batch_id}", first.expected_amount if first else None
         return job.id, job.expected_amount
 
-    def view(job):
+    def view(job, review_cache=None):
         number, expected = order_identity(job)
         with engine.connect() as conn:
             payment = conn.execute(select(PaymentCheck).where(PaymentCheck.order_no == number)).mappings().first()
@@ -70,6 +138,15 @@ def make_router(store, upload_dir, output_dir, enqueue):
         result["cost"]["ledger"] = ledger.summary(job.id, job.translation_stats)
         result["checkout"] = milestones(store, number)
         result["payment_resolution"] = dict(getattr(job, "payment_resolution", None) or {})
+        try:
+            if review_cache is not None and number in review_cache:
+                result["review"] = review_cache[number]
+            else:
+                result["review"] = reviews.snapshot(job.id)
+                if review_cache is not None:
+                    review_cache[number] = result["review"]
+        except OrderReviewError as exc:
+            raise HTTPException(exc.status_code, str(exc), headers={"Cache-Control": "no-store"}) from None
         return result
 
     def check_payment(job):
@@ -145,12 +222,14 @@ def make_router(store, upload_dir, output_dir, enqueue):
         return {"ok": True}
 
     @router.get("/orders")
-    def orders(request: Request, q: str = Query("", max_length=200), status: JobStatus | None = None,
+    def orders(request: Request, response: Response, q: str = Query("", max_length=200), status: JobStatus | None = None,
                payment: Literal["paid", "unpaid", "closed", "unknown", "amount_mismatch"] | None = None,
+               review: Literal["paid_review", "open", "resolved"] | None = None,
                start: date | None = None, end: date | None = None,
                amount: str | None = Query(None, max_length=30), page: int = Query(1, ge=1),
                size: int = Query(25, ge=1, le=100)):
         authorize(request)
+        response.headers["Cache-Control"] = "no-store"
         if start and end and start > end:
             raise HTTPException(422, "开始日期不能晚于结束日期")
         if amount is not None and money(amount) is None:
@@ -163,7 +242,8 @@ def make_router(store, upload_dir, output_dir, enqueue):
             number = case((JobRecord.batch_id != "", "batch_" + JobRecord.batch_id), else_=JobRecord.id)
             price = case((JobRecord.batch_id != "", first.c.price), else_=JobRecord.expected_amount)
             query = session.query(JobRecord).outerjoin(first, JobRecord.batch_id == first.c.batch).outerjoin(
-                PaymentCheck, PaymentCheck.order_no == number)
+                PaymentCheck, PaymentCheck.order_no == number).outerjoin(
+                OrderReviewRecord, OrderReviewRecord.order_no == number)
             query = query.filter(JobRecord.is_test_order.is_(False))
             query = query.filter(JobRecord.created_at >= datetime(2026, 6, 24, tzinfo=timezone.utc))
             # Exclude test-price orders, including all children of a test batch.
@@ -176,6 +256,12 @@ def make_router(store, upload_dir, output_dir, enqueue):
                 query = query.filter(JobRecord.status == status.value)
             if payment:
                 query = query.filter(func.coalesce(PaymentCheck.status, "unknown") == payment)
+            if review == "paid_review":
+                query = query.filter(JobRecord.error_code == "PAYMENT_REVIEW_REQUIRED")
+            elif review:
+                # These filters describe recorded case state, not an unbounded
+                # scan of dynamically recomputed payment/usage anomalies.
+                query = query.filter(OrderReviewRecord.state == ("closed" if review == "resolved" else "open"))
             if start:
                 query = query.filter(JobRecord.created_at >= datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
             if end:
@@ -184,7 +270,10 @@ def make_router(store, upload_dir, output_dir, enqueue):
                 query = query.filter(price != "", cast(price, Numeric(16, 2)) == money(amount))
             total = query.count()
             rows = query.order_by(JobRecord.created_at.desc(), JobRecord.id.desc()).offset((page - 1) * size).limit(size).all()
-            items = [view(_record_to_job(row)) for row in rows]
+            # A batch has one review context. Recompute it once per page, not
+            # once per child (which would repeatedly scan the whole batch).
+            review_cache = {}
+            items = [record_view(row, review_cache) for row in rows]
         return {"items": items, "total": total, "page": page, "size": size}
 
     @router.get("/orders/{job_id}/usage")
@@ -197,16 +286,75 @@ def make_router(store, upload_dir, output_dir, enqueue):
                 "items": ledger.requests(job.id, page, page_size)}
 
     @router.get("/orders/{job_id}")
-    def detail(job_id: str, request: Request):
+    def detail(job_id: str, request: Request, response: Response):
         authorize(request)
-        job = get_job(job_id)
-        result = view(job)
+        response.headers["Cache-Control"] = "no-store"
+        with Session(engine) as session:
+            row = session.get(JobRecord, job_id)
+            if row is None:
+                raise HTTPException(404, "订单不存在")
+            result = record_view(row)
+        if result.get("metadata_invalid"):
+            return result
         # Expose only failure/attempt summaries, not raw paths, keys, or provider payloads.
         result["stages"] = [{"name": s.stage_name, "status": s.status.value,
                              "started_at": s.started_at.isoformat() if s.started_at else None,
                              "elapsed_ms": s.elapsed_ms,
                              "previous_failure": s.metadata.get("previous_message") if s.stage_name == "admin_retry" else None} for s in store.list_stages(job_id)[-100:]]
         return result
+
+    @router.get("/orders/{job_id}/review-history")
+    def review_history(job_id: str, request: Request, response: Response,
+                       before: str | None = Query(None, max_length=256),
+                       limit: int = Query(20, ge=1, le=100)):
+        authorize(request)
+        response.headers["Cache-Control"] = "no-store"
+        get_job(job_id)
+        try:
+            return reviews.history(job_id, before=before, limit=limit)
+        except OrderReviewError as exc:
+            raise HTTPException(exc.status_code, str(exc), headers={"Cache-Control": "no-store"}) from None
+
+    @router.post("/orders/{job_id}/review")
+    def resolve_review(job_id: str, body: ReviewBody, request: Request,
+                       response: Response, background: BackgroundTasks):
+        authorize(request, True)
+        response.headers["Cache-Control"] = "no-store"
+        get_job(job_id)
+        try:
+            snapshot = reviews.snapshot(job_id)
+            trade = None
+            # A completed idempotent retry needs no new gateway request. The
+            # transactional service still verifies the request hash and CAS.
+            if body.action == "fulfill" and "fulfill" in snapshot["allowed_actions"]:
+                try:
+                    trade = query_verified_trade(snapshot["order_no"])
+                except Exception:
+                    raise HTTPException(503, "支付核验暂不可用，未执行履约，请稍后重试",
+                                        headers={"Cache-Control": "no-store"}) from None
+            result = reviews.apply(job_id, body.action, str(body.request_id),
+                body.expected_revision, body.expected_context, actor=credentials()[0],
+                note=body.note, evidence=body.evidence,
+                refund_reference=body.refund_reference,
+                acknowledge_cost=body.acknowledge_cost, trade=trade)
+        except OrderReviewError as exc:
+            raise HTTPException(exc.status_code, str(exc), headers={"Cache-Control": "no-store"}) from None
+        dispatch_pending = False
+        for released_id in result.get("released", []):
+            current = store.get(released_id)
+            if current is None:
+                continue
+            try:
+                enqueue(current, background)
+            except Exception:
+                # The new attempt and dispatch intent were committed together.
+                # Do not turn an accepted paid task into a failed task here.
+                dispatch_pending = True
+                logger.warning("Reviewed order awaiting durable dispatch", extra={"job_id": released_id})
+        result_view = view(get_job(job_id))
+        result_view["review_action"] = {"duplicate": bool(result.get("duplicate")),
+                                         "dispatch_pending": dispatch_pending}
+        return result_view
 
     @router.post("/orders/{job_id}/payment")
     def refresh_payment(job_id: str, request: Request):

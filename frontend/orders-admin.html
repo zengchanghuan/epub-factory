@@ -18,6 +18,7 @@
 <label class="search">搜索<input name="q" placeholder="书名、任务 ID 或商户订单号" maxlength="200"></label>
 <label>任务状态<select name="status"><option value="">全部状态</option><option value="pending_payment">等待支付</option><option value="pending">排队中</option><option value="running">处理中</option><option value="success">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label>
 <label>支付状态<select name="payment"><option value="">全部支付状态</option><option value="unknown">未核验 / 查询不可用</option><option value="paid">已核验支付</option><option value="unpaid">待支付</option><option value="closed">已关闭</option><option value="amount_mismatch">金额待核对</option></select></label>
+<label>人工处理<select name="review"><option value="">全部处置状态</option><option value="paid_review">已付款待人工处理</option><option value="open">已登记待处理工单</option><option value="resolved">已登记关闭工单</option></select></label>
 <label>订单价格（元）<input name="amount" type="number" min="0" step="0.01" placeholder="例如 5.99"></label>
 <label>开始日期<input name="start" type="date"></label><label>结束日期<input name="end" type="date"></label>
 <div class="filter-actions"><button>查询</button><button type="reset" class="secondary">重置</button></div>
@@ -25,7 +26,7 @@
 <section class="card table-card"><div class="table-heading"><h2>订单列表 <span id="total" class="muted"></span></h2><span class="muted">点击“详情”查看文件与失败记录</span></div>
 <div class="table-scroll"><table><thead><tr><th>文件 / 订单</th><th>创建时间</th><th>任务状态</th><th>价格 · CNY</th><th>支付状态</th><th>付款进度</th><th>Token 成本</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="pagination"><span id="page-info"></span><div><button id="previous" class="secondary">上一页</button><button id="next" class="secondary">下一页</button></div></div></section>
-<p class="muted footnote">范围：数据库中保存的翻译与转换任务（含批量子任务）。独立 EPUB 修复工具的旧内存订单未持久保存，不包含在此列表。</p>
+<p class="muted footnote">范围：数据库中保存的翻译与转换任务（含批量子任务），不包含独立 EPUB 修复工具订单。工单筛选表示登记状态，不代表动态新增异常已全部解决。人工登记退款不调用支付宝退款接口，也不等同于网关退款核验。</p>
 </section>
 </main>
 <dialog id="detail"><div class="dialog-heading"><h2>订单详情</h2><button id="close" class="secondary">关闭</button></div><div id="detail-body"></div></dialog>

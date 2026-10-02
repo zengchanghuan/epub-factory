@@ -16,6 +16,16 @@ FLASH_ALIASES = {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-visio
 QUALITY_CHOICES = {"standard", "high", "literary"}
 
 
+def manual_payment_guard(job) -> str:
+    """Financial dispositions cannot be bypassed by ordinary retries/callbacks."""
+    resolution = getattr(job, "payment_resolution", None) or {}
+    if resolution.get("refund_recorded") is True or resolution.get("state") == "external_refund_recorded":
+        return "refund_recorded"
+    if resolution.get("state") == "paid_review":
+        return "payment_review_required"
+    return ""
+
+
 def canonical_model(model: str) -> str:
     return "deepseek-flash" if model in FLASH_ALIASES else model
 
@@ -66,6 +76,8 @@ def _had_restart(job) -> bool:
 def grant_test_entitlement(store, job) -> dict:
     """Only the caller's explicit server test configuration may reach here."""
     current = dict(getattr(job, "payment_entitlement", {}) or {})
+    if manual_payment_guard(job) == "refund_recorded":
+        return current
     if current.get("state") in {"paid", "test_authorized"}:
         return current
     snapshot = dict(current) if current else quote_entitlement(job)
@@ -86,6 +98,8 @@ legacy plan after a fresh verified query. Ordinary callbacks cannot do that.
     if not job.enable_translation and not getattr(job, "enable_precision_polish", False):
         return {}
     current = dict(getattr(job, "payment_entitlement", {}) or {})
+    if manual_payment_guard(job) == "refund_recorded":
+        return current
     if current.get("state") in {"paid", "test_authorized"}:
         return current
     if not current and _had_restart(job) and not (allow_legacy_plan and source == "verified_admin_query"):
@@ -104,6 +118,8 @@ legacy plan after a fresh verified query. Ordinary callbacks cannot do that.
 
 def precision_polish_entitlement_reason(job) -> str:
     """Paid conversion add-on must be backed by the server's combined quote."""
+    if manual_payment_guard(job):
+        return manual_payment_guard(job)
     if not getattr(job, "enable_precision_polish", False):
         return ""
     if (job.enable_translation
@@ -134,6 +150,8 @@ def precision_polish_entitlement_reason(job) -> str:
 def recover_legacy_entitlement(store, job) -> dict:
     """Lazy, evidence-backed migration; no network and no execution-state guess."""
     current = dict(getattr(job, "payment_entitlement", {}) or {})
+    if manual_payment_guard(job) == "refund_recorded":
+        return current
     if current or not job.enable_translation or not hasattr(store, "_Session"):
         return current
     from app.storage_db import OrderEventRecord
@@ -157,6 +175,9 @@ def recover_legacy_entitlement(store, job) -> dict:
 
 def restart_entitlement_reason(job, *, translation_quality=None, translation_model=None) -> str:
     """Pure check used inside the store's restart transaction/lock."""
+    guard = manual_payment_guard(job)
+    if guard:
+        return guard
     if not job.enable_translation:
         return ""
     entitlement = getattr(job, "payment_entitlement", {}) or {}

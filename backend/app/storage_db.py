@@ -258,6 +258,37 @@ class PaymentEmailRecord(Base):
     data_json = Column(Text, nullable=False)
 
 
+class OrderReviewRecord(Base):
+    """Private administrative case, never a substitute for payment evidence."""
+    __tablename__ = "admin_order_reviews"
+
+    order_no = Column(String(100), primary_key=True)
+    revision = Column(Integer, nullable=False, default=0)
+    state = Column(String(16), nullable=False, default="open", index=True)
+    context = Column(String(64), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class OrderReviewEventRecord(Base):
+    """Append-only private decision log, independent of public job payloads."""
+    __tablename__ = "admin_order_review_events"
+
+    id = Column(String(64), primary_key=True)  # hash(order_no, request_id)
+    order_no = Column(String(100), nullable=False, index=True)
+    revision = Column(Integer, nullable=False)
+    request_id = Column(String(36), nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    action = Column(String(32), nullable=False)
+    actor = Column(String(128), nullable=False)
+    note = Column(Text, nullable=False)
+    evidence = Column(Text, nullable=False)
+    refund_reference = Column(String(256), nullable=False, default="")
+    before_context = Column(String(64), nullable=False)
+    after_context = Column(String(64), nullable=False)
+    result_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
 # ─── 数据库连接工厂 ───────────────────────────────────────────────────────────
 
 def _sqlite_schema_lock_path(engine):

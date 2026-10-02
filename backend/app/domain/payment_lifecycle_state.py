@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from ..models import ErrorCode, JobStatus
-from .payment_entitlement import VERIFIED_SOURCES
+from .payment_entitlement import VERIFIED_SOURCES, manual_payment_guard
 
 
 LEGACY_TIMEOUT_MESSAGES = frozenset({"支付超时，订单已关闭", "支付超时，批次订单已关闭"})
@@ -17,7 +17,7 @@ def is_payment_expired(job) -> bool:
     if job.status != JobStatus.cancelled:
         return False
     resolution = job.payment_resolution or {}
-    if resolution.get("state") == "paid_review":
+    if manual_payment_guard(job):
         return False
     return (job.error_code == ErrorCode.PAYMENT_EXPIRED.value
             or resolution.get("state") == "closed"
@@ -28,6 +28,8 @@ def settlement_values(job, *, source: str, amount: str, now=None) -> tuple[str, 
     """Caller has verified merchant identity, successful payment and amount."""
     if source not in VERIFIED_SOURCES:
         raise ValueError("Untrusted payment settlement source")
+    if manual_payment_guard(job) == "refund_recorded":
+        return "unchanged", {}
     at = now or datetime.now(timezone.utc)
     if job.status == JobStatus.pending_payment or is_payment_expired(job):
         action, state = "released", "paid"

@@ -109,6 +109,8 @@ D_SUITE = [
     "test_d53_checkout_gateway.py",
     "test_d53_checkout_contract.py",
     "test_d54_schema_init.py",
+    "test_d55_order_review_store.py",
+    "test_d55_order_review_api.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

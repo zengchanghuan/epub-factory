@@ -137,6 +137,8 @@ jobs:
                 test_d53_checkout_gateway
                 test_d53_checkout_contract
                 test_d54_schema_init
+                test_d55_order_review_store
+                test_d55_order_review_api
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard
