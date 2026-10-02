@@ -16,13 +16,36 @@ done
 sudo -n true || { echo 'Run sudo -v in the server terminal first, or configure the deployment account sudo permission.' >&2; exit 1; }
 # One server-side lock covers both Macs, including backups and service restarts.
 # Never remove the lock file: removing it would let a new process lock another inode.
+# DEPLOY_LOCK_BEGIN
 if [[ "$ACTION" != --check ]]; then
-  lock_umask=$(umask)
-  umask 077
-  exec 9>"$PROJECT_DIR/.deploy.lock"
-  umask "$lock_umask"
+  if [[ -n "${EPUB_DEPLOY_LOCK_FD+x}" ]]; then
+    [[ "$EPUB_DEPLOY_LOCK_FD" == 9 ]] || { echo 'Inherited deployment lock must use FD 9.' >&2; exit 1; }
+    # A maintenance parent may retain the same open file description with pass_fds.
+    # Do not reopen FD 9: doing so would drop our reference to its existing lock.
+    python3 - "$PROJECT_DIR/.deploy.lock" <<'PY'
+import os
+import stat
+import sys
+
+try:
+    inherited = os.stat('/proc/self/fd/9')
+    expected = os.stat(sys.argv[1])
+    valid = (stat.S_ISREG(inherited.st_mode) and stat.S_ISREG(expected.st_mode)
+             and (inherited.st_dev, inherited.st_ino) == (expected.st_dev, expected.st_ino))
+except (OSError, ValueError):
+    valid = False
+if not valid:
+    sys.exit('Inherited deployment lock does not match this project lock.')
+PY
+  else
+    lock_umask=$(umask)
+    umask 077
+    exec 9>"$PROJECT_DIR/.deploy.lock"
+    umask "$lock_umask"
+  fi
   flock -n 9 || { echo 'Another deployment is in progress; retry after it finishes.' >&2; exit 1; }
 fi
+# DEPLOY_LOCK_END
 if [[ $(systemctl show nginx -p LoadState --value 2>/dev/null) == loaded ]]; then
   sudo -n /usr/sbin/nginx -t
 fi

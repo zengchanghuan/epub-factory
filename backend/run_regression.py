@@ -101,6 +101,14 @@ D_SUITE = [
     "test_d50_llm_limiter.py",
     "test_d50_llm_callers.py",
     "test_d50_preflight_admission.py",
+    "test_d51_notification_store.py",
+    "test_d51_notification_api.py",
+    "test_d51_auth_config.py",
+    "test_d52_translation_quote.py",
+    "test_d52_quote_contract.py",
+    "test_d53_checkout_gateway.py",
+    "test_d53_checkout_contract.py",
+    "test_d54_schema_init.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

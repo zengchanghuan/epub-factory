@@ -74,7 +74,7 @@ class EntryHistoryTests(replay.ReduceHistoryTests):
         self.patches.enter_context(patch.object(self.main, "_enqueue_conversion", self.real_enqueue))
         self.patches.enter_context(patch.object(self.main, "_use_celery", return_value=True))
         self.patches.enter_context(patch.object(self.main, "verify_alipay_notification", return_value=True))
-        self.patches.enter_context(patch("app.infra.alipay.create_alipay_precreate", return_value=None))
+        self.patches.enter_context(patch("app.infra.alipay.create_alipay_precreate", return_value="https://qr.example.invalid/r11-offline-code"))
         self.patches.enter_context(patch("app.domain.payment_email_service.queue_paid_order_email"))
         self.patches.enter_context(patch.object(job_runner, "job_store", self.store))
         self.patches.enter_context(patch.object(job_runner, "OUTPUT_DIR", self.outputs))

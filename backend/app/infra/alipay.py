@@ -212,6 +212,34 @@ def query_verified_trade(out_trade_no: str) -> Optional[dict]:
         return None
 
 
+def query_checkout_trade(out_trade_no: str) -> Optional[dict]:
+    """Query checkout state without turning unknown payment facts into proof.
+
+    Only this checkout-specific boundary recognizes a signed, explicit
+    ACQ.TRADE_NOT_EXIST result. Existing payment verification/reconciliation
+    intentionally keeps treating that result as unknown. No exception body is
+    ever parsed, including SDK errors containing a plausible business response.
+    """
+    if (not _alipay_client or not isinstance(out_trade_no, str)
+            or not out_trade_no.strip() or out_trade_no != out_trade_no.strip()):
+        return None
+    try:
+        model = AlipayTradeQueryModel()
+        model.out_trade_no = out_trade_no
+        result = _alipay_client.execute(AlipayTradeQueryRequest(biz_model=model))
+        data = _verified_business_response(result, "alipay_trade_query_response")
+        if data.get("code") == "10000" and data.get("out_trade_no") == out_trade_no:
+            return {key: data.get(key) for key in
+                    ("out_trade_no", "trade_status", "total_amount", "trade_no")}
+        if (data.get("code") == "40004" and data.get("sub_code") == "ACQ.TRADE_NOT_EXIST"
+                and ("out_trade_no" not in data or data["out_trade_no"] == out_trade_no)):
+            return {"out_trade_no": out_trade_no, "trade_status": "NOT_CREATED"}
+        return None
+    except Exception:
+        logger.warning("Verified Alipay checkout query unavailable")
+        return None
+
+
 def close_verified_trade(out_trade_no: str) -> Optional[dict]:
     """Return proof only after this exact order is successfully closed by Alipay.
 

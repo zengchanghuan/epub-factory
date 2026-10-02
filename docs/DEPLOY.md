@@ -33,6 +33,8 @@ DEPLOY_HOST=ubuntu@81.71.22.79 DEPLOY_PORT=22 bash deploy.sh
 
 本机需要 Python 3.9+、Git、OpenSSH 和 curl。SSH 首次连接时，请核对服务器主机指纹。服务器需要已有生产 `.env`、Python 虚拟环境、Java、EPUBCheck 5.1.0，以及四个 systemd 服务：`epub-factory`、`epub-factory-worker`、`epub-factory-housekeeping`、`epub-factory-beat`。这是已有服务的升级脚本，不负责首次建站、安装单元或配置密钥。原三服务部署须先完成下节迁移；预检在停止任何服务前会拒绝缺失的第四服务或未限定队列的 Worker。
 
+SQLite 初始化使用同数据库旁永久的 `.schema-init.lock`（0600）：首次 WAL 连接、建表及兼容迁移在同一个跨进程锁内。所有服务应使用同一数据库路径和有读写权限的账号；不要在服务运行中删除此锁文件或把锁文件清理当作解锁。进程退出会自动释放锁，超时或真实迁移错误仍会让服务明确失败。该机制不是 NFS/跨主机分布式锁。
+
 免密安装脚本生成专用密钥 `~/.ssh/id_ed25519_fixepub`，只把公钥追加到服务器 `authorized_keys`，保留已有公钥；不保存密码、不修改 SSH 服务配置。私钥没有口令，保存在本机权限受限的 SSH 目录中，不进入工程或部署包。已有密钥可通过 `DEPLOY_KEY` 指定；带口令的密钥需先加入 ssh-agent。仅生成密钥可运行 `bash scripts/setup-deploy-ssh.sh --prepare`。部署入口启用 `BatchMode=yes` 和严格主机校验，认证异常会立即失败，不退回密码登录。
 
 服务器执行 `sudo -n`：若账号没有免密 sudo，优先使用下面的腾讯云终端方式，在同一终端执行 `sudo -v` 后发布。脚本不会保存、传输文件形式的密码，也不会修改 sudo 权限。
@@ -122,6 +124,7 @@ curl -fsS https://fixepub.com/api/healthz
 - 若数据库有排队或运行中的任务，拒绝部署。实际发布时停止 API、beat 和 housekeeping，等待维护 Worker 优雅退出，再次检查任务后停止 book Worker，避免检查后新任务进入；因此存在维护中断，时长取决于正在执行的维护任务，不保证只需数秒。
 - 统一重启 API、book Worker、housekeeping Worker、beat，复核 Worker 角色、四服务状态及本机 `/healthz`；本机入口还会验证公网 `/api/healthz`（校验 JSON 状态为 `ok`）。任何失败返回非零退出码，不会输出部署成功。
 - 正式发布持有服务器工程目录下的 `.deploy.lock` 排他锁，覆盖备份、配置更新和服务重启。另一台 Mac 同时发布会明确拒绝，不互相覆盖；`--check` 只是只读快照，不保留发布权。入口证书配置在维护前校验。
+- 经批准的维护父进程如需让全量备份、unit/config 迁移和正式发布共用同一锁，应先打开并排他锁定该工程的 `.deploy.lock`，将同一打开文件描述复制到 FD 9，然后使用 `subprocess.run(..., pass_fds=(9,), env={..., 'EPUB_DEPLOY_LOCK_FD': '9'})` 调用原部署脚本，并在整个维护窗口保留父进程锁。脚本会核验 `/proc/self/fd/9` 与工程锁的设备号/inode 以及非阻塞锁获取；缺失、错工程、冲突或非 9 的描述符均拒绝。不要删除/替换锁文件，不支持任意 FD，也不要用此参数跳过锁检查；普通部署无需设置此变量。
 - 不清空缓存，不更改订单支付状态，不自动重跑历史订单。删除源码文件的迁移需单独处理；本脚本不会删除服务器上未列入发布包的文件。
 
 整书时限默认 7200/7500 秒。若需覆盖，在服务器 `backend/.env` 设置 `EPUB_BOOK_SOFT_TIME_LIMIT` 和 `EPUB_BOOK_TIME_LIMIT`，硬时限必须大于软时限。

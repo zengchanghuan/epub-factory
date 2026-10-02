@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Dict, Optional
 
-from .models import Job, JobChapter, JobChunk, JobNotification, JobStage, JobStatus, QualityStats, StageStatus
+from .models import (Job, JobChapter, JobChunk, JobNotification, JobStage, JobStatus,
+                     QualityStats, StageStatus, validate_notification_page)
 from .domain.translation_attempt import restarted_translation_stats
 from .domain.payment_entitlement import restart_entitlement_reason
 from .domain.dispatch_intent import build_dispatch_intent, completion_values, due, timestamp
@@ -417,6 +418,7 @@ class JobStore:
         status: JobStatus,
         message: str,
         expected_amount: str,
+        payment_checkout: Optional[Dict[str, Any]] = None,
     ) -> Optional[Job]:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -430,6 +432,8 @@ class JobStore:
             if dispatch:
                 job.translation_stats, intent = dispatch
                 self._dispatches.setdefault(intent["dispatch_id"], intent)
+            if payment_checkout is not None:
+                job.translation_stats = {**(job.translation_stats or {}), "payment_checkout": deepcopy(payment_checkout)}
             return deepcopy(job)
 
     def rollback_translation_confirmation(self, job_id: str, message: str) -> Optional[Job]:
@@ -451,14 +455,39 @@ class JobStore:
     def add_notification(self, notification: JobNotification) -> JobNotification:
         """写入站内/邮件通知记录。"""
         with self._lock:
-            self._notifications.append(deepcopy(notification))
-            return deepcopy(notification)
+            if any(saved.id == notification.id for saved in self._notifications):
+                raise ValueError("notification id already exists")
+            saved = deepcopy(notification)
+            saved.created_at = utc_datetime(saved.created_at)
+            self._notifications.append(saved)
+            return deepcopy(saved)
 
     def list_notifications(self, job_id: Optional[str] = None) -> list:
         """返回通知列表，可选按 job_id 过滤，按创建时间升序。"""
         with self._lock:
             out = [n for n in self._notifications if job_id is None or n.job_id == job_id]
             return deepcopy(sorted(out, key=lambda n: n.created_at))
+
+    def list_notification_page(self, *, job_id=None, user_id=None, limit=21, before=None) -> list[JobNotification]:
+        """Public in-app page; current job ownership, never notification.user_id."""
+        validate_notification_page(job_id=job_id, user_id=user_id, limit=limit, before=before)
+        with self._lock:
+            rows = []
+            for notification in self._notifications:
+                if notification.channel != "in_app" or (job_id is not None and notification.job_id != job_id):
+                    continue
+                if user_id is not None:
+                    job = self._jobs.get(notification.job_id)
+                    if job is None or job.user_id != user_id:
+                        continue
+                key = (utc_datetime(notification.created_at), notification.id)
+                if before is None or key < before:
+                    rows.append(notification)
+            rows.sort(key=lambda n: (utc_datetime(n.created_at), n.id), reverse=True)
+            page = deepcopy(rows[:limit])
+            for notification in page:
+                notification.created_at = utc_datetime(notification.created_at)
+            return page
 
     def try_mark_paid(self, job_id: str, message: str = "支付成功，排队中...") -> bool:
         """

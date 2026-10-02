@@ -1100,12 +1100,9 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(overwritten.message, "用户已停止翻译")
 
     def test_v2_notifications_shape(self):
-        """GET /api/v2/notifications 返回 items 数组。"""
+        """R13 禁止匿名全站枚举；授权响应形状由 D51 真实 Store 测试覆盖。"""
         res = self.client.get("/api/v2/notifications")
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertIn("items", data)
-        self.assertIsInstance(data["items"], list)
+        self.assertEqual(res.status_code, 401)
 
     def test_v2_download_404(self):
         """GET /api/v2/jobs/{id}/download 不存在返回 404。"""

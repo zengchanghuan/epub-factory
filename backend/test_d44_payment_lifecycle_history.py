@@ -53,7 +53,7 @@ class PaymentLifecycleHistoryTests(previous.DispatchHistoryTests):
                 isolated.enter_context(patch("app.infra.execution_lease.tempfile.gettempdir", return_value=str(root)))
                 isolated.enter_context(patch.object(main, "_use_celery", return_value=True))
                 isolated.enter_context(patch.object(main, "create_alipay_page_pay", return_value="https://offline.invalid/pay"))
-                isolated.enter_context(patch("app.infra.alipay.create_alipay_precreate", return_value=None))
+                isolated.enter_context(patch("app.infra.alipay.create_alipay_precreate", return_value="https://qr.example.invalid/offline"))
                 isolated.enter_context(patch.object(main, "verify_alipay_notification", return_value=True))
                 isolated.enter_context(patch("app.domain.payment_email_service.queue_paid_order_email"))
                 isolated.enter_context(patch.object(job_runner, "notify_job_completed"))

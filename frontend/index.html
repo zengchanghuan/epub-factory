@@ -1577,6 +1577,7 @@
           支付前请确认文体、翻译策略、术语和角色。只有点击“确认并生成支付订单”后才会创建订单。
         </div>
         <div id="preflightSummary" style="font-size:14px; line-height:1.8;"></div>
+        <div id="preflightPricing" class="hint" style="margin-top:8px; white-space:pre-line;"></div>
         <details style="margin:10px 0;">
           <summary style="cursor:pointer;">查看判断依据与抽样范围</summary>
           <div id="preflightEvidence" class="hint" style="white-space:pre-wrap; margin-top:8px;"></div>
@@ -1638,7 +1639,7 @@
       <div id="translationPayArea" style="display:none; margin-top:16px; padding:20px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center;">
         <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:6px;">应付金额</div>
         <div style="font-size:26px; font-weight:700; color:var(--text); margin-bottom:4px;" id="translationPriceDisplay">¥—</div>
-        <div style="font-size:12px; color:var(--muted); margin-bottom:14px;" id="translationCharDisplay"></div>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:14px; white-space:pre-line;" id="translationCharDisplay"></div>
         <a id="translationPayLink" href="#" target="fixepub-alipay" rel="noopener"
            style="display:inline-block; padding:10px 28px; background:#1677ff; color:#fff; border-radius:8px; font-weight:600; text-decoration:none; font-size:14px;">
           前往支付宝付款
@@ -1659,6 +1660,15 @@
     <div class="card status-card" id="statusCard">
       <h2><span class="icon">⚡</span> <span id="statusCardTitle">转换进度</span></h2>
       <div id="sourceWarningsResult" class="pricing-notice" role="status" style="display:none; margin-bottom:16px; white-space:pre-line;"></div>
+      <div id="translationQuoteSummary" class="hint" style="display:none; margin-bottom:12px; white-space:pre-line;"></div>
+      <div id="continuePaymentPanel" style="display:none; margin-bottom:16px; padding:12px; border:1px solid var(--border); border-radius:8px;">
+        <button type="button" class="retry-btn" id="continuePaymentBtn">继续支付</button>
+        <a id="continuePaymentLink" href="#" target="fixepub-alipay" rel="noopener" hidden
+          style="margin-left:12px; color:#1677ff; font-weight:600;">前往支付宝付款</a>
+        <div><img id="continuePaymentQr" alt="原订单支付宝付款二维码" hidden
+          style="width:200px; height:200px; margin-top:12px; border:1px solid var(--border); border-radius:8px; background:#fff;" /></div>
+        <div id="continuePaymentMessage" class="hint" role="status" style="margin-top:8px; font-size:13px; line-height:1.6;"></div>
+      </div>
 
       <div class="status-header">
         <span class="status-badge" id="statusBadge">等待中</span>
@@ -1935,6 +1945,10 @@
     let translationTimingCopyTimer = null;
     let alipayPopup = null;
     let currentTranslationPreflight = null;
+    let continuePaymentGeneration = 0;
+    let continuePaymentInFlight = false;
+    let continuePaymentTarget = null;
+    const continuePaymentRequests = new Set();
 
     const TRANSLATION_STRATEGY_LABELS = {
       neutral_faithful: "中性忠实",
@@ -1944,10 +1958,48 @@
       practical_technical: "实用技术",
     };
 
-    function renderTranslationPreflight(preflight, jobId, bilingual = false) {
+    function translationPricingView(data = {}) {
+      const pricing = data.pricing && typeof data.pricing === "object" ? data.pricing : {};
+      const number = value => {
+        if ((typeof value !== "number" && typeof value !== "string") || String(value).trim() === "") return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+      };
+      // Saved order amount wins; never reconstruct a historical price from a
+      // cache percentage or an unfinished runtime context.
+      const amount = [data.amount, data.expected_amount, pricing.price_cny]
+        .map(number).find(value => value !== null);
+      const chars = number(data.estimated_chars ?? pricing.total_chars);
+      const amountText = amount === undefined ? "¥—" : `¥${amount.toFixed(2)}`;
+      const charText = Number.isSafeInteger(chars) && chars > 0 ? `约 ${(chars / 1000).toFixed(1)}K 字符` : "";
+      let note = "以订单已确认金额为准；缓存复用以执行统计为准";
+      if (pricing.schema_version === 2 && pricing.cache_discount_status === "disabled") {
+        note = "不复用旧译文缓存，本次不计缓存优惠";
+      } else if (pricing.schema_version === 2 && pricing.cache_discount_status === "deferred") {
+        note = "缓存复用以执行统计为准，本次报价未预扣缓存优惠";
+      }
+      return { amountText, detailText: [charText, note].filter(Boolean).join("\n"),
+        summaryText: [`翻译服务价：${amountText}${charText ? " · " + charText : ""}`, note].join("\n") };
+    }
+
+    function renderTranslationPricing(data) {
+      const view = translationPricingView(data);
+      $("translationPriceDisplay").textContent = view.amountText;
+      $("translationCharDisplay").textContent = view.detailText;
+    }
+
+    function renderTranslationQuoteSummary(data = {}) {
+      const node = $("translationQuoteSummary");
+      const visible = Boolean(data.enable_translation && (data.amount || data.expected_amount || data.pricing));
+      node.textContent = visible ? translationPricingView(data).summaryText : "";
+      node.style.display = visible ? "block" : "none";
+    }
+
+    function renderTranslationPreflight(preflight, jobId, bilingual = false, quoteData = {}) {
       if (!preflight || !jobId) return;
       currentTranslationPreflight = preflight;
       currentJobId = jobId;
+      $("preflightPricing").textContent = translationPricingView(quoteData).summaryText;
       const profile = preflight.profile || {};
       const confidence = Math.round(Number(profile.confidence || 0) * 100);
       const strategy = preflight.resolved_strategy || "neutral_faithful";
@@ -2044,9 +2096,7 @@
 
     function showTranslationPayment(data) {
       renderSourceWarnings(data);
-      const amount = data.amount || "—";
-      $("translationPriceDisplay").textContent = `¥${amount}`;
-      $("translationCharDisplay").textContent = "图书画像与翻译设定已确认";
+      renderTranslationPricing(data);
       $("translationPayLink").href = data.pay_url || "#";
       $("translationPayLink").textContent = "前往支付宝付款";
       $("translationPayArea").style.display = data.pay_url ? "block" : "none";
@@ -2148,6 +2198,176 @@
     }
 
     $("translationPayLink").addEventListener("click", openAlipayPopup);
+    $("continuePaymentLink").addEventListener("click", openAlipayPopup);
+
+    function paymentTaskKey() {
+      return currentBatchId ? `batch:${currentBatchId}` : currentJobId ? `job:${currentJobId}` : "";
+    }
+
+    function clearPaymentCheckout() {
+      $("continuePaymentLink").hidden = true;
+      $("continuePaymentLink").href = "#";
+      $("continuePaymentQr").hidden = true;
+      $("continuePaymentQr").removeAttribute("src");
+      $("translationPayLink").href = "#";
+      $("translationPayArea").style.display = "none";
+      $("conversionPayArea").style.display = "none";
+      $("conversionQrImg").removeAttribute("src");
+    }
+
+    function resetContinuePayment() {
+      continuePaymentGeneration += 1;
+      continuePaymentInFlight = false;
+      continuePaymentTarget = null;
+      clearPaymentCheckout();
+      $("continuePaymentPanel").style.display = "none";
+      $("continuePaymentBtn").disabled = false;
+      $("continuePaymentBtn").textContent = "继续支付";
+      $("continuePaymentMessage").textContent = "";
+    }
+
+    function renderContinuePayment(data, kind, id) {
+      if (data.status !== "pending_payment") {
+        if (continuePaymentTarget || continuePaymentInFlight) resetContinuePayment();
+        return;
+      }
+      continuePaymentTarget = kind === "job" && data.batch_id
+        ? { kind: "batch", id: data.batch_id, childJobId: id }
+        : { kind, id };
+      $("continuePaymentPanel").style.display = "block";
+      $("continuePaymentBtn").disabled = continuePaymentInFlight;
+      $("continuePaymentBtn").textContent = continuePaymentInFlight ? "正在查询订单…" : "继续支付";
+    }
+
+    function safeCheckoutUrl(value) {
+      if (typeof value !== "string") return null;
+      try {
+        const url = new URL(value);
+        return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+      } catch (_) { return null; }
+    }
+
+    function resumePaymentPolling(kind, id) {
+      if (pollTimer) clearInterval(pollTimer);
+      const poll = () => kind === "batch" ? pollBatchV2(id) : pollJobV2(id);
+      pollTimer = setInterval(poll, 2000);
+      poll();
+    }
+
+    async function continuePendingPayment() {
+      if (!continuePaymentTarget || continuePaymentInFlight || currentJobStatus !== "pending_payment") return;
+      const target = { ...continuePaymentTarget };
+      const requestKey = `${target.kind}:${target.id}`;
+      if (continuePaymentRequests.has(requestKey)) {
+        $("continuePaymentMessage").textContent = "原订单仍在查询中，请稍候再试。";
+        return;
+      }
+      if (target.kind === "batch" && currentBatchId !== target.id) {
+        const childToken = getJobToken(target.childJobId || currentJobId);
+        if (!getJobToken(`batch:${target.id}`) && childToken) saveJobToken(`batch:${target.id}`, childToken);
+        openBatchDetail(target.id);
+        currentJobStatus = "pending_payment";
+        renderContinuePayment({ status: "pending_payment" }, "batch", target.id);
+      }
+      const taskKey = paymentTaskKey();
+      const generation = ++continuePaymentGeneration;
+      continuePaymentInFlight = true;
+      continuePaymentRequests.add(requestKey);
+      clearPaymentCheckout();
+      $("continuePaymentBtn").disabled = true;
+      $("continuePaymentBtn").textContent = "正在查询订单…";
+      $("continuePaymentMessage").textContent = "正在核对原订单付款状态，请勿重复付款。";
+      const isCurrent = () => generation === continuePaymentGeneration && taskKey === paymentTaskKey();
+      try {
+        const authKey = target.kind === "batch" ? `batch:${target.id}` : target.id;
+        const resource = target.kind === "batch" ? "batches" : "jobs";
+        const response = await fetch(`${API}/api/v2/${resource}/${encodeURIComponent(target.id)}/continue-payment`, {
+          method: "POST", headers: authHeaders(authKey), cache: "no-store",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!isCurrent()) return;
+        if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "暂时无法确认订单，请稍后重试");
+        const responseId = target.kind === "batch" ? data.batch_id : data.job_id;
+        if (responseId !== target.id) throw new Error("订单信息不一致，请重新打开任务后重试");
+        if (data.status !== "pending_payment") {
+          currentJobStatus = data.status || "";
+          resetContinuePayment();
+          closeAlipayPopup();
+          loadTaskList();
+          resumePaymentPolling(target.kind, target.id);
+          return;
+        }
+        // A later GET may already have observed payment completion. Never
+        // resurrect checkout from an older response, even for the same task.
+        if (currentJobStatus !== "pending_payment") return;
+        const hasPage = data.pay_url !== null && data.pay_url !== undefined;
+        const hasQr = data.qr_code !== null && data.qr_code !== undefined;
+        const checkout = safeCheckoutUrl(hasQr ? data.qr_code : data.pay_url);
+        if (data.checkout_available !== true || hasPage === hasQr || !checkout) {
+          throw new Error("当前订单不可继续付款，请刷新任务状态或联系客服");
+        }
+        if (hasQr) {
+          if (typeof QRCode === "undefined" || typeof QRCode.toDataURL !== "function") {
+            throw new Error("二维码组件未就绪，无法显示原订单付款码，请刷新页面后重试。");
+          }
+          let qrDataUrl;
+          try { qrDataUrl = await QRCode.toDataURL(checkout, { width: 200, margin: 1 }); }
+          catch (_) { throw new Error("原订单二维码生成失败，请刷新页面后重试。"); }
+          if (!isCurrent() || currentJobStatus !== "pending_payment") return;
+          if (typeof qrDataUrl !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(qrDataUrl)) {
+            throw new Error("原订单二维码生成失败，请刷新页面后重试。");
+          }
+          $("continuePaymentQr").src = qrDataUrl;
+          $("continuePaymentQr").hidden = false;
+        } else {
+          $("continuePaymentLink").href = checkout;
+          $("continuePaymentLink").hidden = false;
+          $("continuePaymentLink").textContent = target.kind === "batch" ? "前往支付宝支付整批订单" : "前往支付宝付款";
+        }
+        const amount = Number(data.amount);
+        const amountText = ["number", "string"].includes(typeof data.amount) && String(data.amount).trim() !== "" && Number.isFinite(amount) && amount >= 0
+          ? `，订单金额 ¥${amount.toFixed(2)}` : "";
+        $("continuePaymentMessage").textContent = `原订单可继续付款${amountText}。` + (hasQr
+          ? "请使用支付宝扫描二维码完成支付。" : "请点击付款链接，在支付宝小窗口中完成支付。");
+        renderTranslationQuoteSummary(data);
+        resumePaymentPolling(target.kind, target.id);
+      } catch (error) {
+        if (!isCurrent()) return;
+        clearPaymentCheckout();
+        $("continuePaymentMessage").textContent = error.message || "暂时无法继续付款，请稍后重试";
+      } finally {
+        continuePaymentRequests.delete(requestKey);
+        if (isCurrent()) {
+          continuePaymentInFlight = false;
+          $("continuePaymentBtn").disabled = false;
+          $("continuePaymentBtn").textContent = "继续支付";
+        }
+      }
+    }
+
+    async function continuePaymentFromTask(jobId) {
+      if (continuePaymentInFlight && paymentTaskKey() === `job:${jobId}`) return;
+      openJobDetail(jobId);
+      const generation = continuePaymentGeneration;
+      try {
+        const response = await fetch(`${API}/api/v2/jobs/${encodeURIComponent(jobId)}`, {
+          headers: authHeaders(jobId), cache: "no-store",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (generation !== continuePaymentGeneration || paymentTaskKey() !== `job:${jobId}`) return;
+        if (!response.ok) throw new Error("无法读取订单，请稍后重试");
+        if (data.job_id !== jobId) throw new Error("订单信息不一致，请重新打开任务后重试");
+        currentJobStatus = data.status || "";
+        renderContinuePayment(data, "job", jobId);
+        if (data.status === "pending_payment") await continuePendingPayment();
+      } catch (error) {
+        if (generation !== continuePaymentGeneration || paymentTaskKey() !== `job:${jobId}`) return;
+        errorMsg.textContent = error.message;
+        errorMsg.style.display = "block";
+      }
+    }
+
+    $("continuePaymentBtn").addEventListener("click", continuePendingPayment);
 
     function taskVerb(isTranslation = currentJobIsTranslation) {
       return isTranslation ? "翻译" : "转换";
@@ -2657,7 +2877,7 @@
             const taskKind = j.enable_translation ? "翻译" : j.enable_precision_polish ? "转换 + AI 精校" : "转换";
             const batchMeta = j.batch_id ? `批次 ${escapeHtml(j.batch_id)} · ${Number(j.batch_index || 0) + 1}/${j.batch_size || "?"}` : "";
             const metaParts = [taskKind, batchMeta, time, safeMessage].filter(Boolean).join(" · ");
-            const actionText = j.status === "completed" ? "下载" : "查看";
+            const actionText = j.status === "completed" ? "下载" : j.status === "pending_payment" ? "继续支付" : "查看";
             return `<li class="tasks-item" data-job-id="${j.job_id}">
               <div class="tasks-info">
                 <div class="tasks-filename" title="${safeFilename}">${safeFilename}</div>
@@ -2665,7 +2885,7 @@
               </div>
               <div class="tasks-actions">
                 <span class="tasks-status ${statusClass}">${statusText}</span>
-                <button type="button" class="tasks-view-btn" data-job-id="${j.job_id}">${actionText}</button>
+                <button type="button" class="tasks-view-btn${j.status === "pending_payment" ? " tasks-continue-payment-btn" : ""}" data-job-id="${escapeHtml(j.job_id)}">${actionText}</button>
                 ${j.status === "completed" ? `<button type="button" class="tasks-preview-btn" data-job-id="${escapeHtml(j.job_id)}">预览 / 反馈</button>` : ""}
               </div>
             </li>`;
@@ -2680,6 +2900,13 @@
 
     // 任务列表点击委托：避免列表重渲染后按钮失去绑定
     $("tasksList").addEventListener("click", (e) => {
+      const payment = e.target.closest(".tasks-continue-payment-btn");
+      if (payment) {
+        if (payment.disabled) return;
+        payment.disabled = true;
+        continuePaymentFromTask(payment.getAttribute("data-job-id")).finally(() => { payment.disabled = false; });
+        return;
+      }
       const preview = e.target.closest(".tasks-preview-btn");
       if (preview) { openBookPreview(preview.getAttribute("data-job-id")); return; }
       const btn = e.target.closest(".tasks-view-btn");
@@ -2703,6 +2930,7 @@
     }
 
     function openJobDetail(jobId) {
+      resetContinuePayment();
       rememberPage("job", jobId);
       returnLater.setTask({ kind: "job", id: jobId });
       renderSourceWarnings();
@@ -2730,8 +2958,10 @@
     }
 
     function openBatchDetail(batchId) {
+      resetContinuePayment();
       currentBatchId = batchId;
       currentJobId = null;
+      currentJobStatus = "";
       rememberPage("batch", batchId);
       returnLater.setTask({ kind: "batch", id: batchId });
       statusCard.classList.add("visible");
@@ -2743,15 +2973,18 @@
     }
 
     function pollBatchV2(batchId) {
+      const paymentGeneration = continuePaymentGeneration;
       fetch(`${API}/api/v2/batches/${batchId}`, { headers: authHeaders(`batch:${batchId}`), cache: "no-store" })
         .then(r => { if (!r.ok) throw new Error("批次查询失败"); return r.json(); })
         .then(data => {
-          if (currentBatchId !== batchId) return;
+          if (currentBatchId !== batchId || paymentGeneration !== continuePaymentGeneration) return;
           currentBatchId = batchId;
           returnLater.remember({ kind: "batch", id: batchId, filename: `批量转换（${data.file_count || 0} 个文件）`, status: data.status });
           renderSourceWarnings(data);
           const counts = data.counts || {};
           const status = data.status || "running";
+          currentJobStatus = status;
+          renderContinuePayment(data, "batch", batchId);
           const isDone = ["completed", "partial_completed", "failed"].includes(status);
           const legacyStatus = status === "completed" ? "success" : (status === "failed" ? "failed" : (status === "pending_payment" ? "pending" : "running"));
           const summary = `共 ${data.file_count || 0} 个文件：完成 ${counts.completed || 0}，处理中 ${(counts.running || 0) + (counts.queued || 0)}，失败 ${counts.failed || 0}`;
@@ -2797,6 +3030,7 @@
           }
         })
         .catch(err => {
+          if (currentBatchId !== batchId || paymentGeneration !== continuePaymentGeneration) return;
           setStatus("failed", err.message);
           errorMsg.textContent = err.message;
           errorMsg.style.display = "block";
@@ -2807,16 +3041,19 @@
     }
 
     function pollJobV2(jobId) {
+      const paymentGeneration = continuePaymentGeneration;
       fetch(`${API}/api/v2/jobs/${jobId}`, { headers: authHeaders(jobId), cache: "no-store" })
         .then(r => { if (!r.ok) throw new Error("查询失败"); return r.json(); })
         .then(data => {
-          if (currentJobId !== jobId || currentBatchId) return;
+          if (currentJobId !== jobId || currentBatchId || paymentGeneration !== continuePaymentGeneration) return;
           returnLater.remember({ kind: "job", id: jobId, filename: data.source_filename, status: data.status });
           setTaskUiMode(!!data.enable_translation);
           renderSourceWarnings(data);
+          renderTranslationQuoteSummary(data);
           const s = data.status || "";
           const previousJobStatus = currentJobStatus;
           currentJobStatus = s;
+          renderContinuePayment(data, "job", jobId);
           if (
             data.enable_translation
             && !previousJobStatus
@@ -2839,6 +3076,7 @@
               data.translation_preflight,
               data.job_id,
               data.bilingual,
+              data,
             );
             return;
           }
@@ -2968,6 +3206,7 @@
           }
         })
         .catch(err => {
+          if (currentJobId !== jobId || currentBatchId || paymentGeneration !== continuePaymentGeneration) return;
           setStatus("failed", err.message);
           $("detailPanel").open = true;
           errorMsg.textContent = err.message;
@@ -3406,6 +3645,8 @@
       // 重置支付区（避免上次残留）
       $("conversionPayArea").style.display = "none";
       $("translationPayArea").style.display = "none";
+      renderTranslationQuoteSummary();
+      resetContinuePayment();
     }
 
     dropzone.addEventListener("click", () => fileInput.click());
@@ -3691,6 +3932,7 @@
     // ─── 统一提交逻辑：创建任务后按后端状态进入确认、支付或处理 ───────────────
     async function submitJob() {
       if (!selectedFiles.length) return;
+      resetContinuePayment();
       renderSourceWarnings();
       const isBatchMode = selectedFiles.length > 1;
       const isTranslationMode = getTaskMode() === "translate";
@@ -3776,6 +4018,7 @@
             data.translation_preflight,
             data.job_id,
             $("enableBilingual").checked,
+            data,
           );
           loadTaskList();
           return;
@@ -3810,18 +4053,8 @@
                 : `基础转换 ¥${baseAmount}`;
             }
 
-            const p = data.pricing || null;
-            if (p && p.hit_ratio > 0.01) {
-              const savedRaw = parseFloat(p.raw_price_cny || "0");
-              const finalPrice = parseFloat(p.price_cny || "0");
-              const saved = Math.max(0, savedRaw - finalPrice);
-              const pct = Math.round((p.hit_ratio || 0) * 100);
-              const savedTxt = saved > 0.005
-                ? `<span style="color:#5cb85c;font-weight:600;">已为你节省 ¥${saved.toFixed(2)}</span>（缓存命中 ${pct}%）`
-                : `缓存命中 ${pct}%`;
-              charInfo = `${charInfo ? charInfo + "<br>" : ""}${savedTxt}`;
-            }
-            $("translationCharDisplay").innerHTML = charInfo;
+            if (isTranslationMode) renderTranslationPricing(data);
+            else $("translationCharDisplay").textContent = charInfo;
             $("translationPayLink").href = data.pay_url;
             $("translationPayLink").textContent = isBatchMode ? "前往支付宝支付整批订单" : "前往支付宝付款";
             $("translationPayArea").style.display = "block";

@@ -129,6 +129,12 @@ def restarted_translation_stats(
     translation_input = old.get("translation_input")
     if isinstance(translation_input, dict):
         stats["translation_input"] = dict(translation_input)
+    translation_pricing = old.get("translation_pricing")
+    if isinstance(translation_pricing, dict):
+        stats["translation_pricing"] = dict(translation_pricing)
+    payment_checkout = old.get("payment_checkout")
+    if isinstance(payment_checkout, dict):
+        stats["payment_checkout"] = dict(payment_checkout)
     # An add-on's frozen quote survives an administrator retry; execution
     # counters and failure/delivery flags belong only to the previous attempt.
     precision = old.get("precision_polish")

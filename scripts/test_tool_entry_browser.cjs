@@ -17,13 +17,13 @@ const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'fixepub-r11-browser-'));
 const artifact = Buffer.from('R11 browser fixture; real historical EPUB validation is D49.');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const requests = [], jobs = new Map(), exceptions = [], denied = [];
-let creates = 0, confirms = 0, cdp, chrome, server, origin, passed = 0;
+let creates = 0, confirms = 0, continues = 0, cdp, chrome, server, origin, passed = 0;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function detail(job) {
   return {
     job_id: job.id, source_filename: 'browser-fixture.epub', status: job.status,
-    enable_translation: job.translate, output_mode: 'simplified', message: job.status,
+    enable_translation: job.translate, output_mode: 'simplified', message: job.status, amount: job.translate ? '3.99' : '0.99',
     ...(job.status === 'awaiting_confirmation' ? { translation_preflight: { resolved_strategy: 'neutral_faithful', glossary: {}, chapters: [] } } : {}),
     ...(job.status === 'completed' ? { download_url: '/fixture-download/' + job.id + '?sig=current' } : {}),
   };
@@ -49,6 +49,11 @@ async function serve(req, res) {
   if (url.pathname === '/api/v2/track/pv') return json(res, {});
   if (url.pathname.startsWith('/api/v2/batches/historybatch')) {
     if (req.headers['x-job-token'] !== 'batch-secret') return json(res, {}, 403);
+    if (url.pathname.endsWith('/continue-payment') && req.method === 'POST') {
+      continues++;
+      return json(res, { batch_id: 'historybatch', status: 'pending_payment', file_count: 2, counts: {}, jobs: [],
+        amount: '1.98', checkout_available: true, pay_url: origin + '/fake-payment/batch_historybatch' });
+    }
     return json(res, { batch_id: 'historybatch', status: 'pending_payment', file_count: 2, counts: {}, jobs: [] });
   }
   const match = url.pathname.match(/^\/api\/v2\/jobs\/([^/]+)(.*)$/);
@@ -58,6 +63,15 @@ async function serve(req, res) {
     if (match[2] === '/confirm-profile') {
       confirms++; job.status = 'pending_payment';
       return json(res, { ...detail(job), amount: '3.99', pay_url: origin + '/fake-payment' });
+    }
+    if (match[2] === '/continue-payment' && req.method === 'POST') {
+      continues++;
+      await pause(80);
+      if (job.checkoutError) return json(res, { detail: '暂时无法核验支付状态，请稍后重试；请勿重复付款' }, 503);
+      if (job.paidDuringContinue) job.status = 'running';
+      return json(res, { ...detail(job), checkout_available: job.status === 'pending_payment',
+        pay_url: job.status === 'pending_payment' && !job.originalQr ? origin + '/fake-payment/' + job.id : null,
+        qr_code: job.status === 'pending_payment' && job.originalQr ? origin + '/original-qr/' + job.id : null });
     }
     if (match[2] === '/cancel') job.status = 'cancelled';
     if (match[2] === '/events') return json(res, { items: [] });
@@ -250,11 +264,85 @@ async function main() {
   assert.equal(creates, 4);
   assert.equal(await evaluate('document.getElementById("resultActions").classList.contains("visible")'), false);
   pass('legacy translation task: real stop button reaches shared cancel endpoint');
+
+  // Continue checkout uses the rendered app and real event handlers, but only
+  // this loopback synthetic gateway; no payment page or customer order is used.
+  translationJob.status = 'pending_payment';
+  await navigate('/?job_id=' + translationJob.id);
+  await status('pending_payment');
+  await until('document.getElementById("continuePaymentPanel").style.display === "block"');
+  const beforeContinue = continues;
+  await pause(100);
+  assert.equal(continues, beforeContinue); // Polling must not recreate checkout.
+  await evaluate('document.getElementById("continuePaymentBtn").click(); document.getElementById("continuePaymentBtn").click();');
+  await until('!document.getElementById("continuePaymentLink").hidden');
+  assert.equal(continues, beforeContinue + 1);
+  assert.equal(creates, 4);
+  assert.equal(await evaluate('document.getElementById("continuePaymentLink").href'), origin + '/fake-payment/' + translationJob.id);
+  pass('pending refresh: explicit continue, duplicate click suppressed, original order reused');
+
+  await evaluate('document.getElementById("navTasks").click()');
+  await until('document.querySelector(".tasks-continue-payment-btn") !== null');
+  assert.equal(await evaluate('document.getElementById("continuePaymentPanel").getBoundingClientRect().height > 0'), true);
+  const mainUrl = await evaluate('location.href');
+  await evaluate('window.checkoutPopupCalls=[]; window.open=(...args)=>{ checkoutPopupCalls.push(args); return {closed:false,focus(){},close(){this.closed=true}}; }; document.getElementById("continuePaymentLink").click();');
+  assert.equal(await evaluate('location.href'), mainUrl);
+  assert.equal(await evaluate('checkoutPopupCalls.length'), 1);
+  assert.equal(await evaluate('checkoutPopupCalls[0][1]'), 'fixepub-alipay');
+  assert((await evaluate('checkoutPopupCalls[0][2]')).includes('width=520'));
+  const paymentScreenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(runtime, 'continue-payment.png'), Buffer.from(paymentScreenshot.data, 'base64'));
+  pass('task-center checkout remains visible and opens the existing small window, main page unchanged');
+
+  translationJob.checkoutError = true;
+  await evaluate('document.getElementById("continuePaymentBtn").click()');
+  await until('document.getElementById("continuePaymentMessage").textContent.includes("无法核验")');
+  assert.equal(await evaluate('document.getElementById("continuePaymentLink").hidden'), true);
+  assert.equal(await evaluate('document.getElementById("continuePaymentLink").getAttribute("href")'), '#');
+  assert.equal(creates, 4);
+  pass('unknown gateway state clears all old payment links and never recreates an order');
+
+  translationJob.checkoutError = false;
+  translationJob.paidDuringContinue = true;
+  await evaluate('document.getElementById("continuePaymentBtn").click()');
+  await status('running');
+  assert.equal(await evaluate('document.getElementById("continuePaymentLink").hidden'), true);
+  assert.equal(await evaluate('document.getElementById("continuePaymentPanel").style.display'), 'none');
+  assert.equal(creates, 4);
+  pass('payment discovered during continue returns to progress without another payment link');
+
+  await navigate('/?batch_id=historybatch#access_token=batch-secret');
+  await until('document.getElementById("continuePaymentPanel").style.display === "block"');
+  await evaluate('document.getElementById("continuePaymentBtn").click()');
+  await until('!document.getElementById("continuePaymentLink").hidden');
+  assert.equal(await evaluate('document.getElementById("continuePaymentLink").href'), origin + '/fake-payment/batch_historybatch');
+  assert.equal(creates, 4);
+  pass('batch refresh continues only the original aggregate checkout with its batch token');
+
+  const qrJob = [...jobs.values()].find(job => !job.translate);
+  qrJob.status = 'pending_payment'; qrJob.originalQr = true;
+  await navigate('/?job_id=' + qrJob.id);
+  await status('pending_payment');
+  await evaluate('document.getElementById("continuePaymentBtn").click()');
+  await until('!document.getElementById("continuePaymentQr").hidden && document.getElementById("continuePaymentQr").naturalWidth > 0');
+  assert.equal(await evaluate('document.getElementById("continuePaymentLink").hidden'), true);
+  assert((await evaluate('document.getElementById("continuePaymentQr").src')).startsWith('data:image/png;base64,'));
+  assert(!requests.some(request => request.path.startsWith('/original-qr/')));
+  const qrScreenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(runtime, 'continue-payment-qr.png'), Buffer.from(qrScreenshot.data, 'base64'));
+  pass('original QR is rendered by the local library without switching product or opening a payment URL');
+  qrJob.checkoutError = true;
+  await evaluate('document.getElementById("continuePaymentBtn").click()');
+  await until('document.getElementById("continuePaymentMessage").textContent.includes("无法核验")');
+  assert.equal(await evaluate('document.getElementById("continuePaymentQr").hidden'), true);
+  assert.equal(await evaluate('document.getElementById("continuePaymentQr").getAttribute("src")'), null);
+  assert.equal(creates, 4);
+  pass('unverifiable QR continuation clears the previously rendered code');
   assert.equal(confirms, 1);
   assert.deepEqual(exceptions, []);
   assert(requests.every(request => !/paypal|create-order|capture-order/.test(request.path)));
   assert(requests.filter(request => /\/recover$/.test(request.path)).every(request => request.token));
-  console.log(JSON.stringify({ passed, creates, confirms, jsExceptions: exceptions.length, blockedExternalPageRequests: denied.length, runtime }, null, 2));
+  console.log(JSON.stringify({ passed, creates, confirms, continues, jsExceptions: exceptions.length, blockedExternalPageRequests: denied.length, runtime }, null, 2));
 }
 
 main().catch(error => { console.error(error); console.error({ exceptions, lastRequests: requests.slice(-10) }); process.exitCode = 1; }).finally(async () => {

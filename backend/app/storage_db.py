@@ -9,12 +9,18 @@
 """
 
 import os
+from contextlib import contextmanager
+from pathlib import Path
+import stat
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import (
-    Column, DateTime, Enum, String, Boolean, Text, Float, Integer, create_engine, event, inspect, text
+    Column, DateTime, Enum, String, Boolean, Text, Float, Integer, Index,
+    and_, or_, create_engine, event, inspect, text
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -34,6 +40,7 @@ from .models import (
     QualityStats,
     StageStatus,
     User,
+    validate_notification_page,
 )
 from .domain.translation_attempt import restarted_translation_stats
 from .domain.payment_entitlement import restart_entitlement_reason
@@ -41,7 +48,7 @@ from .domain.dispatch_intent import DISPATCH_FIELDS, build_dispatch_intent, comp
 from .domain.payment_lifecycle_state import is_payment_expired, settlement_values, closed_values
 from .domain.execution_state import (EXECUTION_FIELDS, bounded_integer, execution_identity,
                                      running_record, legacy_record, recovery_outbox, recovery_values, migrates_legacy_identity, unstarted_due)
-from .domain.job_write_fence import check_job_write, current_job_write_fence, reject_write, translation_stats_for_status
+from .domain.job_write_fence import check_job_write, current_job_write_fence, reject_write, translation_stats_for_status, utc_datetime
 
 
 # ─── ORM 模型 ────────────────────────────────────────────────────────────────
@@ -220,6 +227,13 @@ class NotificationRecord(Base):
     sent_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        Index("ix_notifications_job_channel_created_id", "job_id", "channel", "created_at", "id"),
+        Index("ix_notifications_channel_created_id", "channel", "created_at", "id"),
+    )
+
+
+Index("ix_epub_jobs_user_id_id", JobRecord.user_id, JobRecord.id)
 
 
 class EmailSubscriptionRecord(Base):
@@ -246,6 +260,60 @@ class PaymentEmailRecord(Base):
 
 # ─── 数据库连接工厂 ───────────────────────────────────────────────────────────
 
+def _sqlite_schema_lock_path(engine):
+    """Canonical local DB identity; SQLite URI names are not filesystem paths."""
+    if engine.dialect.name != "sqlite":
+        return None
+    database = engine.url.database
+    if not database or database == ":memory:":
+        return None
+    if str(engine.url.query.get("uri", "")).lower() in {"true", "1"}:
+        if str(engine.url.query.get("mode", "")).lower() == "memory":
+            return None
+        if database.startswith("file:"):
+            uri = urlsplit(database)
+            if uri.netloc not in {"", "localhost"}:
+                raise ValueError("SQLite schema initialization requires a local database")
+            database = unquote(uri.path)
+            if not database or database == ":memory:":
+                return None
+    path = Path(database).resolve()
+    return path.with_name(path.name + ".schema-init.lock")
+
+
+@contextmanager
+def _sqlite_schema_lock(engine, *, timeout=30.0):
+    """Serialize first connections, DDL checks and upgrades across local workers.
+
+    Keep the sidecar inode permanently: unlinking a lock would let a new worker
+    acquire a different lock while another initializer still owns the old one.
+    PostgreSQL and independent in-memory databases retain their existing path.
+    """
+    path = _sqlite_schema_lock_path(engine)
+    if path is None:
+        yield
+        return
+    import fcntl
+    flags = (os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("SQLite schema initialization lock must be a regular file")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("SQLite schema initialization lock timed out") from None
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)  # Also releases the lock after failure or normal completion.
+
+
 def _make_engine():
     url = os.environ.get("DATABASE_URL", "")
     if not url:
@@ -260,12 +328,28 @@ def _make_engine():
         def _set_pragma(conn, _rec):
             conn.execute("PRAGMA journal_mode=WAL")
 
-    Base.metadata.create_all(engine)
-    _ensure_compatible_schema(engine)
+    try:
+        # Acquire before the first connection: switching an empty SQLite DB to
+        # WAL can itself contend before create_all reaches its check/DDL race.
+        with _sqlite_schema_lock(engine):
+            Base.metadata.create_all(engine)
+            _ensure_compatible_schema_unlocked(engine)
+    except BaseException:
+        try:
+            engine.dispose()
+        except Exception:
+            pass  # Cleanup failure must not hide the original schema failure.
+        raise
     return engine
 
 
 def _ensure_compatible_schema(engine) -> None:
+    # Direct compatibility callers must use the same boundary as startup.
+    with _sqlite_schema_lock(engine):
+        _ensure_compatible_schema_unlocked(engine)
+
+
+def _ensure_compatible_schema_unlocked(engine) -> None:
     inspector = inspect(engine)
     columns = {col["name"] for col in inspector.get_columns("epub_jobs")}
     migrations = []
@@ -334,10 +418,16 @@ def _ensure_compatible_schema(engine) -> None:
         migrations.append("ALTER TABLE job_chunks ADD COLUMN translated_text TEXT")
     if "audit_json" not in chunk_columns:
         migrations.append("ALTER TABLE job_chunks ADD COLUMN audit_json TEXT")
-    if not migrations:
-        return
     with engine.begin() as conn:
         for sql in migrations:
+            conn.execute(text(sql))
+        # create_all skips indexes on existing tables. Additive and safe to run
+        # repeatedly after the legacy user_id column has been installed.
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS ix_notifications_job_channel_created_id ON notifications (job_id, channel, created_at, id)",
+            "CREATE INDEX IF NOT EXISTS ix_notifications_channel_created_id ON notifications (channel, created_at, id)",
+            "CREATE INDEX IF NOT EXISTS ix_epub_jobs_user_id_id ON epub_jobs (user_id, id)",
+        ):
             conn.execute(text(sql))
 
 
@@ -586,15 +676,15 @@ def _record_to_notification(r: NotificationRecord) -> JobNotification:
         user_id=r.user_id,
         sent_at=r.sent_at,
         error_message=r.error_message,
-        created_at=r.created_at,
+        created_at=utc_datetime(r.created_at),
+        id=r.id,
     )
 
 
 def _notification_to_record(notification: JobNotification) -> NotificationRecord:
     import json
-    key = f"{notification.job_id}:{notification.channel}:{int(notification.created_at.timestamp() * 1000)}"
     return NotificationRecord(
-        id=key,
+        id=notification.id,
         job_id=notification.job_id,
         user_id=notification.user_id,
         channel=notification.channel,
@@ -602,7 +692,7 @@ def _notification_to_record(notification: JobNotification) -> NotificationRecord
         payload_json=json.dumps(notification.payload or {}),
         sent_at=notification.sent_at,
         error_message=notification.error_message,
-        created_at=notification.created_at,
+        created_at=utc_datetime(notification.created_at),
     )
 
 def _record_to_user(r: UserRecord) -> User:
@@ -1526,7 +1616,9 @@ class PersistentJobStore:
         status: JobStatus,
         message: str,
         expected_amount: str,
+        payment_checkout: Optional[dict] = None,
     ) -> Optional[Job]:
+        import json
         from sqlalchemy import update
         with self._Session() as session:
             result = session.execute(
@@ -1545,6 +1637,10 @@ class PersistentJobStore:
                 return None
             if status == JobStatus.pending:
                 self._ensure_dispatch_in_session(session, session.get(JobRecord, job_id))
+            if payment_checkout is not None:
+                record = session.get(JobRecord, job_id)
+                stats = json.loads(record.translation_stats_json or "{}")
+                record.translation_stats_json = json.dumps({**stats, "payment_checkout": payment_checkout}, ensure_ascii=False)
             session.commit()
             record = session.get(JobRecord, job_id)
             return _record_to_job(record) if record else None
@@ -1610,6 +1706,21 @@ class PersistentJobStore:
                 query = query.filter_by(job_id=job_id)
             rows = query.order_by(NotificationRecord.created_at).all()
             return [_record_to_notification(r) for r in rows]
+
+    def list_notification_page(self, *, job_id=None, user_id=None, limit=21, before=None) -> list[JobNotification]:
+        validate_notification_page(job_id=job_id, user_id=user_id, limit=limit, before=before)
+        with self._Session() as session:
+            query = session.query(NotificationRecord).filter(NotificationRecord.channel == "in_app")
+            if job_id is not None:
+                query = query.filter(NotificationRecord.job_id == job_id)
+            if user_id is not None:
+                query = query.join(JobRecord, JobRecord.id == NotificationRecord.job_id).filter(JobRecord.user_id == user_id)
+            if before is not None:
+                at, identity = before
+                query = query.filter(or_(NotificationRecord.created_at < at,
+                    and_(NotificationRecord.created_at == at, NotificationRecord.id < identity)))
+            rows = query.order_by(NotificationRecord.created_at.desc(), NotificationRecord.id.desc()).limit(limit).all()
+            return [_record_to_notification(row) for row in rows]
 
     def list_jobs_by_user_id(self, user_id: str, limit: int = 100) -> list:
         with self._Session() as session:

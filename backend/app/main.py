@@ -22,7 +22,7 @@ dotenv_path = Path(__file__).resolve().parent.parent / ".env"
 if dotenv_path.exists():
     load_dotenv(dotenv_path)
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,7 @@ from .order_events import BrowserEvent, record_event, make_event_router
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
 from .domain.translation_attempt import attempt_id_from_stats, initial_translation_stats, new_attempt_id
+from .domain.checkout_resume import checkout_snapshot
 from .domain.payment_entitlement import (
     quote_entitlement, grant_verified_entitlement, recover_legacy_entitlement, grant_test_entitlement,
 )
@@ -284,92 +285,20 @@ def _estimate_translation_pricing(
     *,
     translation_quality: str = "standard",
     translation_model: Optional[str] = None,
+    cache_policy: str = "reuse",
 ) -> dict:
+    """Service quote, not a token bill or a promise of runtime cache hits.
+
+    Runtime glossary/profile/style/context and QA are not fully frozen before
+    payment. Never consult obsolete language-only keys to invent a discount.
+    Existing price tiers remain authoritative; runtime reuse remains enabled.
     """
-    估算 EPUB 翻译总字符数 + 缓存命中字符数 + 按命中率折扣后的最终价格。
-
-    定价口径与 SemanticsTranslator 的运行时缓存粒度严格一致：单段 inner_html ×
-    (target_lang + glossary_hash) 作为缓存 key。这保证"预估省下来的钱"在实际
-    执行时确实不会被重复扣 token。
-
-    返回字典：
-      total_chars     – 全书可翻译字符总数
-      cached_chars    – 已在缓存中命中的字符数（不再产生 token 费用）
-      hit_ratio       – cached_chars / total_chars（0.0~1.0）
-      billable_chars  – total_chars - cached_chars
-      price_cny       – 最终需要支付金额（含 MIN/MAX 价格保护）
-      raw_price_cny   – 未折扣前的价格，便于前端展示"节省多少"
-    """
-    import hashlib
-    import zipfile
-
-    glossary = glossary or {}
-    glossary_hash = ""
-    if glossary:
-        items = sorted(glossary.items())
-        s = "|".join(f"{k}={v}" for k, v in items)
-        glossary_hash = hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
-    cache_lang_key = f"{target_lang}@{glossary_hash}" if glossary_hash else target_lang
-
-    total_chars = 0
-    cached_chars = 0
-    try:
-        from bs4 import BeautifulSoup
-        from .engine.translation_cache import TranslationCache
-        cache = TranslationCache()
-        block_tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']
-
-        with zipfile.ZipFile(epub_path) as zf:
-            for name in zf.namelist():
-                if not name.lower().endswith((".xhtml", ".html", ".htm")):
-                    continue
-                try:
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                    soup = BeautifulSoup(raw, "html.parser")
-                    for block in soup.find_all(block_tags):
-                        if block.find(block_tags):
-                            continue
-                        inner_html = "".join(str(c) for c in block.contents).strip()
-                        if not inner_html:
-                            continue
-                        chars = len(inner_html)
-                        total_chars += chars
-                        if cache.get(inner_html, cache_lang_key):
-                            cached_chars += chars
-                except Exception:
-                    continue
-    except Exception:
-        fallback = _calc_translation_price(0, translation_quality, translation_model)
-        return {
-            "total_chars": 0,
-            "cached_chars": 0,
-            "hit_ratio": 0.0,
-            "billable_chars": 0,
-            "price_cny": fallback,
-            "raw_price_cny": fallback,
-        }
-
-    billable_chars = max(0, total_chars - cached_chars)
-    hit_ratio = (cached_chars / total_chars) if total_chars > 0 else 0.0
-
-    if _TRANSLATION_FIXED_PRICE:
-        raw_price = float(_TRANSLATION_FIXED_PRICE)
-        price = raw_price * (1 - hit_ratio)
-        price = max(float(TRANSLATION_MIN_PRICE), min(float(TRANSLATION_MAX_PRICE), price))
-        raw_price_text = f"{raw_price:.2f}"
-        price_text = f"{price:.2f}"
-    else:
-        raw_price_text = _calc_translation_price(total_chars, translation_quality, translation_model)
-        price_text = _calc_translation_price(billable_chars, translation_quality, translation_model)
-
-    return {
-        "total_chars": total_chars,
-        "cached_chars": cached_chars,
-        "hit_ratio": round(hit_ratio, 3),
-        "billable_chars": billable_chars,
-        "price_cny": price_text,
-        "raw_price_cny": raw_price_text,
-    }
+    from .domain.translation_quote import estimate_quote
+    return estimate_quote(
+        epub_path, target_lang, glossary, cache_policy=cache_policy,
+        translation_quality=translation_quality, translation_model=translation_model,
+        price_for_chars=lambda count: _calc_translation_price(count, translation_quality, translation_model),
+    )
 
 # access_token 默认有效期（天），过期后必须重新发起任务才能继续查询/下载。
 ACCESS_TOKEN_TTL_DAYS: int = int(_os.environ.get("ACCESS_TOKEN_TTL_DAYS", "7"))
@@ -928,6 +857,9 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     """构建 v2 任务详情响应。"""
     download_url = _attach_download_sig(job.id, download_url_path) if _job_can_download(job) else None
     public_translation_stats = dict(job.translation_stats or {})
+    # Payment artifacts are returned only after an explicit, freshly verified
+    # continuation request, never as stale links in ordinary polling.
+    public_translation_stats.pop("payment_checkout", None)
     if job.enable_translation or getattr(job, "enable_precision_polish", False):
         public_translation_stats["billing"] = _job_usage_summary(job)
     translation_preflight = public_translation_stats.pop("translation_preflight", None)
@@ -959,6 +891,8 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "translation_model": getattr(job, "translation_model", "") or "",
         "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
         "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
+        "amount": job.expected_amount or None,
+        "pricing": public_translation_stats.get("translation_pricing"),
         "translation_strategy": getattr(job, "translation_strategy", "auto") or "auto",
         "translation_preflight": (
             translation_preflight
@@ -1342,6 +1276,7 @@ def get_job(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="任务不存在")
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
+    public_stats = {key: value for key, value in (job.translation_stats or {}).items() if key != "payment_checkout"}
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -1357,8 +1292,8 @@ def get_job(job_id: str, request: Request):
         "message": job.message,
         "error_code": job.error_code,
         "quality_stats": job.quality_stats.to_dict() if job.quality_stats else None,
-        "translation_stats": ({**(job.translation_stats or {}), "billing": _job_usage_summary(job)}
-                              if job.enable_translation else job.translation_stats or None),
+        "translation_stats": ({**public_stats, "billing": _job_usage_summary(job)}
+                              if job.enable_translation else public_stats or None),
         "metrics_summary": job.metrics_summary or None,
         "download_url": _attach_download_sig(job.id, f"/api/v1/jobs/{job.id}/download") if _job_can_download(job) else None,
         "created_at": job.created_at.isoformat(),
@@ -1391,15 +1326,20 @@ def download_result(
 def _prepare_translation_request(*, input_path, source_name, job_id, target_lang,
                                  translation_model, translation_quality,
                                  translation_strategy, glossary, profile_confirmation,
-                                 budget_principal="internal", budget_subjects=None):
+                                 budget_principal="internal", budget_subjects=None, cache_policy="reuse"):
     """One normalized input for the quote and optional pre-payment analysis."""
     from .domain.translation_input import normalized_translation_input, TranslationInputError
+    from .domain.translation_quote import QuoteInputError
 
     with normalized_translation_input(input_path, source_name=source_name) as normalized:
-        pricing = _estimate_translation_pricing(
-            str(normalized.epub_path), target_lang, glossary,
-            translation_quality=translation_quality, translation_model=translation_model,
-        )
+        try:
+            pricing = _estimate_translation_pricing(
+                str(normalized.epub_path), target_lang, glossary,
+                translation_quality=translation_quality, translation_model=translation_model,
+                cache_policy=cache_policy,
+            )
+        except QuoteInputError as exc:
+            raise TranslationInputError("unreadable_text", "未能完整读取计价正文，未创建支付订单，请检查文件") from exc
         if int(pricing.get("total_chars") or 0) <= 0:
             raise TranslationInputError("unreadable_text", "未能读取可翻译正文，未创建支付订单，请检查文件")
         preflight = None
@@ -1607,6 +1547,7 @@ async def create_job_v2(
                 job_id=job_id, target_lang=target_lang, translation_model=translation_model,
                 translation_quality=translation_quality, translation_strategy=translation_strategy,
                 glossary=glossary, profile_confirmation=require_profile_confirmation,
+                cache_policy=cache_policy,
                 budget_principal=(f"user:{current_user.id}" if current_user else f"anonymous:{client_ip}:{client_session}"),
                 budget_subjects=([f"user:{current_user.id}", f"ip:{client_ip}"] if current_user else [f"ip:{client_ip}"]),
             )
@@ -1745,6 +1686,14 @@ async def create_job_v2(
         job.translation_stats["source_warnings"] = source_warnings
     if translation_input_identity:
         job.translation_stats["translation_input"] = translation_input_identity
+    if enable_translation and pricing_info:
+        # Retain the original quote through confirmation, refresh and retries.
+        # Existing orders are never retroactively repriced by this code path.
+        pricing_info = dict(pricing_info, price_cny=expected_amount, quoted_amount=expected_amount)
+        job.translation_stats["translation_pricing"] = pricing_info
+    if job_status == JobStatus.pending_payment:
+        job.translation_stats["payment_checkout"] = checkout_snapshot(
+            job_id, expected_amount, pay_url=pay_url, qr_code=qr_code)
     if enable_precision_polish:
         job.translation_stats["precision_polish"] = {
             "version": 1, "status": "awaiting_payment" if job_status == JobStatus.pending_payment else "pending",
@@ -2028,6 +1977,10 @@ def confirm_translation_profile_v2(
             status=next_status,
             message=next_message,
             expected_amount=amount,
+            payment_checkout=(
+                checkout_snapshot(
+                    claimed.id, amount, pay_url=pay_url) if not skip_payment else None
+            ),
         ) if callable(finish) else None
         if not refreshed:
             raise RuntimeError("画像确认状态写入失败")
@@ -2316,8 +2269,12 @@ async def create_batch_v2(
             traditional_variant=traditional_variant.value,
             status=job_status,
             message="等待批次支付" if job_status == JobStatus.pending_payment else "批次任务已排队",
-            translation_stats=({"source_warnings": source_warnings_by_file[index]}
-                               if source_warnings_by_file[index] else {}),
+            translation_stats={
+                **({"source_warnings": source_warnings_by_file[index]} if source_warnings_by_file[index] else {}),
+                **({"payment_checkout": checkout_snapshot(
+                    f"batch_{batch_id}", expected_amount, pay_url=pay_url, qr_code=qr_code)}
+                   if index == 0 and job_status == JobStatus.pending_payment else {}),
+            },
         ))
 
     if job_status == JobStatus.pending:
@@ -3400,6 +3357,130 @@ def recover_job_payment(job_id: str, request: Request):
     }
 
 
+def _require_checkout_access(request: Request, job: Job):
+    user = get_current_user_optional(request)
+    if user is not None and not user.is_active:
+        raise HTTPException(status_code=403, detail="账号已被禁用")
+    if user is not None and job.user_id == user.id:
+        return
+    if not (job.access_token and job.token_expires_at and _authorize_job_access(request, job)):
+        raise HTTPException(status_code=403, detail="需要有效任务令牌或订单所属账号，不能通过 IP 恢复付款")
+
+
+def _continue_existing_checkout(request: Request, job: Job, *, batch_id=None):
+    """Restore the original checkout product/order; never reprice or precreate."""
+    from .domain.checkout_resume import (CheckoutUnavailable, frozen_amount, classify_trade,
+                                         require_open_checkout, original_checkout, valid_checkout_url)
+    from .infra.alipay import query_checkout_trade
+
+    order_no = f"batch_{batch_id}" if batch_id else job.id
+
+    def reload_jobs():
+        rows = _list_batch_jobs(batch_id) if batch_id else [job_store.get(job.id)]
+        if not rows or any(row is None for row in rows):
+            raise HTTPException(status_code=404, detail="订单不存在")
+        if batch_id and (len(rows) != job.batch_size or [row.batch_index for row in rows] != list(range(len(rows)))):
+            raise HTTPException(status_code=409, detail="批次信息不完整，请联系客服核验；不会拆单付款")
+        for row in rows:
+            _require_checkout_access(request, row)
+        return rows
+
+    def payload(rows, *, pay_url=None, qr_code=None):
+        result = _batch_payload(batch_id, rows) if batch_id else _job_to_v2_detail(rows[0], None)
+        return {**result, "amount": rows[0].expected_amount or None, "pay_url": pay_url,
+                "qr_code": qr_code, "checkout_available": bool(pay_url or qr_code)}
+
+    def is_payable(rows):
+        statuses = {row.status for row in rows}
+        if statuses == {JobStatus.pending_payment}:
+            return True
+        if statuses <= {JobStatus.pending, JobStatus.running, JobStatus.success}:
+            return False
+        raise HTTPException(status_code=409, detail="订单已关闭、失败或状态已变化，请刷新状态；不会重新创建付款订单")
+
+    rows = reload_jobs()
+    if not is_payable(rows):
+        return payload(rows)
+    try:
+        amount = frozen_amount(rows[0])
+        trade = query_checkout_trade(order_no)
+        state = classify_trade(trade, order_no, amount)
+        # Recheck original amount before applying any receipt or signing a link.
+        latest = reload_jobs()
+        if frozen_amount(latest[0]) != amount:
+            raise CheckoutUnavailable("原订单报价已变化，请联系客服核验；请勿再次付款")
+        if state in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+            _record_verified_payment(order_no, trade["total_amount"],
+                "batch" if batch_id else ("translation" if job.enable_translation else "conversion"),
+                source="verified_query", file_count=len(latest), is_test_order=any(row.is_test_order for row in latest))
+            if batch_id:
+                _release_batch(batch_id, source="verified_query", amount=trade["total_amount"])
+            else:
+                job_store.settle_verified_payment(job.id, amount=trade["total_amount"], source="verified_query")
+                _enqueue_conversion(job_store.get(job.id) or job)
+            return payload(reload_jobs())
+        if state == "TRADE_CLOSED":
+            if batch_id:
+                job_store.mark_batch_payment_timeout(batch_id, gateway_confirmed=True)
+            else:
+                job_store.mark_payment_timeout(job.id, gateway_confirmed=True)
+            closed = reload_jobs()
+            if not is_payable(closed):
+                return payload(closed)  # A simultaneous paid callback won.
+            raise CheckoutUnavailable("支付宝订单已关闭，请勿再次付款")
+        if not is_payable(latest):
+            return payload(latest)
+        require_open_checkout(latest)
+        checkout = original_checkout(latest[0], order_no, amount)
+        subject = (f"EPUB 批量转换服务 - {len(latest)} 个文件" if batch_id else
+                   f"EPUB {'AI 翻译' if job.enable_translation else '格式转换'}服务 - {job.source_filename[:50]}")
+        pay_url, qr_code = None, None
+        if checkout["channel"] == "qr":
+            qr_code = checkout["qr_code"]
+        else:
+            try:
+                pay_url = create_alipay_page_pay(
+                    out_trade_no=order_no, total_amount=amount, subject=subject,
+                    return_url=f"https://fixepub.com/?{'batch_id=' + batch_id if batch_id else 'job_id=' + job.id}",
+                )
+                if not valid_checkout_url(pay_url):
+                    raise ValueError("invalid checkout URL")
+            except Exception:
+                raise CheckoutUnavailable("支付链接暂时无法生成，请稍后重试；原订单和金额不变", 503) from None
+        current = reload_jobs()
+        if not is_payable(current):
+            return payload(current)
+        if frozen_amount(current[0]) != amount:
+            raise CheckoutUnavailable("原订单报价已变化，请联系客服核验；请勿再次付款")
+        require_open_checkout(current)
+        if original_checkout(current[0], order_no, amount) != checkout:
+            raise CheckoutUnavailable("原支付通道已变化，请刷新状态后重试；请勿再次付款")
+        return payload(current, pay_url=pay_url, qr_code=qr_code)
+    except CheckoutUnavailable as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+
+
+@app.post("/api/v2/jobs/{job_id}/continue-payment")
+def continue_job_payment_v2(job_id: str, request: Request):
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    _require_checkout_access(request, job)
+    if job.batch_id:
+        raise HTTPException(status_code=409, detail="该任务属于批次，请继续支付原整批订单，不可为子任务单独付款")
+    return _continue_existing_checkout(request, job)
+
+
+@app.post("/api/v2/batches/{batch_id}/continue-payment")
+def continue_batch_payment_v2(batch_id: str, request: Request):
+    rows = _list_batch_jobs(batch_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    # Batch tokens share the leader's cookie/key; normalize only the supplied
+    # header via existing front-end authHeaders, never infer ownership by IP.
+    return _continue_existing_checkout(request, rows[0], batch_id=batch_id)
+
+
 @app.post("/api/v2/jobs/{job_id}/cancel")
 def cancel_job_v2(job_id: str, request: Request):
     """取消任务（v2）。画像待确认、queued 或 running 时可取消。"""
@@ -3447,23 +3528,31 @@ def cancel_job_v2(job_id: str, request: Request):
 
 
 @app.get("/api/v2/notifications")
-def list_notifications_v2(job_id: Optional[str] = None):
-    """获取站内通知列表（v2）。"""
-    list_fn = getattr(job_store, "list_notifications", None)
-    if not list_fn:
-        return {"items": []}
-    notifications = list_fn(job_id=job_id)
-    items = []
-    for n in notifications:
-        items.append({
-            "id": getattr(n, "id", id(n)),
-            "job_id": n.job_id,
-            "channel": n.channel,
-            "status": n.status.value,
-            "payload": getattr(n, "payload", None) or {},
-            "created_at": n.created_at.isoformat() if hasattr(n.created_at, "isoformat") else str(n.created_at),
-        })
-    return {"items": items}
+def list_notifications_v2(request: Request, job_id: Optional[str] = Query(None, min_length=1, max_length=96),
+                          limit: int = Query(20, ge=1, le=100), cursor: Optional[str] = None):
+    """Private in-app notifications; no anonymous global enumeration or IP fallback."""
+    from .domain.notification_query import list_notification_page
+    current_user = get_current_user_optional(request)
+    if current_user is not None and not current_user.is_active:
+        raise HTTPException(status_code=403, detail="账号已被禁用")
+    user_id = None
+    if job_id is not None:
+        job = job_store.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if current_user and job.user_id == current_user.id:
+            user_id = current_user.id  # Recheck ownership in the paged query.
+        elif not (job.access_token and job.token_expires_at and _authorize_job_access(request, job)):
+            raise HTTPException(status_code=403, detail="无权访问该任务通知")
+    else:
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="请登录或提供任务编号及有效任务令牌")
+        user_id = current_user.id
+    try:
+        result = list_notification_page(job_store, job_id=job_id, user_id=user_id, limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return result
 
 
 @app.get("/api/v2/admin/translation-stats", include_in_schema=False)
@@ -4492,7 +4581,7 @@ def stop_completion_email_worker():
 async def admin_private_cache(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches", "/api/v2/repair", "/api/v2/email-capabilities")):
+    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches", "/api/v2/repair", "/api/v2/email-capabilities", "/api/v2/notifications")):
         # A refresh must recover authoritative state and a newly signed download URL.
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"

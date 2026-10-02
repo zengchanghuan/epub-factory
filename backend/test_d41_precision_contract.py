@@ -93,7 +93,7 @@ class PrecisionContractTests(unittest.TestCase):
         # are contained by the process_job mock, not by hiding the enqueue.
         self.enqueue = self._patch(patch.object(main, "_enqueue_conversion", wraps=main._enqueue_conversion))
         self.page_pay = self._patch(patch.object(main, "create_alipay_page_pay", return_value="https://example.invalid/pay"))
-        self.qr_pay = self._patch(patch("app.infra.alipay.create_alipay_precreate", return_value="offline-qr"))
+        self.qr_pay = self._patch(patch("app.infra.alipay.create_alipay_precreate", return_value="https://qr.example.invalid/offline-qr"))
         self.notify = self._patch(patch.object(job_runner, "notify_job_completed"))
         self._patch(patch.object(job_runner, "report_error"))
         self.api = FastAPI()

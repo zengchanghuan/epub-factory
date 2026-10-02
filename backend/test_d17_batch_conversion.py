@@ -89,12 +89,12 @@ class BatchConversionTest(unittest.TestCase):
         self.assertEqual(detail.json()["counts"]["queued"], 2)
 
     def test_batch_payment_is_one_aggregate_order_and_unlocks_once(self):
-        with patch("app.infra.alipay.create_alipay_precreate", return_value="alipay://batch-qr") as precreate:
+        with patch("app.infra.alipay.create_alipay_precreate", return_value="https://qr.example.invalid/batch-qr") as precreate:
             response, _ = _create_batch(skip_payment=False)
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(data["status"], "pending_payment")
-        self.assertEqual(data["qr_code"], "alipay://batch-qr")
+        self.assertEqual(data["qr_code"], "https://qr.example.invalid/batch-qr")
         self.assertEqual(data["amount"], "1.98")
         self.assertEqual(precreate.call_count, 1)
         self.assertEqual(precreate.call_args.args[0], f"batch_{data['batch_id']}")
@@ -114,7 +114,7 @@ class BatchConversionTest(unittest.TestCase):
         self.assertTrue(all(job_store.list_dispatches(job.id)[0]["status"] == "sent" for job in jobs))
 
     def test_batch_webhook_routes_one_order_to_batch_release(self):
-        with patch("app.infra.alipay.create_alipay_precreate", return_value="alipay://batch-qr"):
+        with patch("app.infra.alipay.create_alipay_precreate", return_value="https://qr.example.invalid/batch-qr"):
             response, _ = _create_batch(skip_payment=False)
         data = response.json()
         form = {

@@ -71,7 +71,7 @@ class RepairPricingTests(unittest.TestCase):
         self.assertEqual(calculate_polish_price(200000), 5.99)
 
     def test_single_conversion_quotes_and_persists_099(self):
-        with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
+        with patch('app.infra.alipay.create_alipay_precreate', return_value='https://qr.example.invalid/offline') as create:
             response = self.client.post('/api/v2/jobs',
                 files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')},
                 data={'enable_translation': 'false'},
@@ -87,7 +87,7 @@ class RepairPricingTests(unittest.TestCase):
     def test_precision_polish_is_a_separate_add_on(self):
         # This test isolates the unchanged price tiers; actual EPUB risk
         # inspection and unsupported-mode rejection are covered by D41.
-        with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create, patch(
+        with patch('app.infra.alipay.create_alipay_precreate', return_value='https://qr.example.invalid/offline') as create, patch(
             'app.domain.precision_polish_service.inspect_precision_polish_source',
             return_value={'char_count': 120_000, 'candidates': 1}
         ):
@@ -106,7 +106,7 @@ class RepairPricingTests(unittest.TestCase):
 
     def test_new_batch_uses_099_per_book(self):
         book = minimal_epub_bytes()
-        with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
+        with patch('app.infra.alipay.create_alipay_precreate', return_value='https://qr.example.invalid/offline') as create:
             response = self.client.post('/api/v2/batches',
                 files=[
                     ('files', ('first.epub', book, 'application/epub+zip')),

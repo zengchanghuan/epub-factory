@@ -68,7 +68,12 @@ def test_e2e_notification_after_job_ends():
     from app.job_runner import run_job
     run_job(job_id)
 
-    list_res = client.get("/api/v2/notifications", params={"job_id": job_id})
+    # R13: completing a job does not make its notification public. The
+    # uploader's issued capability is required, including for this E2E path.
+    token = res.json().get("access_token")
+    assert token
+    list_res = client.get("/api/v2/notifications", params={"job_id": job_id},
+                          headers={"X-Job-Token": token})
     assert list_res.status_code == 200
     items = list_res.json().get("items", [])
     assert len(items) >= 1

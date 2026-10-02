@@ -8,12 +8,12 @@ D11 测试：通知系统第一版
 
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi.testclient import TestClient
-from app.models import JobNotification, JobStatus, NotificationStatus
+from app.models import Job, JobNotification, JobStatus, NotificationStatus, OutputMode
 from app.storage import job_store
 from app.domain.notification_service import notify_job_completed, CHANNEL_IN_APP
 from app.main import app
@@ -75,19 +75,26 @@ def test_list_notifications_filter_by_job_id():
 
 
 def test_v2_notifications_api_returns_items():
-    """GET /api/v2/notifications 返回 items 数组；有通知时含 payload。"""
+    """有效任务能力可查询本站内通知；不依赖旧匿名全站入口。"""
     client = TestClient(app)
+    job_store.add(Job(id="d11_api_job", source_filename="api_test.epub",
+                      input_path="/tmp/offline-d11.epub", output_mode=OutputMode.simplified,
+                      trace_id="d11-notification", status=JobStatus.success,
+                      access_token="d11-notification-capability",
+                      token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1)))
     notify_job_completed(
         "d11_api_job",
         JobStatus.success,
         "完成",
         source_filename="api_test.epub",
     )
-    res = client.get("/api/v2/notifications", params={"job_id": "d11_api_job"})
+    res = client.get("/api/v2/notifications", params={"job_id": "d11_api_job"},
+                     headers={"X-Job-Token": "d11-notification-capability"})
     assert res.status_code == 200
     data = res.json()
     assert "items" in data
     assert isinstance(data["items"], list)
+    assert "next_cursor" in data
     assert len(data["items"]) >= 1
     item = next((x for x in data["items"] if x.get("job_id") == "d11_api_job"), None)
     assert item is not None

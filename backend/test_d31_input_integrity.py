@@ -360,7 +360,7 @@ class UploadGateTests(unittest.TestCase):
         self.stack.enter_context(patch.object(self.main, 'UPLOAD_DIR', self.uploads))
         self.add = self.stack.enter_context(patch.object(self.main.job_store, 'add', wraps=self.main.job_store.add))
         self.pay = self.stack.enter_context(patch.object(self.main, 'create_alipay_page_pay', return_value='https://offline.invalid/pay'))
-        self.qr = self.stack.enter_context(patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline'))
+        self.qr = self.stack.enter_context(patch('app.infra.alipay.create_alipay_precreate', return_value='https://qr.example.invalid/offline'))
         self.enqueue = self.stack.enter_context(patch.object(self.main, '_enqueue_conversion'))
         self.batch = self.stack.enter_context(patch.object(self.main, '_enqueue_batch'))
         self.process = self.stack.enter_context(patch.object(self.main, 'process_job'))

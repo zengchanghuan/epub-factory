@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
+import uuid
 
 
 @dataclass
@@ -252,3 +253,24 @@ class JobNotification:
     sent_at: Optional[datetime] = None
     error_message: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+
+def validate_notification_page(*, job_id=None, user_id=None, limit=21, before=None):
+    """Shared scope and cursor contract for the two notification stores."""
+    for value in (job_id, user_id):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError("notification scope must be a non-empty string")
+    if job_id is None and user_id is None:
+        raise ValueError("notification pagination requires a job or user scope")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 101:
+        raise ValueError("notification limit must be an integer from 1 to 101")
+    if before is not None:
+        if not isinstance(before, tuple) or len(before) != 2:
+            raise ValueError("notification cursor must contain timestamp and id")
+        at, identity = before
+        if (not isinstance(at, datetime) or at.tzinfo is None
+                or at.utcoffset() != timedelta(0)):
+            raise ValueError("notification cursor timestamp must be aware UTC")
+        if not isinstance(identity, str) or not identity.strip() or len(identity) > 96:
+            raise ValueError("notification cursor id is invalid")

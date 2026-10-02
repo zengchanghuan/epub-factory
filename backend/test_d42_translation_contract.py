@@ -105,7 +105,7 @@ class TranslationContractTests(unittest.TestCase):
         self.worker = self._patch(patch.object(main, "process_job"))
         self.enqueue = self._patch(patch.object(main, "_enqueue_conversion"))
         self.page_pay = self._patch(patch.object(main, "create_alipay_page_pay", return_value="https://example.invalid/pay"))
-        self.qr_pay = self._patch(patch("app.infra.alipay.create_alipay_precreate", return_value="offline-qr"))
+        self.qr_pay = self._patch(patch("app.infra.alipay.create_alipay_precreate", return_value="https://qr.example.invalid/offline-qr"))
         self._patch(patch.object(job_runner, "notify_job_completed"))
         self._patch(patch.object(job_runner, "report_error"))
         self.preflight_paths = []

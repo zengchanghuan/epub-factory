@@ -129,6 +129,14 @@ jobs:
                 test_d50_llm_limiter
                 test_d50_llm_callers
                 test_d50_preflight_admission
+                test_d51_notification_store
+                test_d51_notification_api
+                test_d51_auth_config
+                test_d52_translation_quote
+                test_d52_quote_contract
+                test_d53_checkout_gateway
+                test_d53_checkout_contract
+                test_d54_schema_init
                 test_c1_typography_and_fallback
                 test_c2_pipeline_metrics
                 test_c3_stem_guard
@@ -144,5 +152,32 @@ jobs:
               python ../scripts/test_migrate_legacy_repair.py || fail=1
               python ../scripts/test_deploy_legacy_gate.py || fail=1
               python ../scripts/test_worker_services.py || fail=1
+              python ../scripts/test_audit_production_config.py || fail=1
+              python ../scripts/test_deploy_lock.py || fail=1
               exit $fail
             '
+
+      - name: Verify quota Lua against actual Redis 6 and 7
+        # Production was read-only verified as Redis 6.0.16; compose uses 7.
+        # Disposable loopback servers only. No provider calls or customer books.
+        run: |
+          set -euo pipefail
+          cleanup() { docker rm -f fixepub-d54-redis >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for version in 6.0.16 7.2.10; do
+            docker run -d --name fixepub-d54-redis \
+              -p 127.0.0.1:16379:6379 "redis:$version" \
+              redis-server --save '' --appendonly no
+            ready=0
+            for attempt in $(seq 1 30); do
+              if docker exec fixepub-d54-redis redis-cli ping; then ready=1; break; fi
+              sleep 1
+            done
+            test "$ready" = 1
+            docker run --rm --network host \
+              -e D54_REDIS_ISOLATED=1 \
+              -e D54_REDIS_URL=redis://127.0.0.1:16379/0 \
+              -e OPENAI_API_KEY=dummy -e SENTRY_DSN= \
+              epub-factory:ci python test_d54_redis_integration.py -v
+            cleanup
+          done
