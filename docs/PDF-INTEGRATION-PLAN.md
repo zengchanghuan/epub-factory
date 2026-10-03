@@ -1,7 +1,7 @@
 ---
 title: PDF 接入方案入口
 updated: 2026-10-02
-status: text-only-planned-not-enabled
+status: original-text-product-locally-accepted-not-deployed
 ---
 
 # PDF 接入方案入口
@@ -12,4 +12,4 @@ status: text-only-planned-not-enabled
 
 2026-10-02 用户最新范围：**PDF 本阶段只处理可靠文本层；图片保持原样，不做像素 OCR、图片文字翻译或重绘。** 扫描正文识别及图像处理保留为后续 TODO。原 MinerU/Flash 全能力方案是历史设计，不是本期开发或调用外部服务的授权。
 
-状态：PDF 公共入口仍关闭，文本型 PDF 也尚未接通正式翻译链；不能仅开放后缀校验就声称支持。本次仅记录范围，未修改入口或执行代码。
+2026-10-03 当前实现：独立文本预检、结构映射、段落重排与原图导出，以及单本 **PDF → EPUB（保留原文）** 产品链均已通过同快照真书/历史 EPUB 门禁。产品流程为：私有准备成品 → 用户确认风险 → 冻结价格支付 → 交付同一成品。原接口仍拒绝 PDF，独立入口默认关闭；PDF 翻译、精校、批量与扫描 OCR 不在本次实现中。完整证据与待办见 [逐项验收记录](REMAINING-OPTIMIZATION-2026-10-02.md)。本地实现不等于生产已上线。

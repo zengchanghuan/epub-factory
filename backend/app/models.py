@@ -33,6 +33,7 @@ class JobStatus(str, Enum):
 class OutputMode(str, Enum):
     traditional = "traditional"
     simplified = "simplified"
+    original = "original"  # Dedicated text-PDF product only; no CJK normalization.
 
 
 class DeviceProfile(str, Enum):

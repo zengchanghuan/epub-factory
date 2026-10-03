@@ -2,7 +2,7 @@
 title: 基础设施与文本 PDF 顺序验收
 date: 2026-10-02
 base_revision: 140cb3fa959d8f2e1a510e5896a203c994dccb3f
-status: stage-2-pushed-stage-3-local-verified-second-mac-deferred
+status: stage-3-pushed-second-mac-deferred-stage-4-real-pdf-validation
 ---
 
 # 基础设施与文本 PDF 顺序验收
@@ -200,4 +200,12 @@ PYTHONDONTWRITEBYTECODE=1 backend/.venv/bin/python backend/test_d55_order_review
 - 首轮在 D47 暴露工具自身对测试 `.env` 的过度拦截，整体拒绝放行。仅在守卫边界允许受控临时根内显式、无符号链接普通配置；不读取工作区私有配置、不改 D47 断言。保留首轮证据，不拼接结果。
 - 最终唯一快照 `/private/tmp/fixepub-release-20261002-local-02/source`：**138/138 命令、0 超时，281.966 秒**；后端 **104/104**，前端 **33 套 / 284 项**，D55 真实三书 **10/10、0 跳过，57.173 秒**，同快照工具专项另计 **20+38 项**。7 个既有可选历史用例跳过名称/原因单列，不冒充真实三书验收。
 - 445 份源文件冻结核对通过，9 份真实原稿/旧成品/基线 SHA 不变；受保护的工作区订单/限额/缓存库及 WAL/SHM 哈希不变，主门禁 Python 网络事件 0。版本与完整边界详见交接文档。
-- 最终验收后仅补记三份 Markdown 结果文档，代码、测试、配置与锁文件未变。此阶段新增内容未提交/推送、未部署；双 Mac、生产支付和付费模型语义质量不因本机通过而标记完成。
+- 最终验收后仅补记三份 Markdown 结果文档，代码、测试、配置与锁文件未变。随后按用户 `push and go on` 提交推送 `d660b20`，本地与远端一致，未部署；双 Mac、生产支付和付费模型语义质量不因本机通过而标记完成。
+
+## 第四项：文本 PDF（分子项推进）
+
+用户再次要求继续后，先做 [D56-A 独立本地预检](TEXT-PDF-PREFLIGHT-2026-10-02.md)。第二台 Mac 依然延期，不冒充完成；不依赖其开机来准备孤立代码，也不因此开放公共 PDF 入口或进行生产发布。
+
+历史目录最初缺少可确认的真实 PDF 书稿，用户随后提供《西南联大逻辑通识课》，已完成 A 的[真实文件门禁](REMAINING-OPTIMIZATION-2026-10-02.md)，开始 B1 原始页/片段/编码资源映射。A 的合成契约和原 EPUB 回归不能替代 PDF 的真实文件门禁；B1 仍不放行正式报价或翻译链路。
+
+D56-A 初版合成契约为29/29，原产品138/138命令与三书10/10，证据 `/private/tmp/fixepub-d56-preflight-final-01`；此为提供真实PDF前的历史记录。用户提供原稿后的最终记录为合成32/32、真实PDF4/4，同一冻结快照原产品138/138命令与三本EPUB10/10，证据 `/private/tmp/fixepub-d56-real-logic-final-01`。7个既有可选样本跳过单列；9份历史原稿/旧成品/基线与受保护DB/WAL/SHM哈希不变。本轮代码未提交、未部署，Linux资源隔离、段落/原图重建与正式翻译仍待验收，详情见D56-A记录。

@@ -101,7 +101,8 @@ const V2_STATUS_TEXT = {
   cancelled: "已取消",
 };
 
-function mapV2StatusText(v2Status, enableTranslation = false) {
+function mapV2StatusText(v2Status, enableTranslation = false, pdfConversion = false) {
+  if (pdfConversion && v2Status === "awaiting_confirmation") return "待确认 PDF 转换";
   if (enableTranslation) {
     const translationMap = {
       awaiting_confirmation: "待确认画像",
@@ -142,6 +143,7 @@ function formatDevice(device) {
  * @returns {string}
  */
 function formatJobMeta(job) {
+  if (job.output_mode === "original" || job.pdf_conversion) return "PDF → EPUB · 保留原文";
   const device = formatDevice(job.device);
   if (job.enable_translation) {
     const parts = [`AI翻译(${job.target_lang || "zh-CN"}) / ${device}`];

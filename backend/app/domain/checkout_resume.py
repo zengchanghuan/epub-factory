@@ -23,12 +23,50 @@ def valid_checkout_url(value):
         return False
 
 
-def checkout_snapshot(order_no, amount, *, pay_url=None, qr_code=None):
+def checkout_snapshot(order_no, amount, *, pay_url=None, qr_code=None, created_at=None):
     """Remember the successful payment product, not a newly guessed one."""
     if bool(pay_url) == bool(qr_code) or not valid_checkout_url(qr_code or pay_url):
         raise ValueError("invalid checkout response")
-    return {"schema_version": 1, "order_no": order_no, "amount": amount,
-            "channel": "qr" if qr_code else "page", **({"qr_code": qr_code} if qr_code else {})}
+    saved = {"schema_version": 1, "order_no": order_no, "amount": amount,
+             "channel": "qr" if qr_code else "page", **({"qr_code": qr_code} if qr_code else {})}
+    if created_at is not None:
+        if not isinstance(created_at, datetime) or created_at.tzinfo is None:
+            raise ValueError("checkout creation requires an aware datetime")
+        saved["created_at"] = created_at.astimezone(timezone.utc).isoformat()
+    return saved
+
+
+def _pdf_checkout_job(job):
+    # A missing/broken product snapshot must not fall back to the legacy clock.
+    from .pdf_product import is_pdf_job
+    return is_pdf_job(job)
+
+
+def checkout_created_at(job, *, now=None):
+    """PDF time starts at its first issued checkout, not preparation upload."""
+    if _pdf_checkout_job(job):
+        try:
+            from .pdf_product import validate_pdf_job_plan
+            plan = validate_pdf_job_plan(job)
+            if plan["phase"] != "confirmed":
+                raise ValueError()
+            saved = original_checkout(job, job.id, frozen_amount(job))
+            value = saved.get("created_at")
+            if not isinstance(value, str):
+                raise ValueError()
+            created = datetime.fromisoformat(value)
+            if created.tzinfo is None:
+                raise ValueError()
+            created = created.astimezone(timezone.utc)
+            if created > (now or datetime.now(timezone.utc)):
+                raise ValueError()
+        except (ValueError, TypeError, OverflowError):
+            raise CheckoutUnavailable("PDF 原支付时间缺失或无效，请联系客服核验；请勿再次付款") from None
+        return created
+    created = job.created_at
+    if not isinstance(created, datetime):
+        raise CheckoutUnavailable("原订单时间缺失，请联系客服核验")
+    return created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created.astimezone(timezone.utc)
 
 
 def original_checkout(job, order_no, amount):
@@ -37,7 +75,7 @@ def original_checkout(job, order_no, amount):
         # Historical translation creation always used page-pay. Conversion and
         # batch creation could have used either product; NOT_CREATED does not
         # establish which QR/link the user originally received.
-        if job.enable_translation and not job.batch_id:
+        if job.enable_translation and not job.batch_id and not _pdf_checkout_job(job):
             return {"schema_version": 1, "order_no": order_no, "amount": amount, "channel": "page"}
         raise CheckoutUnavailable("旧订单未记录原支付通道，请联系客服核验；不会切换通道或另建付款订单")
     saved = stats["payment_checkout"]
@@ -80,7 +118,7 @@ def classify_trade(trade, order_no, amount):
     return status
 
 
-def require_open_checkout(jobs, *, now=None):
+def require_open_checkout(jobs, *, now=None, artifact_root=None):
     """Only unpaid usable orders may produce another link; never revive expiry."""
     now = now or datetime.now(timezone.utc)
     try:
@@ -90,10 +128,7 @@ def require_open_checkout(jobs, *, now=None):
     except ValueError:
         raise CheckoutUnavailable("支付有效期配置未就绪，请联系管理员", 503) from None
     for job in jobs:
-        created = job.created_at
-        if not isinstance(created, datetime):
-            raise CheckoutUnavailable("原订单时间缺失，请联系客服核验")
-        created = created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created.astimezone(timezone.utc)
+        created = checkout_created_at(job, now=now)
         checkout = (job.translation_stats or {}).get("payment_checkout")
         # The existing precreate integration uses the provider's two-hour QR
         # lifetime. A longer reconciliation timeout must not revive that code.
@@ -108,3 +143,10 @@ def require_open_checkout(jobs, *, now=None):
             available = False
         if not available:
             raise CheckoutUnavailable("原订单文件已不可用，请勿付款，请重新上传文件")
+        if _pdf_checkout_job(job):
+            from .pdf_product import validate_pdf_job
+            root = Path(artifact_root) if artifact_root is not None else Path(__file__).resolve().parents[2] / "outputs"
+            try:
+                validate_pdf_job(job, root, require_confirmed=True, require_billable=True)
+            except (ValueError, OSError):
+                raise CheckoutUnavailable("PDF 原稿或已校验成品已变化，请勿付款，请重新上传文件") from None

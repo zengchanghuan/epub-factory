@@ -1,10 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# requirements.lock — 与生产环境完全一致的依赖快照（含传递依赖）
+# requirements.lock — 产品依赖锁（含传递依赖）
 #
 # 用途：本地/CI 复刻线上依赖树，消除「本地能跑、线上不行」类不一致。
 # 基准：腾讯云生产机 ~/epub-factory/backend/.venv 的 `pip freeze`
 # Python：3.10.12（显式选择解释器；仓库不提供 .python-version 自动切换）
 # 生成：2026-06-25
+# 2026-10-03：新增文本 PDF 转换依赖；本地验收后另行部署，不能据此声称生产已安装。
 #
 # 重建本地环境（需先 `pyenv install 3.10.12`）：
 #   cd backend
@@ -76,6 +77,9 @@ openai==2.43.0
 opencc-python-reimplemented==0.1.7
 packaging==26.1
 passlib==1.7.4
+pdfminer.six==20251230
+pdfplumber==0.11.9
+Pillow==12.3.0
 prompt_toolkit==3.0.52
 propcache==0.5.2
 pyahocorasick==2.3.1
@@ -85,6 +89,7 @@ pycrypto==2.6.1
 pydantic==2.13.3
 pydantic_core==2.46.3
 pypdf==6.0.0
+pypdfium2==5.13.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 python-jose==3.5.0

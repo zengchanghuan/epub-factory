@@ -1676,6 +1676,185 @@ class PersistentJobStore:
             record = session.get(JobRecord, job_id)
             return _record_to_job(record) if record else None
 
+    def finish_pdf_preparation(self, job_id, attempt_id, owner, prepared_plan) -> Optional[Job]:
+        """Keep preparation state and executor retirement in one transaction."""
+        import json
+        from .domain.dispatch_intent import dispatch_identity
+        from .domain.pdf_product import validate_pdf_plan, validate_pdf_job_plan
+        with self._Session() as session:
+            record = self._lock_execution_job(session, job_id, status=JobStatus.running)
+            row = session.get(ExecutionRecord, dispatch_identity(job_id, attempt_id))
+            job = _record_to_job(record) if record else None
+            if (not job or execution_identity(job) != attempt_id or not owner or not row
+                    or row.state != "running" or row.owner != owner):
+                return None
+            try:
+                current = validate_pdf_plan(validate_pdf_job_plan(job), phase="preparing")
+                prepared = validate_pdf_plan(prepared_plan, phase="prepared")
+            except ValueError:
+                return None
+            if (any(current[key] != prepared[key] for key in ("source_sha256", "source_bytes", "amount"))
+                    or prepared["amount"] != job.expected_amount):
+                return None
+            now = datetime.now(timezone.utc)
+            record.translation_stats_json = json.dumps({**(job.translation_stats or {}), "pdf_conversion": prepared}, ensure_ascii=False)
+            record.status, record.message = JobStatus.awaiting_confirmation.value, "PDF 已完成转换与结构校验，请确认后付款"
+            record.output_path, record.error_code, record.updated_at = None, None, now
+            row.state, row.owner, row.heartbeat_at = "finished", "", timestamp(now)
+            session.commit()
+            return _record_to_job(record)
+
+    def confirm_pdf_conversion(self, job_id, *, plan_id, confirmed_plan, status, message,
+                               payment_checkout=None, allow_test_bypass=False) -> Optional[Job]:
+        """One parent-locked transaction from prepared plan to durable checkout."""
+        import json
+        from copy import deepcopy
+        from dataclasses import replace
+        from .domain.pdf_product import validate_pdf_plan, pdf_plan_identity, validate_pdf_job_plan
+        from .domain.payment_entitlement import manual_payment_guard, quote_entitlement
+        from .domain.checkout_resume import original_checkout, checkout_created_at
+        if type(allow_test_bypass) is not bool or status not in {JobStatus.pending, JobStatus.pending_payment}:
+            return None
+        if (status == JobStatus.pending) != allow_test_bypass:
+            return None
+        with self._Session() as session:
+            record = self._lock_execution_job(session, job_id, status=JobStatus.awaiting_confirmation)
+            job = _record_to_job(record) if record else None
+            if (not job or manual_payment_guard(job)
+                    or (job.payment_resolution or {}).get("state") in {"paid", "closed"}
+                    or "payment_checkout" in (job.translation_stats or {})
+                    or (allow_test_bypass and (job.is_test_order is not True or payment_checkout is not None))):
+                return None
+            try:
+                current = validate_pdf_plan(validate_pdf_job_plan(job), phase="prepared")
+                confirmed = validate_pdf_plan(confirmed_plan, phase="confirmed")
+            except ValueError:
+                return None
+            if (current["plan_id"] != plan_id or confirmed["plan_id"] != plan_id
+                    or pdf_plan_identity(current) != pdf_plan_identity(confirmed)
+                    or current["amount"] != job.expected_amount):
+                return None
+            entitlement = deepcopy(job.payment_entitlement or {})
+            if entitlement and (entitlement.get("order_no") != job.id
+                                or entitlement.get("amount") != job.expected_amount
+                                or entitlement.get("state") not in {"quoted", "test_authorized"}
+                                or (entitlement.get("state") == "test_authorized"
+                                    and (not allow_test_bypass or entitlement.get("source") != "server_test_bypass"))):
+                return None
+            stats = deepcopy(job.translation_stats or {})
+            stats.update(pdf_conversion=confirmed, attempt_id=uuid.uuid4().hex)
+            if allow_test_bypass:
+                entitlement = {**entitlement, **quote_entitlement(job, test_bypass=True)}
+            else:
+                if payment_checkout is None:
+                    return None
+                stats["payment_checkout"] = deepcopy(payment_checkout)
+                try:
+                    candidate = replace(job, translation_stats=stats)
+                    original_checkout(candidate, job.id, job.expected_amount)
+                    checkout_created_at(candidate)
+                except ValueError:
+                    return None
+            record.translation_stats_json = json.dumps(stats, ensure_ascii=False)
+            record.payment_entitlement_json = json.dumps(entitlement, ensure_ascii=False)
+            record.status, record.message, record.updated_at = status.value, message, datetime.now(timezone.utc)
+            record.output_path = None
+            if allow_test_bypass:
+                self._ensure_dispatch_in_session(session, record)
+            session.commit()
+            return _record_to_job(record)
+
+    def begin_pdf_confirmation(self, job_id, *, plan_id, confirmed_plan) -> Optional[Job]:
+        import json
+        import uuid
+        from .domain.pdf_product import validate_pdf_plan, pdf_plan_identity, validate_pdf_job_plan
+        with self._Session() as session:
+            record = self._lock_execution_job(session, job_id, status=JobStatus.awaiting_confirmation)
+            if record is None:
+                return None
+            job = _record_to_job(record)
+            try:
+                current = validate_pdf_plan(validate_pdf_job_plan(job), phase="prepared")
+                confirmed = validate_pdf_plan(confirmed_plan, phase="confirmed")
+            except ValueError:
+                return None
+            if (current["plan_id"] != plan_id or confirmed["plan_id"] != plan_id
+                    or pdf_plan_identity(current) != pdf_plan_identity(confirmed)
+                    or current["amount"] != job.expected_amount):
+                return None
+            stats = {**(job.translation_stats or {}), "pdf_conversion": confirmed, "attempt_id": uuid.uuid4().hex}
+            record.translation_stats_json = json.dumps(stats, ensure_ascii=False)
+            record.status, record.message = JobStatus.confirming.value, "正在创建支付订单..."
+            record.output_path, record.updated_at = None, datetime.now(timezone.utc)
+            session.commit()
+            return _record_to_job(record)
+
+    def finish_pdf_confirmation(self, job_id, *, attempt_id, status, message,
+                                payment_checkout=None) -> Optional[Job]:
+        import json
+        from .domain.pdf_product import validate_pdf_plan, validate_pdf_job_plan
+        with self._Session() as session:
+            record = self._lock_execution_job(session, job_id, status=JobStatus.confirming)
+            job = _record_to_job(record) if record else None
+            if (not job or execution_identity(job) != attempt_id
+                    or status not in {JobStatus.pending, JobStatus.pending_payment}
+                    or (status == JobStatus.pending and not job.is_test_order)):
+                return None
+            entitlement = job.payment_entitlement or {}
+            if status == JobStatus.pending and not (
+                    entitlement.get("state") == "test_authorized"
+                    and entitlement.get("source") == "server_test_bypass"
+                    and entitlement.get("order_no") == job.id
+                    and entitlement.get("amount") == job.expected_amount):
+                return None
+            try:
+                plan = validate_pdf_plan(validate_pdf_job_plan(job), phase="confirmed")
+            except ValueError:
+                return None
+            if plan["amount"] != job.expected_amount:
+                return None
+            stats = dict(job.translation_stats or {})
+            if payment_checkout is not None:
+                stats["payment_checkout"] = payment_checkout
+            if status == JobStatus.pending_payment:
+                from dataclasses import replace
+                from .domain.checkout_resume import original_checkout, checkout_created_at
+                if payment_checkout is None:
+                    return None
+                try:
+                    candidate = replace(job, translation_stats=stats)
+                    original_checkout(candidate, job.id, job.expected_amount)
+                    checkout_created_at(candidate)
+                except ValueError:
+                    return None
+            record.translation_stats_json = json.dumps(stats, ensure_ascii=False)
+            record.status, record.message, record.updated_at = status.value, message, datetime.now(timezone.utc)
+            if status == JobStatus.pending:
+                self._ensure_dispatch_in_session(session, record)
+            session.commit()
+            return _record_to_job(record)
+
+    def rollback_pdf_confirmation(self, job_id, *, attempt_id, message) -> Optional[Job]:
+        import json
+        from .domain.pdf_product import validate_pdf_plan, validate_pdf_job_plan
+        with self._Session() as session:
+            record = self._lock_execution_job(session, job_id, status=JobStatus.confirming)
+            job = _record_to_job(record) if record else None
+            if not job or execution_identity(job) != attempt_id:
+                return None
+            try:
+                plan = validate_pdf_plan(validate_pdf_job_plan(job), phase="confirmed")
+            except ValueError:
+                return None
+            if plan["amount"] != job.expected_amount:
+                return None
+            plan = {key: value for key, value in plan.items() if key not in {"confirmed_at", "accepted_warnings"}}
+            plan["phase"] = "prepared"
+            record.translation_stats_json = json.dumps({**(job.translation_stats or {}), "pdf_conversion": plan}, ensure_ascii=False)
+            record.status, record.message, record.updated_at = JobStatus.awaiting_confirmation.value, message, datetime.now(timezone.utc)
+            session.commit()
+            return _record_to_job(record)
+
     def rollback_translation_confirmation(self, job_id: str, message: str) -> Optional[Job]:
         from sqlalchemy import update
         with self._Session() as session:

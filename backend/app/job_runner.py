@@ -39,6 +39,8 @@ from .domain.translation_input import (
     validate_translation_filename, TranslationInputError,
 )
 from .domain.job_write_fence import job_write_scope, JobWriteConflict
+from .domain.pdf_product import (is_pdf_job, validate_pdf_job, prepare_pdf_artifact,
+                                 copy_prepared_pdf, PdfProductError)
 
 logger = logging.getLogger("epub_factory")
 
@@ -61,6 +63,8 @@ def _build_output_suffix(job) -> str:
       简翻英：  百年孤寂_简体_翻译_en.epub
       简翻英双语：百年孤寂_简体_翻译_en_双语.epub
     """
+    if is_pdf_job(job):
+        return "原文"
     parts: list[str] = []
     if job.output_mode == OutputMode.traditional:
         parts.append("繁体")
@@ -386,6 +390,10 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
     artifact_committed = False
     publication_attempted = False
     try:
+        pdf_job = is_pdf_job(job)
+        pdf_plan = validate_pdf_job(job, OUTPUT_DIR) if pdf_job else None
+        if pdf_job and (not attempt_id or pdf_plan["phase"] not in {"preparing", "confirmed"}):
+            raise PdfProductError("invalid_plan")
         if job.enable_translation:
             ensure_translation_executor_available()
             validate_translation_filename(job.input_path)
@@ -396,7 +404,7 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             if Path(job.input_path).suffix.lower() != ".epub":
                 raise RuntimeError("AI 精校目前仅支持 EPUB 的普通简体转换")
         source_name_raw = Path(job.source_filename).stem
-        source_name = _convert_filename_stem_for_mode(
+        source_name = _safe_output_stem(source_name_raw) if pdf_job else _convert_filename_stem_for_mode(
             source_name_raw,
             job.output_mode,
             getattr(job, "traditional_variant", "auto") or "auto",
@@ -475,6 +483,19 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             record_stage(stage_name, message, elapsed_ms, level=level)
 
         check_cancelled()
+        if pdf_job and pdf_plan["phase"] == "preparing":
+            on_stage("pdf_preparing", "正在准备保留原文的 EPUB；此阶段不创建支付订单")
+            prepared = prepare_pdf_artifact(job, OUTPUT_DIR, cancel_check=is_cancelled)
+            check_cancelled()
+            on_stage("pdf_prepared", "PDF 已完成转换及 EPUB 校验，等待确认")
+            # This commits a private plan and retires this preparation executor
+            # together. Never assign output_path or announce paid completion.
+            # On an ambiguous commit failure retain the private prepared file;
+            # it is not inside output_directory and cannot be deleted below.
+            saved = job_store.finish_pdf_preparation(job.id, attempt_id, lease.owner, prepared)
+            if saved is None:
+                raise JobWriteConflict("PDF 预备结果已被新状态取代，旧执行器停止提交")
+            return
         input_path = Path(job.input_path)
         if input_path.suffix.lower() in [".mobi", ".azw3"]:
             on_progress(f"正在将 {input_path.suffix.upper()[1:]} 格式转换为 EPUB...")
@@ -499,7 +520,10 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                                  existing_stats=job.translation_stats) if (
                                      job.enable_translation or getattr(job, "enable_precision_polish", False)) else nullcontext()
         with accounting:
-            if job.enable_translation:
+            if pdf_job:
+                on_stage("pdf_delivery", "核对并交付已确认的原文 EPUB，不重新解析 PDF")
+                result = copy_prepared_pdf(job, output_path, OUTPUT_DIR, cancel_check=is_cancelled)
+            elif job.enable_translation:
                 from .domain.fast_translation_runner import run_fast_translation_job
                 on_stage("normalizing_input", "统一解析翻译输入，保留已确认的翻译设定")
                 with normalized_translation_input(

@@ -4,6 +4,9 @@
 用于验收「上传、排队、后台、任务中心、通知、下载、失败处理」整条链路。
 """
 
+import argparse
+import re
+import stat
 import subprocess
 import sys
 import os
@@ -29,6 +32,7 @@ D_SUITE = [
     "test_d14_fast_translation_runner.py",
     "test_d15_translation_quality_audit.py",
     "test_d16_translation_qa_service.py",
+    "test_d17_batch_conversion.py",
     "test_d18_paid_translation_regression.py",
     "test_d18_book_profile_strategy.py",
     "test_d19_llm_token_bucket.py",
@@ -111,6 +115,11 @@ D_SUITE = [
     "test_d54_schema_init.py",
     "test_d55_order_review_store.py",
     "test_d55_order_review_api.py",
+    "test_d59_pdf_product.py",
+    "test_d59_pdf_execution.py",
+    "test_d59_pdf_store.py",
+    "test_d59_pdf_checkout.py",
+    "test_d59_pdf_api.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",
@@ -120,6 +129,29 @@ C_SUITE = [
     "test_c5_persistent_store.py",
     "test_c6_glossary_rag.py",
 ]
+
+
+def validated_catalog() -> list[str]:
+    """Validate the entire source catalog without importing any test or app."""
+    scripts = []
+    seen = set()
+    root = ROOT.resolve(strict=True)
+    for name, group in (("D_SUITE", D_SUITE), ("C_SUITE", C_SUITE)):
+        if type(group) is not list:
+            raise ValueError(f"{name} must be a list")
+        for script in group:
+            if type(script) is not str or not re.fullmatch(r"test_[A-Za-z0-9_]+\.py", script):
+                raise ValueError("Catalog entries must be plain test_*.py filenames")
+            if script in seen:
+                raise ValueError(f"Duplicate catalog entry: {script}")
+            path = root / script
+            if not stat.S_ISREG(path.lstat().st_mode) or path.resolve(strict=True).parent != root:
+                raise ValueError(f"Catalog entry must be a regular non-symbolic file: {script}")
+            seen.add(script)
+            scripts.append(script)
+    if not scripts:
+        raise ValueError("The combined regression catalog must not be empty")
+    return scripts
 
 
 def run_one(script: str) -> tuple[bool, str]:
@@ -143,8 +175,19 @@ def run_one(script: str) -> tuple[bool, str]:
     return False, (r.stderr or r.stdout or f"exit {r.returncode}")[-500:]
 
 
-def main():
-    all_scripts = D_SUITE + C_SUITE
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--list", action="store_true", dest="list_only",
+                        help="Validate and print the complete catalog without running tests")
+    args = parser.parse_args(argv)
+    try:
+        all_scripts = validated_catalog()
+    except (OSError, ValueError):
+        print("Invalid regression catalog: expected unique existing regular test_*.py files in backend.", file=sys.stderr)
+        return 2
+    if args.list_only:
+        print("\n".join(all_scripts))
+        return 0
     passed = 0
     failed = []
     for script in all_scripts:
@@ -162,9 +205,10 @@ def main():
     print(f"📊 回归结果: {passed}/{len(all_scripts)} 通过")
     if failed:
         print(f"   失败: {[f[0] for f in failed]}")
-        sys.exit(1)
+        return 1
     print("=" * 60)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

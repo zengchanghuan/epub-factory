@@ -7,6 +7,7 @@ import shutil
 import uuid
 import html as html_lib
 import zipfile
+import hashlib
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -860,6 +861,8 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
     # Payment artifacts are returned only after an explicit, freshly verified
     # continuation request, never as stale links in ordinary polling.
     public_translation_stats.pop("payment_checkout", None)
+    public_translation_stats.pop("pdf_conversion", None)
+    from .domain.pdf_product import public_pdf_summary
     if job.enable_translation or getattr(job, "enable_precision_polish", False):
         public_translation_stats["billing"] = _job_usage_summary(job)
     translation_preflight = public_translation_stats.pop("translation_preflight", None)
@@ -882,6 +885,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "batch_index": getattr(job, "batch_index", 0),
         "batch_size": getattr(job, "batch_size", 0),
         "output_mode": job.output_mode.value,
+        "pdf_conversion": public_pdf_summary(job),
         "device": job.device.value,
         "enable_translation": job.enable_translation,
         "enable_precision_polish": bool(getattr(job, "enable_precision_polish", False)),
@@ -1194,6 +1198,8 @@ async def create_job(
 ):
     import os as _os
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
+    if output_mode == OutputMode.original:
+        raise HTTPException(status_code=400, detail="保留原文模式仅用于单本 PDF 转换入口")
 
     # v1 端点没有接入真实的支付订单校验，禁止从 v1 申请 AI 翻译。
     # 付费翻译统一走 /api/v2/jobs（带支付宝下单 + 异步回调验签）。
@@ -1276,7 +1282,8 @@ def get_job(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="任务不存在")
     if not _authorize_job_access(request, job):
         raise HTTPException(status_code=403, detail="无权访问该任务")
-    public_stats = {key: value for key, value in (job.translation_stats or {}).items() if key != "payment_checkout"}
+    public_stats = {key: value for key, value in (job.translation_stats or {}).items()
+                    if key not in {"payment_checkout", "pdf_conversion"}}
     return {
         "job_id": job.id,
         "trace_id": job.trace_id,
@@ -1318,10 +1325,205 @@ def download_result(
     output_path = Path(job.output_path)
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在")
+    _validate_pdf_download(job, output_path)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
 # ---------- API v2 骨架 ----------
+
+def _pdf_product_enabled() -> bool:
+    """New intake is opt-in; already saved orders never depend on this switch."""
+    enabled = os.environ.get("PDF_TEXT_CONVERSION_ENABLED", "").lower() in {"1", "true", "yes"}
+    test_server = os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in {"1", "true", "yes"}
+    return bool(enabled and getattr(job_store, "_engine", None) is not None
+                and (_use_celery() or test_server))
+
+
+@app.get("/api/v2/capabilities")
+def product_capabilities_v2():
+    return {"pdf_text_conversion": {
+        "enabled": _pdf_product_enabled(), "price_cny": CONVERSION_PRICE_CNY,
+        "max_file_size_mb": min(MAX_FILE_SIZE_MB, 50), "max_pages": 500,
+        "preserves_original": True,
+    }}
+
+
+@app.post("/api/v2/pdf-jobs")
+async def create_pdf_job_v2(
+    request: Request, background_tasks: BackgroundTasks,
+    file: UploadFile = File(...), admin_key: Optional[str] = Form(None),
+):
+    """Persist a bounded, unpaid preparation before dispatching the PDF parser."""
+    if not _pdf_product_enabled():
+        raise HTTPException(status_code=503, detail="文本 PDF 转换入口尚未开放或持久执行服务未就绪")
+    from .domain.pdf_product import new_pdf_plan
+    import hmac
+    # This endpoint has one product, not a second path around translation,
+    # batch, CJK conversion or precision-polish validation.
+    fields = await request.form()
+    if (set(fields) - {"file", "admin_key"} or len(fields.getlist("file")) != 1
+            or len(fields.getlist("admin_key")) > 1):
+        raise HTTPException(status_code=400, detail="此入口仅支持单本 PDF 保留原文转换，不支持翻译、精校或批量")
+    if Path(file.filename or "").suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="请选择一份含可靠文字层的 PDF")
+    position = file.file.tell()
+    prefix = file.file.read(1024)
+    file.file.seek(position)
+    if not is_pdf_header(prefix):
+        raise HTTPException(status_code=400, detail="文件不是有效 PDF")
+    limit = min(MAX_FILE_SIZE_BYTES, 50 * 1024 * 1024)
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > limit + 64 * 1024:
+        raise HTTPException(status_code=413, detail="PDF 文件超过当前大小限制")
+    skip_payment = os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in {"1", "true", "yes"}
+    secret = (os.environ.get("ADMIN_SECRET") or "").strip()
+    admin_test = bool(secret and admin_key and hmac.compare_digest(secret, admin_key.strip()))
+    try:
+        amount = Decimal("0.01" if admin_test else CONVERSION_PRICE_CNY)
+        if not amount.is_finite() or amount <= 0 or amount != amount.quantize(Decimal("0.01")):
+            raise ValueError()
+    except Exception:
+        raise HTTPException(status_code=503, detail="PDF 转换报价配置未就绪") from None
+    job_id = uuid.uuid4().hex[:12]
+    safe_name = _safe_upload_name(file.filename)
+    input_path = UPLOAD_DIR / f"{job_id}-{safe_name}"
+    size, digest = 0, hashlib.sha256()
+    try:
+        fd = os.open(input_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise HTTPException(status_code=503, detail="暂时无法保存 PDF，请稍后重试") from None
+    try:
+        with os.fdopen(fd, "wb") as output:
+            while block := file.file.read(1024 * 1024):
+                size += len(block)
+                if size > limit:
+                    raise HTTPException(status_code=413, detail="PDF 文件超过当前大小限制")
+                digest.update(block)
+                output.write(block)
+            output.flush()
+            os.fsync(output.fileno())
+        if not size:
+            raise HTTPException(status_code=400, detail="PDF 文件为空")
+        try:
+            admitted = rate_limiter.reserve_pdf_preparation(
+                get_real_ip(request),
+                per_ip_limit=int(os.environ.get("PDF_PREPARATION_PER_IP_DAILY", "3")),
+                total_limit=int(os.environ.get("PDF_PREPARATION_TOTAL_DAILY", "100")),
+            )
+        except Exception:
+            raise HTTPException(status_code=503, detail="PDF 预处理资源配额暂不可用，请稍后重试") from None
+        if not admitted:
+            raise HTTPException(status_code=429, detail="今日 PDF 预处理配额已用完，请稍后再试；尚未收取费用")
+        plan = new_pdf_plan(digest.hexdigest(), size, f"{amount:.2f}")
+    except BaseException:
+        input_path.unlink(missing_ok=True)
+        raise
+    user = get_current_user_optional(request)
+    job = Job(
+        id=job_id, source_filename=safe_name, input_path=str(input_path),
+        output_mode=OutputMode.original, trace_id=uuid.uuid4().hex,
+        access_token=uuid.uuid4().hex,
+        token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
+        creator_ip=get_real_ip(request), creator_session=_get_client_session(request) or uuid.uuid4().hex,
+        user_id=user.id if user else None, expected_amount=f"{amount:.2f}",
+        is_test_order=admin_test or skip_payment, status=JobStatus.pending,
+        message="PDF 已保存，正在准备并校验 EPUB；尚未收费，可稍后在任务中心继续",
+        translation_stats={"attempt_id": f"pdf-prepare-{uuid.uuid4().hex}", "pdf_conversion": plan},
+    )
+    try:
+        job_store.add(job)  # Same transaction records the durable preparation intent.
+    except Exception:
+        # A lost acknowledgement may follow a committed insert; preserve its
+        # source on uncertainty instead of creating a saved job with no file.
+        try:
+            if job_store.get(job.id) is None:
+                input_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="任务保存状态暂不可确认，请稍后查看任务中心") from None
+    try:
+        await asyncio.to_thread(_enqueue_conversion, job, background_tasks)
+    except Exception as exc:
+        logger.warning("PDF preparation saved; dispatch will retry (%s)", type(exc).__name__)
+    response = _job_to_v2_detail(job, None)
+    response.update(access_token=job.access_token, pay_url=None, qr_code=None)
+    return response
+
+
+@app.post("/api/v2/jobs/{job_id}/confirm-conversion")
+def confirm_pdf_conversion_v2(job_id: str, payload: dict[str, Any], request: Request,
+                              background_tasks: BackgroundTasks):
+    from .domain.pdf_product import confirm_pdf_plan, validate_pdf_job, PdfProductError
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    _require_checkout_access(request, job)
+    if set(payload) != {"plan_id", "accepted_warnings"}:
+        raise HTTPException(status_code=400, detail="请确认当前 PDF 转换计划及全部已披露提示")
+    if job.status != JobStatus.awaiting_confirmation:
+        raise HTTPException(status_code=409, detail="转换计划已确认或状态已变化，请刷新后查看")
+    try:
+        confirmed = confirm_pdf_plan(job, OUTPUT_DIR, payload["plan_id"], payload["accepted_warnings"])
+    except PdfProductError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    skip_payment = os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in {"1", "true", "yes"}
+    pay_url, checkout = None, None
+    try:
+        if not skip_payment:
+            # Page-pay only signs a URL locally. No payment URL is exposed
+            # before the complete frozen plan/checkout is atomically saved.
+            pay_url = create_alipay_page_pay(
+                out_trade_no=job.id, total_amount=job.expected_amount,
+                subject=f"PDF 转 EPUB（保留原文） - {job.source_filename[:45]}",
+                return_url=f"https://fixepub.com/?job_id={job.id}",
+            )
+            checkout = checkout_snapshot(job.id, job.expected_amount, pay_url=pay_url,
+                                         created_at=datetime.now(timezone.utc))
+        # Signing may be slow or fail. Recheck the files immediately before
+        # the CAS; a process crash before it leaves the original prepared plan.
+        validate_pdf_job(job, OUTPUT_DIR, require_billable=True)
+        refreshed = job_store.confirm_pdf_conversion(
+            job.id, plan_id=payload["plan_id"], confirmed_plan=confirmed,
+            status=JobStatus.pending if skip_payment else JobStatus.pending_payment,
+            message="转换计划已确认，等待交付" if skip_payment else "EPUB 已校验，请完成支付以获取文件",
+            payment_checkout=checkout, allow_test_bypass=skip_payment,
+        )
+        if refreshed is None:
+            raise HTTPException(status_code=409, detail="转换计划已确认或状态已变化，请刷新后查看")
+        current = job_store.get(job.id)
+        if (not current or current.status != refreshed.status
+                or current.translation_stats.get("attempt_id") != refreshed.translation_stats.get("attempt_id")):
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后查看；请勿重复付款")
+        validate_pdf_job(current, OUTPUT_DIR, require_confirmed=True, require_billable=True)
+    except PdfProductError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # A lost commit acknowledgement may already be durable. Never roll it
+        # back or manufacture a fresh order; refresh/continue-payment recover it.
+        logger.warning("PDF checkout confirmation unavailable (%s)", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="确认结果暂不可用，请刷新任务状态；请勿重复付款") from None
+    if skip_payment:
+        try:
+            _enqueue_conversion(refreshed, background_tasks)
+        except Exception as exc:
+            logger.warning("PDF test delivery saved; dispatch will retry (%s)", type(exc).__name__)
+    response = _job_to_v2_detail(refreshed, None)
+    response.update(pay_url=pay_url, qr_code=None, amount=refreshed.expected_amount)
+    return response
+
+
+def _validate_pdf_download(job: Job, output_path: Path) -> None:
+    from .domain.pdf_product import is_pdf_job, validate_pdf_delivery, PdfProductError
+    if is_pdf_job(job):
+        try:
+            validate_pdf_delivery(job, output_path)
+        except PdfProductError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
 
 def _prepare_translation_request(*, input_path, source_name, job_id, target_lang,
                                  translation_model, translation_quality,
@@ -1406,6 +1608,8 @@ async def create_job_v2(
     """
     import os as _os
     import hmac as _hmac
+    if output_mode == OutputMode.original:
+        raise HTTPException(status_code=400, detail="保留原文模式仅用于单本 PDF 转换入口")
     _skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
     # 管理员测试价：admin_key 匹配 ADMIN_SECRET 时，所有价格强制覆盖为 0.01
     _admin_secret = (_os.environ.get("ADMIN_SECRET") or "").strip()
@@ -2161,6 +2365,9 @@ async def create_batch_v2(
     import hmac as _hmac
     from decimal import Decimal
 
+    if output_mode == OutputMode.original:
+        raise HTTPException(status_code=400, detail="保留原文模式不支持批量转换")
+
     if len(files) < 2:
         raise HTTPException(status_code=400, detail="批量模式至少需要选择 2 个文件")
     if len(files) > BATCH_MAX_FILES:
@@ -2430,6 +2637,7 @@ def _get_polish_tier_label(char_count: int) -> str:
 @app.get("/api/v2/jobs")
 def list_jobs_v2(request: Request, limit: int = 100):
     """获取任务中心列表（v2）：登录用户按 user_id 查，匿名用户按 session/IP 查。"""
+    from .domain.pdf_product import public_pdf_summary
     current_user = get_current_user_optional(request)
     user_list_fn = getattr(job_store, "list_jobs_by_user_id", None)
     session_list_fn = getattr(job_store, "list_jobs_by_creator_session", None)
@@ -2454,6 +2662,8 @@ def list_jobs_v2(request: Request, limit: int = 100):
             "status": _job_to_v2_status(j),
             "message": j.message,
             "source_filename": j.source_filename,
+            "output_mode": j.output_mode.value,
+            "pdf_conversion": public_pdf_summary(j),
             "batch_id": getattr(j, "batch_id", "") or None,
             "batch_index": getattr(j, "batch_index", 0),
             "batch_size": getattr(j, "batch_size", 0),
@@ -2504,6 +2714,7 @@ def download_result_v2(
     output_path = Path(job.output_path)
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在")
+    _validate_pdf_download(job, output_path)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
@@ -2521,6 +2732,7 @@ def preview_book_v2(job_id: str, request: Request, chapter: int = 0):
         raise HTTPException(status_code=415, detail="此结果不支持 EPUB 预览，请下载查看")
     if not output.is_file():
         raise HTTPException(status_code=404, detail="结果文件不存在")
+    _validate_pdf_download(job, output)
     try:
         return build_book_preview(output, chapter)
     except IndexError:
@@ -3430,7 +3642,7 @@ def _continue_existing_checkout(request: Request, job: Job, *, batch_id=None):
             raise CheckoutUnavailable("支付宝订单已关闭，请勿再次付款")
         if not is_payable(latest):
             return payload(latest)
-        require_open_checkout(latest)
+        require_open_checkout(latest, artifact_root=OUTPUT_DIR)
         checkout = original_checkout(latest[0], order_no, amount)
         subject = (f"EPUB 批量转换服务 - {len(latest)} 个文件" if batch_id else
                    f"EPUB {'AI 翻译' if job.enable_translation else '格式转换'}服务 - {job.source_filename[:50]}")
@@ -3452,7 +3664,7 @@ def _continue_existing_checkout(request: Request, job: Job, *, batch_id=None):
             return payload(current)
         if frozen_amount(current[0]) != amount:
             raise CheckoutUnavailable("原订单报价已变化，请联系客服核验；请勿再次付款")
-        require_open_checkout(current)
+        require_open_checkout(current, artifact_root=OUTPUT_DIR)
         if original_checkout(current[0], order_no, amount) != checkout:
             raise CheckoutUnavailable("原支付通道已变化，请刷新状态后重试；请勿再次付款")
         return payload(current, pay_url=pay_url, qr_code=qr_code)

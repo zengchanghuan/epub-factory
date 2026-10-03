@@ -2,7 +2,7 @@
 title: EPUB Factory 当前代码架构
 status: current
 updated: 2026-10-02
-code_revision: 1970d76 (D55 pushed, not deployed)
+code_revision: d660b20 + uncommitted D56-D59 and CI catalog work
 scope: local-code-and-offline-verification
 ---
 
@@ -10,11 +10,11 @@ scope: local-code-and-offline-verification
 
 本文依据上述提交的本地代码与离线核验，描述实际接通的调用链，不代表已经核验生产配置或部署版本。历史设计见 [AI 翻译设计](AI-TRANSLATION-DESIGN.md)，本轮缺陷与改进顺序见 [架构审查：2026-10-01](ARCHITECTURE-REVIEW-2026-10-01.md)。
 
-R1–R11 及历史导航/表格兼容修复已提交并推送至 `9c8cac6`，尚未部署。包括付款权益、attempt 隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、旧执行器写入和成品保护、书籍与维护任务分队列、独立修复的跨进程隔离，以及三个工具页复用主页统一结账。以下主链路另包含本次交付的 R12：所有模型阶段统一实际请求边界、持久预分析预算与去重；最新门禁与未验证边界见 [逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
+历史检查点：R1–R11及导航/表格兼容修复曾推送至`9c8cac6`并等待部署；后续R12/R13及发布情况以下方维护记录为准。代码已包含付款权益、attempt隔离、转换附加精校、统一翻译入口、持久投递、迟到付款、失联恢复、成品保护、队列隔离、独立修复隔离和统一工具结账。所有模型阶段经R12统一实际请求边界、持久预分析预算与去重；门禁与未验证边界见[逐项优化记录](ARCHITECTURE-OPTIMIZATION-2026-10-01.md)。
 
 当前形态是**模块化单体 API + 整本 Celery 任务 + Worker 内章节并发**；独立 EPUB 修复仍在 API 进程内执行。图中的虚线表示条件启用或旁路调用，不表示已经完成分布式改造。
 
-PDF 公共入口仍拒绝输入；[PDF 翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md) 与图片像素 OCR/重绘均为规划，不属于已实现能力。
+2026-10-03 当前代码：文本 PDF 适配器 B2 和 D59 独立单本“保留原文”产品链均已通过真书及历史 EPUB 本地验收，复用任务、支付、执行租约及鉴权下载，不另建任务系统。`/api/v2/pdf-jobs` 与前端能力开关默认关闭，普通入口仍拒绝 PDF。准备结果与价格冻结后确认，付款后交付同一成品，不重新解析。详见[逐项验收记录](REMAINING-OPTIMIZATION-2026-10-02.md)。完整[PDF翻译技术架构](PDF-TRANSLATION-ARCHITECTURE.md)及图片像素OCR/重绘仍未交付；以下旧交付节点保留历史语境。
 
 2026-10-02 最新状态：R13、报价与续付修复以及基础设施迁移已部署，随后提交推送 `2e65889`，见 [顺序验收与生产证据](INFRA-AND-PDF-EXECUTION-2026-10-02.md)。上面的 R1–R12 交付段落及下文各项“未部署”是当时历史检查点，不代表当前生产状态。其后 D55 异常订单人工处理已提交推送 `1970d76`，尚未部署。隔离回归工具不改变业务架构；第二台 Mac 实测按用户要求延期。用户要求 PDF 只处理可靠文本层，当前仍未接通、未开放入口；图片像素 OCR、翻译与重绘继续暂缓，图片保持原样。
 
@@ -25,7 +25,8 @@ flowchart TB
   SEO["三个静态工具介绍页<br/>翻译 / 竖转横 / 繁转简"] -->|"同源入口预设或旧任务链接"| U["浏览器主页 index.html<br/>统一上传 / 付款 / 恢复 / 下载"]
   U --> API["FastAPI 单体<br/>上传 / 确认 / 支付 / 任务 / 下载<br/>账号 / 看板 / 反馈"]
   API --> Preflight["API 侧输入归一化 / 报价 / 可选预分析<br/>画像 / 术语 / 角色 / 文体策略"]
-  Preflight --> LLM["OpenAI 兼容模型接口<br/>DeepSeek 优先 / 配置后备路由"]
+  Preflight --> Gateway["统一 LLM 实际请求边界（R12）<br/>延迟创建请求 / 配额与预算 / 用量记账"]
+  Gateway --> LLM["OpenAI 兼容模型接口<br/>DeepSeek 优先 / 配置后备路由"]
   API <-->|"下单 / 验签回调 / 主动查单"| Pay["支付宝"]
   API --> Store["JobStore<br/>SQLAlchemy：SQLite / 可配置 PostgreSQL<br/>任务 / 阶段 / 统计 / 邮件与投递 outbox"]
   API --> AdminReview["管理员人工处理（D55，本地）<br/>会话 + CSRF / 版本与上下文校验<br/>新鲜验款后履约 / 仅登记外部已完成退款"]
@@ -45,8 +46,8 @@ flowchart TB
   Normalize --> Fast["统一 AI 翻译执行器<br/>fast_translation_runner<br/>进程内 asyncio 章节并发"]
   Runner --> Standard["普通格式转换<br/>EpubConverter → ExtremeCompiler"]
   Fast --> Translator["SemanticsTranslator<br/>批处理 / 缓存 / QA / 重试"]
-  Translator --> LLM
-  Translator -.-> Guard["可选 Redis 令牌桶 / 路由健康<br/>默认关闭，非全部 LLM 阶段覆盖"]
+  Translator --> Gateway
+  Gateway -.-> Guard["可选 Redis 令牌桶 / 路由健康<br/>覆盖统一网关内全部模型阶段<br/>默认关闭，真实 RPM/TPM 另验收"]
   Fast --> Cache["本地 SQLite<br/>翻译缓存 / 准备与 chunk 检查点"]
   Translator --> Cache
   Fast --> Reduce["本地 reduce_work<br/>回写 / TOC / 打包 / EPUBCheck"]
@@ -55,8 +56,7 @@ flowchart TB
   Gate --> Files["本地 uploads / outputs<br/>每执行器独占目录，成功事务发布路径"]
   Runner --> Fence["存储写入守卫<br/>running + attempt + execution owner<br/>父任务锁 / 条件更新"]
   Fence --> Store
-  Preflight --> Ledger["逐请求费用账本<br/>与主库共用 SQLAlchemy engine"]
-  Translator --> Ledger
+  Gateway --> Ledger["逐请求费用账本<br/>与主库共用 SQLAlchemy engine"]
   API --> Repair["独立修复 API<br/>RepairRepository：最新读取 + 文件事务"]
   Repair --> RepairStore["共享本机 REPAIR_UPLOAD_DIR<br/>order.json：paid 持久等待 / 冻结金额"]
   RepairWorker["API 内修复支付轮询线程<br/>全局网关锁及预算 / 恢复已付"] -->|"查单"| Pay
@@ -81,20 +81,22 @@ FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本�
 | EPUB、MOBI/AZW3、DOCX、Markdown 输入 | 普通转换支持；MOBI/AZW3 依赖 Calibre，AI 翻译须先转 EPUB |
 | 繁简转换、横排处理、批量转换 | 已接主任务；批量不包含 AI 翻译和 AI 精校 |
 | 翻译画像、术语、角色、用户确认 | EPUB/DOCX/Markdown 经同一归一化边界接支付前预分析 |
-| 高质量复核、文学编辑与原文语义回查 | 上述支持的翻译格式统一进入原快路径；R4 已通过离线/历史门禁，未部署 |
+| 高质量复核、文学编辑与原文语义回查 | 上述支持的翻译格式统一进入原快路径；R4离线/历史门禁通过，语义质量不由结构测试推断 |
 | HTML caption、解释型脚注/尾注 | 已接翻译；纯引用按规则保留 |
 | 翻译缓存、检查点、费用账本、成品 QA | 已实现；恢复和交付的已知缺口见本轮审查 |
 | 全局 Redis RPM/TPM 与健康路由 | 所有实际模型请求共用调用边界；Redis 配额仍需显式启用，默认关闭；启用后的配额故障默认拒绝新增请求 |
-| 转换附加 AI 精校 | 基线只有报价开关；工作区 R3 已接独立 domain 步骤、权益及交付门禁，历史和专项验收通过，尚未部署 |
-| 付款到主任务队列的可靠投递 | 工作区 R5：状态与投递意图同事务，独立分发器补发；需持久库与 Broker，不包含独立修复产品流 |
-| 超时关闭与迟到付款 | 工作区 R6：有网关关闭证据才本地关闭；实付到期单恢复，用户取消转可见人工处理，不自动退款 |
-| Worker 失联及未开始恢复 | 工作区 R7：持久心跳、同租约限次恢复及延迟补投；需要持久库与 Broker |
-| 旧执行器写入与成品保护 | 工作区 R8：父任务锁内 attempt/owner 守卫、独占成品目录及提交未知时保守清理；专项和历史门禁通过，未部署 |
-| 长短任务队列隔离 | 工作区 R9：整书保留 `celery`；对账/余额/ping 使用 `housekeeping`，独立消费者与启动门禁；尚未部署 |
-| 独立修复多进程一致性与有界执行 | 本地 R10：共享本机目录事务、全局槽、付款扫描恢复、owner 成品提交；未入主 JobStore/Celery，未部署 |
-| 三个工具页的结账与任务入口 | 本地 R11：静态专用模板生成介绍页，共享适配器只负责同源导航；不再独立上传、PayPal 支付或轮询 |
+| 转换附加 AI 精校 | R3独立domain步骤、权益及交付门禁已接通，历史和专项验收通过 |
+| 付款到主任务队列的可靠投递 | R5：状态与投递意图同事务，独立分发器补发；需持久库与Broker，不包含独立修复产品流 |
+| 超时关闭与迟到付款 | R6：有网关关闭证据才本地关闭；实付到期单恢复，用户取消转可见人工处理，不自动退款 |
+| Worker 失联及未开始恢复 | R7：持久心跳、同租约限次恢复及延迟补投；需要持久库与Broker |
+| 旧执行器写入与成品保护 | R8：父任务锁内attempt/owner守卫、独占成品目录及提交未知时保守清理；专项和历史门禁通过 |
+| 长短任务队列隔离 | R9：整书保留`celery`；对账/余额/ping使用`housekeeping`，独立消费者与启动门禁 |
+| 独立修复多进程一致性与有界执行 | R10：共享本机目录事务、全局槽、付款扫描恢复、owner成品提交；仍未入主JobStore/Celery |
+| 三个工具页的结账与任务入口 | R11：静态专用模板生成介绍页，共享适配器只负责同源导航；不再独立上传、PayPal支付或轮询 |
+| 缓存报价与继续支付恢复 | D52报价快照保持历史金额、不虚构缓存折扣；D53原订单/金额/支付通道续付，精确缓存折扣另行设计 |
 | Celery 分布式章节执行 | 存在另一章节任务入口，未接整书主链 |
-| PDF 翻译、图片像素 OCR 与重绘 | 尚未实现/未开放，不画入执行链 |
+| PDF本地预检与原始结构映射 | D56-A及D57/B1已通过用户346页真书回归；独立CLI，不接公开产品链、不代表段落或图片完整重建 |
+| PDF翻译、图片像素OCR与重绘 | PDF公开翻译未实现/未开放；图片像素处理按用户要求暂缓 |
 
 ### 1.2 统一工具入口（R11）
 
@@ -103,7 +105,7 @@ FastAPI 挂载静态前端，可同源提供页面与 API；仓库部署脚本�
 - 旧 `job_id / batch_id` 链接跳转固定同源主页，现有本机任务授权保持；`access_token` 仍在 fragment，经主页原有导入器存储后移除，不搬到 query。批次/任务恢复优先，不因入口重新下单。
 - 主页先捕获已恢复的表单/文件，再按既有路径恢复任务；默认初始化后仅应用一次入口预设。已有任务、文件或用户设置不被预设覆盖，消费后的 `tool` 不随任务链接传播。`view=tasks` 只打开任务中心。
 - 适配器加载失败时，介绍页原生链接仍可进入主页，主页自身不因适配器缺失而停止初始化。禁用 JS 时不承诺 token 自动恢复，页面提示用原浏览器进入主页任务中心；没有任何旧支付组件回退。
-- 本项不修改后端订单、费率、任务或 QA 规则。原有主页的未付任务刷新只恢复状态及主动查单，不会重新签发丢失的付款链接；需要继续支付的恢复 UI 仍是独立后续项，不能据本项声称已经补齐。
+- R11当时不修改后端订单、费率、任务或QA，也未补签丢失的付款链接；该边界不能代表当前代码。后续D53已独立实现[原订单继续支付恢复](ARCHITECTURE-FOLLOWUP-2026-10-02.md)，仍保留金额/通道及权益，不重新下单。
 
 ## 2. 任务生命周期与 attempt 隔离
 

@@ -303,7 +303,7 @@ def _read_events(path):
 def _synthetic_fixture(snapshot):
     # This old fixture name is ignored by Git and may be a user's actual book.
     # Always synthesize locally; never read or copy its workspace counterpart.
-    with zipfile.ZipFile(snapshot / "backend/test_en.epub", "w") as archive:
+    with zipfile.ZipFile(snapshot / "backend/test_en.epub", "x") as archive:
         archive.writestr("mimetype", "application/epub+zip")
         archive.writestr("META-INF/container.xml", '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
         archive.writestr("EPUB/package.opf", '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">release-gate-synthetic</dc:identifier><dc:title>Synthetic fixture</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-02T00:00:00Z</meta></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="style" href="style.css" media-type="text/css"/></manifest><spine><itemref idref="chapter"/></spine></package>')

@@ -39,11 +39,10 @@ jobs:
 
       - name: Run offline regression in container
         # 在与生产一致的镜像里跑回归，挡住「依赖/Python/翻译逻辑」漂移。
-        # 排除项及原因：
-        #   - c4_bilingual / c6_glossary_rag：需真实 LLM 调用与外网，CI 无密钥
-        #   - d1_celery_bootstrap / d4_celery_job_pipeline：依赖 Redis broker
+        # 与本地读取同一份 D/C 清单。D1/D4/C4/C6 均为离线边界测试。
+        # 此容器禁网；实际 Redis 验证保留在下面的独立步骤。
         run: |
-          docker run --rm \
+          docker run --rm --network none \
             -e OPENAI_API_KEY=dummy \
             -e DATABASE_URL=sqlite:////tmp/ci.db \
             -e SENTRY_DSN= \
@@ -51,103 +50,14 @@ jobs:
             epub-factory:ci \
             bash -lc '
               set -e
-              SUITE="
-                test_d2_task_data_models
-                test_d3_api_v2_skeleton
-                test_d5_stage_events
-                test_d6_manifest
-                test_d7_translate_chapter
-                test_d8_reduce
-                test_d9_book_reduce
-                test_d10_status_resolver
-                test_d11_notifications
-                test_d12_translation_enhancement
-                test_d13_regression
-                test_d14_fast_translation_runner
-                test_d15_translation_quality_audit
-                test_d16_translation_qa_service
-                test_d17_batch_conversion
-                test_d20_checkout_webhook
-                test_d19_order_admin
-                test_d18_paid_translation_regression
-                test_d20_translation_confirmation
-                test_d21_real_order_recovery
-                test_d23_flash_alias
-                test_d29_translation_performance
-                test_d30_corpus_fixes
-                test_d31_input_integrity
-                test_d31_epub_validation
-                test_d31_reduce_index
-                test_d32_resource_repair
-                test_d32_source_warning_flow
-                test_d32_literal_code_preservation
-                test_d33_repair_pricing
-                test_d34_completion_email
-                test_d34_email_api
-                test_d35_payment_email
-                test_d35_payment_hooks
-                test_d35_payment_reconcile
-                test_d36_alipay_verification
-                test_d36_repair_checkout
-                test_d37_payment_entitlement
-                test_d38_navigation_compat
-                test_d38_navigation_packaging
-                test_d39_table_compat
-                test_d40_reduce_isolation
-                test_d40_rescue_identity
-                test_d41_precision_polish
-                test_d41_precision_contract
-                test_d42_translation_input
-                test_d42_translation_contract
-                test_d43_dispatch_store
-                test_d43_dispatch_service
-                test_d43_dispatch_publisher
-                test_d43_dispatch_contract
-                test_d43_dispatch_execution
-                test_d44_alipay_close
-                test_d44_payment_lifecycle_store
-                test_d44_payment_lifecycle_contract
-                test_d44_payment_reconcile
-                test_d45_execution_store
-                test_d45_execution_runtime
-                test_d45_recovery_service
-                test_d45_worker_process
-                test_d45_execution_resume
-                test_d45_worker_db
-                test_d45_unstarted_dispatch
-                test_d46_write_fence_store
-                test_d46_write_fence_contract
-                test_d46_execution_fence
-                test_d47_queue_routing
-                test_d47_queue_process
-                test_d47_worker_control
-                test_d47_worker_environment
-                test_d48_repair_repository
-                test_d48_repair_executor
-                test_d48_repair_contract
-                test_d50_llm_gateway
-                test_d50_llm_limiter
-                test_d50_llm_callers
-                test_d50_preflight_admission
-                test_d51_notification_store
-                test_d51_notification_api
-                test_d51_auth_config
-                test_d52_translation_quote
-                test_d52_quote_contract
-                test_d53_checkout_gateway
-                test_d53_checkout_contract
-                test_d54_schema_init
-                test_d55_order_review_store
-                test_d55_order_review_api
-                test_c1_typography_and_fallback
-                test_c2_pipeline_metrics
-                test_c3_stem_guard
-                test_c5_persistent_store
-              "
+              SUITE=$(python run_regression.py --list)
+              # A fresh synthetic fixture prevents C1/C2/C3 silently doing no work.
+              # This is not a customer-book regression; real books stay private/local.
+              python ../scripts/prepare-ci-fixture.py --root /app
               fail=0
               for t in $SUITE; do
                 echo "=== $t ==="
-                python "$t.py" || fail=1
+                python "$t" || fail=1
               done
               python ../scripts/test_configure_email.py || fail=1
               python ../scripts/test_configure_alipay_public_key.py || fail=1
@@ -158,6 +68,16 @@ jobs:
               python ../scripts/test_deploy_lock.py || fail=1
               python ../scripts/test_release_runtime.py || fail=1
               python ../scripts/test_release_gate.py || fail=1
+              python ../scripts/test_regression_catalog.py || fail=1
+              python ../scripts/test_artifact_retention.py || fail=1
+              # Its parser child deliberately uses -I and its own network guard.
+              # Keep this diagnostic contract outside the inherited release guard.
+              python test_d56_pdf_text_preflight.py || fail=1
+              python test_d57_pdf_text_ir.py || fail=1
+              python test_d58_pdf_image_assets.py || fail=1
+              python test_d58_pdf_reflow.py || fail=1
+              python test_d58_pdf_epub_validation.py || fail=1
+              python test_d58_pdf_conversion.py || fail=1
               exit $fail
             '
 

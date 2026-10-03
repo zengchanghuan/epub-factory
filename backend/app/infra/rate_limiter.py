@@ -10,7 +10,7 @@ IP 日限流器（SQLite 持久化）
 import ipaddress
 import os
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Lock
 
@@ -105,6 +105,33 @@ class RateLimiter:
                 (ip, today),
             )
             conn.commit()
+
+    def reserve_pdf_preparation(self, ip: str, *, per_ip_limit=3, total_limit=100) -> bool:
+        """Bound pre-payment parsing, atomically across API processes.
+
+        This is a resource admission budget, not a free purchase entitlement.
+        Failed/cancelled parsing still consumes it; checkout restoration does not.
+        """
+        if (type(per_ip_limit) is not int or not 1 <= per_ip_limit <= 100
+                or type(total_limit) is not int or not 1 <= total_limit <= 10_000):
+            raise ValueError("Invalid PDF preparation admission budget")
+        today = datetime.now(timezone.utc).date().isoformat()
+        import hashlib
+        principal = hashlib.sha256(str(ip).encode()).hexdigest()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("CREATE TABLE IF NOT EXISTS pdf_preparation_usage "
+                         "(principal TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL, "
+                         "PRIMARY KEY (principal, day))")
+            for key, limit in ((principal, per_ip_limit), ("global", total_limit)):
+                row = conn.execute("SELECT count FROM pdf_preparation_usage WHERE principal=? AND day=?",
+                                   (key, today)).fetchone()
+                if row and row[0] >= limit:
+                    return False
+            for key in (principal, "global"):
+                conn.execute("INSERT INTO pdf_preparation_usage VALUES (?, ?, 1) "
+                             "ON CONFLICT(principal, day) DO UPDATE SET count=count+1", (key, today))
+            return True
 
 
 def get_real_ip(request) -> str:

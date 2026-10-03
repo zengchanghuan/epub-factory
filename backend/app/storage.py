@@ -411,6 +411,175 @@ class JobStore:
             job.updated_at = datetime.now(timezone.utc)
             return deepcopy(job)
 
+    def finish_pdf_preparation(self, job_id, attempt_id, owner, prepared_plan) -> Optional[Job]:
+        """Fence preparation completion and retire its execution in one lock."""
+        from .domain.dispatch_intent import dispatch_identity
+        from .domain.pdf_product import validate_pdf_plan, validate_pdf_job_plan
+        with self._lock:
+            job = self._jobs.get(job_id)
+            row = self._executions.get(dispatch_identity(job_id, attempt_id))
+            if (not job or job.status != JobStatus.running or execution_identity(job) != attempt_id
+                    or not owner or not row or row["state"] != "running" or row["owner"] != owner):
+                return None
+            try:
+                current = validate_pdf_plan(validate_pdf_job_plan(job), phase="preparing")
+                prepared = validate_pdf_plan(prepared_plan, phase="prepared")
+            except ValueError:
+                return None
+            if (any(current[key] != prepared[key] for key in ("source_sha256", "source_bytes", "amount"))
+                    or prepared["amount"] != job.expected_amount):
+                return None
+            now = datetime.now(timezone.utc)
+            job.translation_stats = {**(job.translation_stats or {}), "pdf_conversion": prepared}
+            job.status, job.message = JobStatus.awaiting_confirmation, "PDF 已完成转换与结构校验，请确认后付款"
+            job.output_path, job.error_code, job.updated_at = None, None, now
+            row.update(state="finished", owner="", heartbeat_at=timestamp(now))
+            return deepcopy(job)
+
+    def confirm_pdf_conversion(self, job_id, *, plan_id, confirmed_plan, status, message,
+                               payment_checkout=None, allow_test_bypass=False) -> Optional[Job]:
+        """Commit a frozen checkout without a crash-stranded confirming state.
+
+        The caller signs the local payment URL and verifies retained files
+        before this CAS. Only explicit server test authority can enqueue free
+        delivery; its entitlement and outbox are committed with the plan.
+        """
+        from .domain.pdf_product import validate_pdf_plan, pdf_plan_identity, validate_pdf_job_plan
+        from .domain.payment_entitlement import manual_payment_guard, quote_entitlement
+        from .domain.checkout_resume import original_checkout, checkout_created_at
+        if type(allow_test_bypass) is not bool or status not in {JobStatus.pending, JobStatus.pending_payment}:
+            return None
+        if (status == JobStatus.pending) != allow_test_bypass:
+            return None
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if (not job or job.status != JobStatus.awaiting_confirmation or manual_payment_guard(job)
+                    or (job.payment_resolution or {}).get("state") in {"paid", "closed"}
+                    or "payment_checkout" in (job.translation_stats or {})
+                    or (allow_test_bypass and (job.is_test_order is not True or payment_checkout is not None))):
+                return None
+            try:
+                current = validate_pdf_plan(validate_pdf_job_plan(job), phase="prepared")
+                confirmed = validate_pdf_plan(confirmed_plan, phase="confirmed")
+            except ValueError:
+                return None
+            if (current["plan_id"] != plan_id or confirmed["plan_id"] != plan_id
+                    or pdf_plan_identity(current) != pdf_plan_identity(confirmed)
+                    or current["amount"] != job.expected_amount):
+                return None
+            entitlement = deepcopy(job.payment_entitlement or {})
+            if entitlement and (entitlement.get("order_no") != job.id
+                                or entitlement.get("amount") != job.expected_amount
+                                or entitlement.get("state") not in {"quoted", "test_authorized"}
+                                or (entitlement.get("state") == "test_authorized"
+                                    and (not allow_test_bypass or entitlement.get("source") != "server_test_bypass"))):
+                return None
+            stats = deepcopy(job.translation_stats or {})
+            stats.update(pdf_conversion=confirmed, attempt_id=uuid.uuid4().hex)
+            if allow_test_bypass:
+                entitlement = {**entitlement, **quote_entitlement(job, test_bypass=True)}
+            else:
+                if payment_checkout is None:
+                    return None
+                stats["payment_checkout"] = deepcopy(payment_checkout)
+                try:
+                    candidate = replace(job, translation_stats=stats)
+                    original_checkout(candidate, job.id, job.expected_amount)
+                    checkout_created_at(candidate)
+                except ValueError:
+                    return None
+            dispatch = self._prepare_dispatch_locked(replace(job, translation_stats=stats)) if allow_test_bypass else None
+            if dispatch:
+                stats, intent = dispatch
+                self._dispatches.setdefault(intent["dispatch_id"], intent)
+            job.translation_stats, job.payment_entitlement = stats, entitlement
+            job.status, job.message, job.updated_at = status, message, datetime.now(timezone.utc)
+            job.output_path = None
+            return deepcopy(job)
+
+    def begin_pdf_confirmation(self, job_id, *, plan_id, confirmed_plan) -> Optional[Job]:
+        """Claim this exact prepared artifact; delivery gets a fresh attempt."""
+        from .domain.pdf_product import validate_pdf_plan, pdf_plan_identity, validate_pdf_job_plan
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.awaiting_confirmation:
+                return None
+            try:
+                current = validate_pdf_plan(validate_pdf_job_plan(job), phase="prepared")
+                confirmed = validate_pdf_plan(confirmed_plan, phase="confirmed")
+            except ValueError:
+                return None
+            if (current["plan_id"] != plan_id or confirmed["plan_id"] != plan_id
+                    or pdf_plan_identity(current) != pdf_plan_identity(confirmed)
+                    or current["amount"] != job.expected_amount):
+                return None
+            job.translation_stats = {**(job.translation_stats or {}), "pdf_conversion": confirmed,
+                                     "attempt_id": uuid.uuid4().hex}
+            job.status, job.message = JobStatus.confirming, "正在创建支付订单..."
+            job.output_path, job.updated_at = None, datetime.now(timezone.utc)
+            return deepcopy(job)
+
+    def finish_pdf_confirmation(self, job_id, *, attempt_id, status, message,
+                                payment_checkout=None) -> Optional[Job]:
+        from .domain.pdf_product import validate_pdf_plan, validate_pdf_job_plan
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if (not job or job.status != JobStatus.confirming or execution_identity(job) != attempt_id
+                    or status not in {JobStatus.pending, JobStatus.pending_payment}
+                    or (status == JobStatus.pending and not job.is_test_order)):
+                return None
+            entitlement = job.payment_entitlement or {}
+            if status == JobStatus.pending and not (
+                    entitlement.get("state") == "test_authorized"
+                    and entitlement.get("source") == "server_test_bypass"
+                    and entitlement.get("order_no") == job.id
+                    and entitlement.get("amount") == job.expected_amount):
+                return None
+            try:
+                plan = validate_pdf_plan(validate_pdf_job_plan(job), phase="confirmed")
+            except ValueError:
+                return None
+            if plan["amount"] != job.expected_amount:
+                return None
+            stats = deepcopy(job.translation_stats or {})
+            if payment_checkout is not None:
+                stats["payment_checkout"] = deepcopy(payment_checkout)
+            if status == JobStatus.pending_payment:
+                from .domain.checkout_resume import original_checkout, checkout_created_at
+                if payment_checkout is None:
+                    return None
+                try:
+                    candidate = replace(job, translation_stats=stats)
+                    original_checkout(candidate, job.id, job.expected_amount)
+                    checkout_created_at(candidate)
+                except ValueError:
+                    return None
+            dispatch = self._prepare_dispatch_locked(replace(job, translation_stats=stats)) if status == JobStatus.pending else None
+            if dispatch:
+                stats, intent = dispatch
+                self._dispatches.setdefault(intent["dispatch_id"], intent)
+            job.translation_stats = stats
+            job.status, job.message, job.updated_at = status, message, datetime.now(timezone.utc)
+            return deepcopy(job)
+
+    def rollback_pdf_confirmation(self, job_id, *, attempt_id, message) -> Optional[Job]:
+        from .domain.pdf_product import validate_pdf_plan, validate_pdf_job_plan
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.confirming or execution_identity(job) != attempt_id:
+                return None
+            try:
+                plan = validate_pdf_plan(validate_pdf_job_plan(job), phase="confirmed")
+            except ValueError:
+                return None
+            if plan["amount"] != job.expected_amount:
+                return None
+            plan = {key: value for key, value in plan.items() if key not in {"confirmed_at", "accepted_warnings"}}
+            plan["phase"] = "prepared"
+            job.translation_stats = {**(job.translation_stats or {}), "pdf_conversion": plan}
+            job.status, job.message, job.updated_at = JobStatus.awaiting_confirmation, message, datetime.now(timezone.utc)
+            return deepcopy(job)
+
     def finish_translation_confirmation(
         self,
         job_id: str,

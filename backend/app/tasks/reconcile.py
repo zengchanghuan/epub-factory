@@ -25,6 +25,8 @@ from app.storage import job_store
 from app.models import JobStatus
 from app.domain.job_dispatch_service import dispatch_pending
 from app.domain.payment_entitlement import grant_verified_entitlement
+from app.domain.checkout_resume import checkout_created_at, CheckoutUnavailable
+from app.domain.pdf_product import is_pdf_job
 from app.order_events import record_event
 
 logger = logging.getLogger("epub_factory.reconcile")
@@ -77,10 +79,13 @@ def reconcile_payments(self) -> dict:
         trade_status = trade.get("trade_status")
 
         close_confirmed = False
-        # SQLite reloads DateTime columns without tzinfo, while PostgreSQL and
-        # the in-memory store preserve it. Persisted naive values are UTC.
-        created_at_utc = (job.created_at.astimezone(timezone.utc) if job.created_at.tzinfo
-                          else job.created_at.replace(tzinfo=timezone.utc))
+        # PDF preparation/review may take hours before the first checkout.
+        # Missing PDF checkout time is never permission to close a new trade.
+        try:
+            created_at_utc = checkout_created_at(job) if trade_status == "WAIT_BUYER_PAY" else None
+        except CheckoutUnavailable:
+            skipped += 1
+            continue
         if trade_status == "WAIT_BUYER_PAY" and created_at_utc < timeout_cutoff:
             # The gateway, not a local clock, decides whether closing won the
             # race with payment. Unknown/failed close is never a closed order.
@@ -96,7 +101,7 @@ def reconcile_payments(self) -> dict:
 
         if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
             expected = str(getattr(job, "expected_amount", "") or "").strip()
-            if not expected and not batch_id:
+            if not expected and not batch_id and not is_pdf_job(job):
                 # Older single-file orders predate expected_amount. Their
                 # historical flat price must not inherit the new repair price.
                 expected = os.environ.get("TRANSLATION_PRICE_CNY", "5.99").strip()

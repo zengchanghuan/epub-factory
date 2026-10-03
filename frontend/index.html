@@ -136,7 +136,7 @@
         "name": "当前是否支持 PDF？",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "当前暂不支持 PDF，请先转换为 EPUB 后上传。PDF 的 OCR、图文布局保留与转换验收将在后续阶段实现。"
+          "text": "普通转换、批量和翻译入口暂不支持 PDF。若页面显示独立的 PDF → EPUB 入口，可上传文字型 PDF，先检查并确认风险，再按订单付款；保留原文与原图，不提供 OCR、翻译或 AI 精校。"
         }
       }
     ]
@@ -1648,6 +1648,18 @@
       </div>
     </div>
 
+    <!-- Only the server capability can reveal this independent PDF entry. -->
+    <section class="card" id="pdfUploadCard" style="display:none;" hidden aria-label="PDF 保留原文转换">
+      <h2><span class="icon">📄</span> PDF → EPUB · 保留原文</h2>
+      <p class="hint">仅支持可可靠处理的文字型 PDF。保留原文和原图，不翻译、不 OCR、不做 AI 精校，也不删除原书内容。复杂版式或不支持的图片会明确拒绝，不会强行生成。</p>
+      <p id="pdfCapabilityHint" class="pricing-notice" style="margin-top:12px;"></p>
+      <input id="pdfFileInput" type="file" aria-label="选择单个 PDF" />
+      <button type="button" class="diagnostics-btn" id="pdfChooseBtn">选择一个 PDF</button>
+      <span id="pdfFilename" style="margin-left:8px; overflow-wrap:anywhere;"></span>
+      <p id="pdfUploadError" class="error-msg" role="alert" style="display:none;"></p>
+      <button type="button" class="submit-btn" id="pdfUploadBtn" disabled>上传并检查 PDF</button>
+    </section>
+
     <!-- 任务中心卡片 -->
     <div class="card tasks-card" id="tasksCard">
       <h2><span class="icon">📋</span> 任务中心</h2>
@@ -1659,6 +1671,16 @@
     <!-- Status Card -->
     <div class="card status-card" id="statusCard">
       <h2><span class="icon">⚡</span> <span id="statusCardTitle">转换进度</span></h2>
+      <section id="pdfConfirmationPanel" style="display:none; margin-bottom:16px;" aria-label="确认 PDF 转换方案">
+        <h3>确认 PDF 转换方案</h3>
+        <p>本次只将 PDF 转为 EPUB：保留原文与原图，不翻译、不 OCR、不精校、不删除内容。原稿的复杂页面可能与原版布局不同，请阅读以下检查结果。</p>
+        <p id="pdfPlanSummary" style="white-space:pre-line;"></p>
+        <div id="pdfWarnings"></div>
+        <label style="display:block; margin:12px 0;"><input type="checkbox" id="pdfPreserveAcknowledgement" /> 我已了解上述处理范围，并接受逐项勾选的风险提示</label>
+        <p id="pdfBlockedMessage" class="hint" role="status"></p>
+        <p id="pdfConfirmError" class="error-msg" role="alert" style="display:none;"></p>
+        <button type="button" class="submit-btn" id="pdfConfirmBtn" disabled>确认并生成支付订单</button>
+      </section>
       <div id="sourceWarningsResult" class="pricing-notice" role="status" style="display:none; margin-bottom:16px; white-space:pre-line;"></div>
       <div id="translationQuoteSummary" class="hint" style="display:none; margin-bottom:12px; white-space:pre-line;"></div>
       <div id="continuePaymentPanel" style="display:none; margin-bottom:16px; padding:12px; border:1px solid var(--border); border-radius:8px;">
@@ -1827,7 +1849,8 @@
   </div>
 
   <script src="/vendor/qrcode.js?v=1.5.4"></script>
-  <script src="lib.js?v=20260918-corpus-fixes"></script>
+  <script src="lib.js?v=20260918-corpus-fixes-pdf-c"></script>
+  <script src="pdf-conversion.js?v=20261003-pdf-c"></script>
   <script src="return-later.js?v=20260918"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
   <script src="tool-entry.js?v=20261001-r11"></script>
@@ -1949,6 +1972,157 @@
     let continuePaymentInFlight = false;
     let continuePaymentTarget = null;
     const continuePaymentRequests = new Set();
+
+    // PDF is deliberately independent of the generic/batch/translation form.
+    const pdfTools = window.FixEpubPdfConversion;
+    let pdfCapabilities = { enabled: false };
+    let pdfUploading = false;
+    let pdfConfirming = false;
+    let pdfActionGeneration = 0;
+    let currentPdfData = null;
+    let pdfPlanKey = "";
+    const pdfClient = pdfTools && pdfTools.createClient({
+      api: API, fetch: (...args) => fetch(...args), FormData,
+      headers: clientHeaders, authHeaders,
+      adminKey: () => localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key"),
+    });
+
+    function resetPdfConfirmation() {
+      pdfActionGeneration += 1;
+      currentPdfData = null;
+      pdfPlanKey = "";
+      $("pdfConfirmationPanel").style.display = "none";
+      $("pdfConfirmError").style.display = "none";
+    }
+
+    function refreshPdfUpload() {
+      const error = pdfTools ? pdfTools.validateFiles($("pdfFileInput").files, pdfCapabilities) : "";
+      const file = $("pdfFileInput").files[0];
+      $("pdfFilename").textContent = file ? file.name : "";
+      $("pdfUploadBtn").disabled = pdfUploading || !pdfCapabilities.enabled || !!error;
+      $("pdfChooseBtn").disabled = pdfUploading;
+      $("pdfUploadBtn").textContent = pdfUploading ? "正在上传 PDF…" : "上传并检查 PDF";
+      $("pdfUploadError").textContent = error;
+      $("pdfUploadError").style.display = file && error ? "block" : "none";
+    }
+
+    function refreshPdfConfirmation() {
+      const state = pdfTools && pdfTools.view(currentPdfData);
+      const checks = Array.from($("pdfWarnings").querySelectorAll("input[type=checkbox]"));
+      $("pdfConfirmBtn").disabled = pdfConfirming || !state || !state.canConfirm
+        || !$("pdfPreserveAcknowledgement").checked || checks.some(input => !input.checked);
+      $("pdfConfirmBtn").textContent = pdfConfirming ? "正在确认方案…" : "确认并生成支付订单";
+    }
+
+    function renderPdfConversion(data, jobId) {
+      const state = pdfTools && pdfTools.view(data);
+      if (!state || !state.awaiting) {
+        currentPdfData = null;
+        pdfPlanKey = "";
+        $("pdfConfirmationPanel").style.display = "none";
+        return;
+      }
+      currentPdfData = data;
+      const key = JSON.stringify([jobId, state.planId, state.amount, state.warnings.map(w => w.code)]);
+      if (pdfPlanKey !== key) {
+        pdfPlanKey = key;
+        $("pdfWarnings").replaceChildren();
+        $("pdfPreserveAcknowledgement").checked = false;
+        $("pdfConfirmError").style.display = "none";
+        for (const warning of state.warnings) {
+          const label = document.createElement("label");
+          label.style.cssText = "display:block;margin:10px 0;line-height:1.6;";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.dataset.warning = warning.code;
+          checkbox.addEventListener("change", refreshPdfConfirmation);
+          label.append(checkbox, document.createTextNode(" " + warning.label));
+          $("pdfWarnings").append(label);
+        }
+      }
+      const number = value => value === null ? "—" : value.toLocaleString();
+      $("pdfPlanSummary").textContent = [
+        `保留原文 · ${number(state.pageCount)} 页 · ${number(state.characters)} 字符`,
+        `${number(state.imageAssets)} 张原图 · ${number(state.tocEntries)} 项目录`,
+        `确认后的订单金额：${state.amount === null ? "待核实" : "¥" + state.amount}；不包含 AI 翻译或精校`,
+      ].join("\n");
+      $("pdfBlockedMessage").textContent = state.blockedMessage;
+      $("pdfConfirmationPanel").style.display = "block";
+      refreshPdfConfirmation();
+    }
+
+    async function uploadPdf() {
+      if (!pdfClient || pdfUploading) return;
+      const error = pdfTools.validateFiles($("pdfFileInput").files, pdfCapabilities);
+      if (error) { $("pdfUploadError").textContent = error; $("pdfUploadError").style.display = "block"; return; }
+      resetPdfConfirmation();
+      const generation = pdfActionGeneration;
+      pdfUploading = true;
+      refreshPdfUpload();
+      try {
+        const data = await pdfClient.create($("pdfFileInput").files, pdfCapabilities);
+        if (typeof data.job_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(data.job_id)) throw new Error("任务创建结果无效，请查看任务中心。");
+        if (data.access_token) saveJobToken(data.job_id, data.access_token);
+        returnLater.remember({ kind: "job", id: data.job_id, filename: data.source_filename, status: data.status });
+        loadTaskList();
+        if (generation !== pdfActionGeneration) return;
+        $("pdfFileInput").value = "";
+        openJobDetail(data.job_id);
+      } catch (error) {
+        if (generation === pdfActionGeneration) {
+          $("pdfUploadError").textContent = error.message;
+          $("pdfUploadError").style.display = "block";
+        }
+      } finally {
+        pdfUploading = false;
+        const message = $("pdfUploadError").textContent;
+        const visible = $("pdfUploadError").style.display;
+        refreshPdfUpload();
+        if (visible === "block") { $("pdfUploadError").textContent = message; $("pdfUploadError").style.display = "block"; }
+      }
+    }
+
+    async function confirmPdfConversion() {
+      if (!pdfClient || pdfConfirming || $("pdfConfirmBtn").disabled || !currentPdfData) return;
+      const jobId = currentJobId;
+      const generation = pdfActionGeneration;
+      const accepted = Array.from($("pdfWarnings").querySelectorAll("input:checked")).map(input => input.dataset.warning);
+      pdfConfirming = true;
+      refreshPdfConfirmation();
+      $("pdfConfirmError").style.display = "none";
+      try {
+        const data = await pdfClient.confirm(jobId, currentPdfData, accepted);
+        if (generation !== pdfActionGeneration || currentJobId !== jobId || currentBatchId) return;
+        if (data.job_id !== jobId) throw new Error("订单信息不一致，请刷新任务状态。");
+        currentJobStatus = data.status || "";
+        renderPdfConversion(data, jobId);
+        renderContinuePayment(data, "job", jobId);
+        loadTaskList();
+        resumePaymentPolling("job", jobId);
+        if (data.status === "pending_payment") await continuePendingPayment();
+      } catch (error) {
+        if (generation === pdfActionGeneration && currentJobId === jobId) {
+          $("pdfConfirmError").textContent = error.message;
+          $("pdfConfirmError").style.display = "block";
+          pollJobV2(jobId);
+        }
+      } finally { pdfConfirming = false; refreshPdfConfirmation(); }
+    }
+
+    $("pdfChooseBtn").addEventListener("click", () => $("pdfFileInput").click());
+    $("pdfFileInput").addEventListener("change", refreshPdfUpload);
+    $("pdfUploadBtn").addEventListener("click", uploadPdf);
+    $("pdfPreserveAcknowledgement").addEventListener("change", refreshPdfConfirmation);
+    $("pdfConfirmBtn").addEventListener("click", confirmPdfConversion);
+    if (pdfClient) pdfClient.capabilities().then(cap => {
+      pdfCapabilities = cap;
+      if (!cap.enabled) return;
+      $("pdfFileInput").accept = ".pdf";
+      $("pdfCapabilityHint").textContent = `单文件不超过 ${cap.maxFileSizeMb} MB / ${cap.maxPages} 页。先检查并确认风险，再按订单支付 ¥${cap.price}；不支持批量或文件夹。`;
+      $("pdfUploadCard").hidden = false;
+      $("pdfUploadCard").style.display = $("navTasks").classList.contains("active") ? "none" : "block";
+      refreshPdfUpload();
+    });
 
     const TRANSLATION_STRATEGY_LABELS = {
       neutral_faithful: "中性忠实",
@@ -2850,6 +3024,7 @@
       navUpload.classList.toggle("active", !isTasks);
       navTasks.classList.toggle("active", isTasks);
       uploadCard.style.display = isTasks ? "none" : "block";
+      $("pdfUploadCard").style.display = !isTasks && pdfCapabilities.enabled ? "block" : "none";
       tasksCard.classList.toggle("visible", isTasks);
       if (isTasks) loadTaskList();
     }
@@ -2870,11 +3045,11 @@
           listEl.style.display = "block";
           listEl.innerHTML = items.map(j => {
             const statusClass = String(j.status || "").replace(/[^a-zA-Z0-9_-]/g, "_");
-            const statusText = escapeHtml(typeof mapV2StatusText === "function" ? mapV2StatusText(j.status, j.enable_translation) : j.status);
+            const statusText = escapeHtml(typeof mapV2StatusText === "function" ? mapV2StatusText(j.status, j.enable_translation, !!j.pdf_conversion || j.output_mode === "original") : j.status);
             const time = j.created_at ? new Date(j.created_at).toLocaleString() : "";
             const safeFilename = escapeHtml(j.source_filename || "-");
             const safeMessage = escapeHtml(j.message || "");
-            const taskKind = j.enable_translation ? "翻译" : j.enable_precision_polish ? "转换 + AI 精校" : "转换";
+            const taskKind = j.pdf_conversion || j.output_mode === "original" ? "PDF → EPUB · 保留原文" : j.enable_translation ? "翻译" : j.enable_precision_polish ? "转换 + AI 精校" : "转换";
             const batchMeta = j.batch_id ? `批次 ${escapeHtml(j.batch_id)} · ${Number(j.batch_index || 0) + 1}/${j.batch_size || "?"}` : "";
             const metaParts = [taskKind, batchMeta, time, safeMessage].filter(Boolean).join(" · ");
             const actionText = j.status === "completed" ? "下载" : j.status === "pending_payment" ? "继续支付" : "查看";
@@ -2930,6 +3105,7 @@
     }
 
     function openJobDetail(jobId) {
+      resetPdfConfirmation();
       resetContinuePayment();
       rememberPage("job", jobId);
       returnLater.setTask({ kind: "job", id: jobId });
@@ -2958,6 +3134,7 @@
     }
 
     function openBatchDetail(batchId) {
+      resetPdfConfirmation();
       resetContinuePayment();
       currentBatchId = batchId;
       currentJobId = null;
@@ -3053,6 +3230,7 @@
           const s = data.status || "";
           const previousJobStatus = currentJobStatus;
           currentJobStatus = s;
+          if (typeof renderPdfConversion === "function") renderPdfConversion(data, jobId);
           renderContinuePayment(data, "job", jobId);
           if (
             data.enable_translation
@@ -3065,6 +3243,15 @@
           }
           if (s && s !== previousJobStatus) {
             loadTaskList();
+          }
+          if (s === "awaiting_confirmation" && data.pdf_conversion) {
+            if (pollTimer) clearInterval(pollTimer);
+            stopJobTimer();
+            setStatus("pending", "PDF 检查完成，请阅读并确认转换方案");
+            statusBadge.textContent = "待确认 PDF 转换";
+            $("metaFilename").textContent = data.source_filename || "-";
+            $("metaMode").textContent = "PDF → EPUB · 保留原文";
+            return;
           }
           if (s === "awaiting_confirmation" && data.translation_preflight) {
             if (pollTimer) clearInterval(pollTimer);
@@ -3122,7 +3309,7 @@
             statusLineMessage = "[" + data.error_code + "] " + (statusLineMessage || "任务失败");
           }
           setStatus(legacy, statusLineMessage);
-          statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s, data.enable_translation) : s;
+          statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s, data.enable_translation, !!data.pdf_conversion) : s;
           setRunningActionsVisible(
             !!data.enable_translation && (s === "queued" || s === "running"),
             data.job_id || jobId,
@@ -3612,7 +3799,7 @@
       }
       const invalid = nextFiles.find(file => !_supported.some(ext => file.name.toLowerCase().endsWith(ext)));
       if (invalid) {
-        alert(invalid.name.toLowerCase().endsWith(".pdf") ? "暂不支持 PDF，请先转换为 EPUB 后上传。" : "仅支持 .epub, .mobi, .azw3, .docx 或 .md 文件");
+        alert(invalid.name.toLowerCase().endsWith(".pdf") ? "普通入口暂不支持 PDF；若页面显示独立 PDF → EPUB 入口，请从该入口上传单个文件。PDF 不支持翻译、精校、批量或文件夹。" : "仅支持 .epub, .mobi, .azw3, .docx 或 .md 文件");
         return;
       }
       returnLater.setTask(null, true);
@@ -3932,6 +4119,7 @@
     // ─── 统一提交逻辑：创建任务后按后端状态进入确认、支付或处理 ───────────────
     async function submitJob() {
       if (!selectedFiles.length) return;
+      resetPdfConfirmation();
       resetContinuePayment();
       renderSourceWarnings();
       const isBatchMode = selectedFiles.length > 1;
@@ -4270,8 +4458,8 @@
           <p>集成大语言模型（LLM）实现高质量的英文书籍翻译。不同于传统的机翻，我们的 AI 翻译能够深度理解语义语境，提供自然流畅的中文译文，并支持精细的双语对照排版，是学术研究与文学鉴赏的得力助手。</p>
         </div>
         <div class="feature-card">
-          <h3>PDF 支持计划（暂未开放）</h3>
-          <p>当前暂不支持 PDF，请先转换为 EPUB 后上传。PDF 的 OCR、图文布局保留与转换验收将在后续阶段实现。</p>
+          <h3>文字型 PDF 的独立转换入口</h3>
+          <p>普通转换、批量和翻译入口暂不支持 PDF。仅当页面显示独立 PDF → EPUB 入口时，才可上传单个文字型 PDF。系统先生成并检查候选结果，再让您确认风险与价格；不提供 OCR、翻译或 AI 精校，不自动删除原书内容。</p>
         </div>
       </div>
 
@@ -4353,7 +4541,7 @@
       </details>
       <details class="faq-item">
         <summary>当前是否支持 PDF？</summary>
-        <p>当前暂不支持 PDF，请先转换为 EPUB 后上传。尚未完成图文版式与 OCR 验收，因此不会接收 PDF 或为其创建收费订单。</p>
+        <p>普通转换、批量和翻译入口暂不支持 PDF。若您看到独立的「PDF → EPUB · 保留原文」卡片，可按其中的大小与页数限制上传单个文字型 PDF；完成检查和风险确认后才创建支付订单。未开放时该卡片不会显示。扫描件 OCR、复杂版式、PDF 翻译与精校仍不支持。</p>
       </details>
     </div>
   </section>
