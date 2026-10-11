@@ -38,7 +38,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20260918-script-aware-v7"
+QA_RULES_VERSION = "20261011-link-contract-v9"
 
 
 def max_free_retries() -> int:
@@ -141,10 +141,6 @@ def audit_translated_epub_output(
         "residual_categories": {},
         "samples": [],
     }
-    if not _is_zh_target(target_lang):
-        report["status"] = "skipped"
-        report["reason"] = "target language is not Chinese"
-        return report
     if not output_path or not Path(output_path).exists():
         report["status"] = "scan_error"
         report["reason"] = "output file is missing"
@@ -155,6 +151,13 @@ def audit_translated_epub_output(
 
     try:
         with zipfile.ZipFile(output_path) as zf:
+            from app.domain.epub_link_audit import audit_epub_links
+            report.update(audit_epub_links(zf, sample_limit))
+            if not _is_zh_target(target_lang):
+                report["status"] = "failed" if any(report.get(key) for key in
+                    ("links_broken", "links_unsafe", "duplicate_anchors", "nested_links")) else "passed"
+                report["text_audit_skipped"] = "target language is not Chinese"
+                return report
             report.update(audit_epub_navigation(zf, preserved_terms, sample_limit))
             nav_names = navigation_document_names(zf)
             names = sorted(
@@ -227,6 +230,8 @@ def audit_translated_epub_output(
         report["status"] = "failed"
         report["max_residual_blocks"] = max_residual
     if report.get("navigation_residual_labels") or report.get("navigation_broken_targets"):
+        report["status"] = "failed"
+    if any(report.get(key) for key in ("links_broken", "links_unsafe", "duplicate_anchors", "nested_links")):
         report["status"] = "failed"
     return report
 
@@ -311,6 +316,15 @@ def build_translation_qa_report(
         report["score"] -= min(50, audit_failed * 2)
 
     artifact_residual = int(artifact_audit.get("residual_blocks") or 0)
+    completeness = artifact_audit.get("content_completeness") or {}
+    if completeness.get("status") == "scan_error":
+        _flag(report, "content_completeness_scan_error", "无法核对原稿与成品正文完整性，已阻止交付")
+        report["score"] -= 80
+    elif completeness.get("status") == "failed":
+        missing = int(completeness.get("missing_units") or 0)
+        empty = int(completeness.get("empty_units") or 0)
+        _flag(report, "content_missing", f"与原稿相比缺失 {missing} 个文本块、{empty} 个文本块变空，已阻止交付")
+        report["score"] -= 80
     if artifact_audit.get("status") == "scan_error":
         _flag(report, "artifact_scan_error", "成品 EPUB 质检扫描失败，无法确认翻译完整性")
         report["score"] -= 80
@@ -325,6 +339,11 @@ def build_translation_qa_report(
     if broken_targets:
         _flag(report, "navigation_broken", f"目录有 {broken_targets} 个失效链接或锚点")
         report["score"] -= min(50, broken_targets * 5)
+    link_errors = sum(int(artifact_audit.get(key) or 0) for key in
+                      ("links_broken", "links_unsafe", "duplicate_anchors", "nested_links"))
+    if link_errors:
+        _flag(report, "artifact_links_invalid", f"成品存在 {link_errors} 处链接或锚点错误")
+        report["score"] -= min(80, link_errors * 5)
 
     if title_original and title_translated and title_original == title_translated:
         _flag(report, "title_untranslated", "书名元数据未翻译")

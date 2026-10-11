@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup, Tag
 from app.domain.translation_residual_policy import residual_category, normalize_text
 from app.domain.translation_numeric_audit import missing_numeric_facts
 from app.engine.chunk_extractor import NON_TEXT_TAGS, media_subtrees
+from app.domain.html_link_contract import preserves_link_contract
 
 
 BLOCK_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
@@ -306,6 +307,10 @@ def audit_translation_chunk(
         audit.flags.append("glossary_terms_missing")
         audit.risk_level = _set_risk(audit.risk_level, "warn")
 
+    if not preserves_link_contract(original_html, translated_html):
+        audit.flags.append("html_link_attribute_mismatch")
+        audit.html_tag_mismatch = True
+        audit.risk_level = _set_risk(audit.risk_level, "fail")
     if (_tag_counter(original_html) != _tag_counter(translated_html)
             or media_subtrees(original_html) != media_subtrees(translated_html)):
         audit.html_tag_mismatch = True

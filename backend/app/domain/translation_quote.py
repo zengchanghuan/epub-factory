@@ -7,6 +7,7 @@ cache entries justify a discount. This module intentionally never opens it.
 from __future__ import annotations
 
 import re
+import hashlib
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -21,6 +22,64 @@ _BLOCK_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote
 
 class QuoteInputError(ValueError):
     """Unreadable quote input, distinct from operator pricing errors."""
+
+
+def normalized_content_digest(path) -> str:
+    """Hash all normalized package members, not ZIP timestamps/compression."""
+    digest = hashlib.sha256()
+    with zipfile.ZipFile(path) as archive:
+        for entry in sorted(archive.infolist(), key=lambda item: item.filename):
+            if entry.is_dir():
+                continue
+            name = entry.filename.encode('utf-8')
+            member = hashlib.sha256()
+            with archive.open(entry) as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    member.update(block)
+            digest.update(len(name).to_bytes(8, 'big'))
+            digest.update(name)
+            digest.update(member.digest())
+    return digest.hexdigest()
+
+
+def freeze_execution_basis(normalized, *, target_lang, translation_quality, translation_model) -> dict:
+    """Bind a service quote to its actual adapter output and priced product.
+
+    This is NOT a cache plan: glossary/strategy edits remain allowed and no
+    reusable chunks, provider costs or discounts are promised. Adapters produce
+    deterministic contents; hashing all members also covers embedded resources
+    without treating ZIP timestamps/compression changes as new book content.
+    """
+    from .payment_entitlement import canonical_model
+    return {
+        'version': 1,
+        'source_sha256': normalized.source_sha256,
+        'normalized_content_sha256': normalized_content_digest(normalized.epub_path),
+        'normalization_version': normalized.normalization_version,
+        'adapter': normalized.adapter,
+        'target_lang': target_lang,
+        'translation_quality': translation_quality,
+        'translation_model': canonical_model(translation_model or 'deepseek-flash'),
+    }
+
+
+def validate_quote_execution(job, normalized) -> None:
+    """Check new quotes before the first model call; never reprice old orders."""
+    from .payment_entitlement import same_amount
+    from .translation_input import TranslationInputError
+    pricing = (job.translation_stats or {}).get('translation_pricing') or {}
+    if 'execution_basis' not in pricing:
+        # Existing orders never recorded this evidence. Do not fabricate a
+        # binding from today's configuration or deny their historic entitlement.
+        return
+    basis = pricing['execution_basis']
+    actual = freeze_execution_basis(normalized, target_lang=job.target_lang,
+        translation_quality=job.translation_quality, translation_model=job.translation_model)
+    if (not isinstance(basis, dict) or basis != actual
+            or not same_amount(pricing.get('quoted_amount'), job.expected_amount)
+            or not same_amount(pricing.get('price_cny'), job.expected_amount)):
+        raise TranslationInputError('quote_execution_mismatch',
+            '执行输入或翻译档位与原报价不一致，已停止模型调用。原订单金额保留，请联系管理员核验，勿重复付款。')
 
 
 def _content_page(raw: bytes, name: str) -> BeautifulSoup:

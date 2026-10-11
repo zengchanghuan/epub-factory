@@ -127,7 +127,7 @@ def _finalize_attempt_output(job, result, working_path: Path, default_path: Path
     return final_path
 
 
-def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
+def _apply_final_artifact_audit(job, result, output_path: Path, *, content_baseline=None) -> None:
     if not getattr(job, "enable_translation", False):
         return
     # A previous stage already failed; do not replace its useful error with a
@@ -139,6 +139,14 @@ def _apply_final_artifact_audit(job, result, output_path: Path) -> None:
         bilingual=bool(getattr(job, "bilingual", False)),
         preserved_terms=confirmed_preserved_terms(getattr(job, "glossary", {})),
     )
+    from .domain.content_completeness import audit_content_completeness
+    audit["content_completeness"] = audit_content_completeness(
+        content_baseline, output_path, bilingual=bool(getattr(job, "bilingual", False)),
+    )
+    if audit["content_completeness"]["status"] != "passed":
+        audit["status"] = audit["content_completeness"]["status"]
+        if audit["status"] == "scan_error":
+            audit["reason"] = audit["content_completeness"]["reason"]
     stats = dict(getattr(result, "translation_stats", {}) or {})
     stats["artifact_audit"] = audit
     qa = build_translation_qa_report(
@@ -519,6 +527,7 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
         accounting = usage_scope(job.id, attempt_id or "conversion", engine=getattr(job_store, "_engine", None),
                                  existing_stats=job.translation_stats) if (
                                      job.enable_translation or getattr(job, "enable_precision_polish", False)) else nullcontext()
+        content_baseline = None
         with accounting:
             if pdf_job:
                 on_stage("pdf_delivery", "核对并交付已确认的原文 EPUB，不重新解析 PDF")
@@ -532,6 +541,8 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                     previous_input = (job.translation_stats or {}).get("translation_input") or {}
                     if previous_input.get("source_sha256") and previous_input["source_sha256"] != normalized.source_sha256:
                         raise TranslationInputError("source_changed", "原文件已变化，请重新上传并确认翻译设定")
+                    from .domain.translation_quote import validate_quote_execution
+                    validate_quote_execution(job, normalized)
                     job.translation_stats = {
                         **dict(job.translation_stats or {}),
                         "translation_input": {
@@ -544,6 +555,13 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                         ])),
                     }
                     update_job_status(JobStatus.running, "翻译输入解析完成", translation_stats=job.translation_stats)
+                    from .domain.content_completeness import capture_content_baseline
+                    try:
+                        content_baseline = capture_content_baseline(normalized.epub_path)
+                    except (ValueError, OSError):
+                        raise TranslationInputError(
+                            "content_baseline_unavailable", "无法建立原稿正文完整性清单，已停止翻译，请检查原文件。",
+                        ) from None
                     result = run_fast_translation_job(
                         job=job, input_path=normalized.epub_path, output_path=output_path,
                         progress_callback=on_progress, stage_callback=on_stage, cancel_check=is_cancelled,
@@ -577,7 +595,7 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             current_attempt_stats = dict(job.translation_stats or {})
             current_attempt_stats.update(dict(getattr(result, "translation_stats", {}) or {}))
             result.translation_stats = current_attempt_stats
-        _apply_final_artifact_audit(job, result, output_path)
+        _apply_final_artifact_audit(job, result, output_path, content_baseline=content_baseline)
         if (
             job.enable_translation
             and result.error_code == ErrorCode.PARTIAL_TRANSLATION.value

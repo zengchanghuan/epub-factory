@@ -29,6 +29,12 @@ def repair_font_sources(text, stylesheet, root):
             for part in group:
                 if part.type != 'URIValue': continue
                 link = urlsplit(part.value.uri)
+                # Sony-era res:/// fonts live on the reader, not in this
+                # EPUB. They cannot be packaged or fetched; preserve local()
+                # and any real embedded font alternatives in the same rule.
+                if link.scheme == 'res' and not link.netloc:
+                    absent = True
+                    continue
                 if link.scheme or link.netloc: continue
                 target = (stylesheet.parent / unquote(link.path)).resolve()
                 if not target.is_relative_to(root.resolve()) or not target.is_file(): absent = True

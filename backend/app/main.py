@@ -1332,8 +1332,11 @@ def download_result(
 # ---------- API v2 骨架 ----------
 
 def _pdf_product_enabled() -> bool:
-    """New intake is opt-in; already saved orders never depend on this switch."""
-    enabled = os.environ.get("PDF_TEXT_CONVERSION_ENABLED", "").lower() in {"1", "true", "yes"}
+    """Open new intake when durable execution is ready; keep an explicit kill switch.
+
+    Existing orders do not depend on this intake switch.
+    """
+    enabled = os.environ.get("PDF_TEXT_CONVERSION_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
     test_server = os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in {"1", "true", "yes"}
     return bool(enabled and getattr(job_store, "_engine", None) is not None
                 and (_use_celery() or test_server))
@@ -1531,7 +1534,7 @@ def _prepare_translation_request(*, input_path, source_name, job_id, target_lang
                                  budget_principal="internal", budget_subjects=None, cache_policy="reuse"):
     """One normalized input for the quote and optional pre-payment analysis."""
     from .domain.translation_input import normalized_translation_input, TranslationInputError
-    from .domain.translation_quote import QuoteInputError
+    from .domain.translation_quote import QuoteInputError, freeze_execution_basis
 
     with normalized_translation_input(input_path, source_name=source_name) as normalized:
         try:
@@ -1544,6 +1547,9 @@ def _prepare_translation_request(*, input_path, source_name, job_id, target_lang
             raise TranslationInputError("unreadable_text", "未能完整读取计价正文，未创建支付订单，请检查文件") from exc
         if int(pricing.get("total_chars") or 0) <= 0:
             raise TranslationInputError("unreadable_text", "未能读取可翻译正文，未创建支付订单，请检查文件")
+        pricing['execution_basis'] = freeze_execution_basis(normalized,
+            target_lang=target_lang, translation_quality=translation_quality,
+            translation_model=translation_model)
         preflight = None
         if profile_confirmation:
             preflight = build_translation_preflight(

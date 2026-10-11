@@ -131,7 +131,8 @@ def restarted_translation_stats(
         stats["translation_input"] = dict(translation_input)
     translation_pricing = old.get("translation_pricing")
     if isinstance(translation_pricing, dict):
-        stats["translation_pricing"] = dict(translation_pricing)
+        from copy import deepcopy
+        stats["translation_pricing"] = deepcopy(translation_pricing)
     payment_checkout = old.get("payment_checkout")
     if isinstance(payment_checkout, dict):
         stats["payment_checkout"] = dict(payment_checkout)

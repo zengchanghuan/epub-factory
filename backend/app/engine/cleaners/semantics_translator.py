@@ -36,6 +36,7 @@ from app.infra.async_requests import gather_cancel_on_error as _gather_cancel_on
 from app.infra.llm_usage_ledger import billing_stage
 from app.infra.llm_gateway import governed_request
 from app.domain.translation_residual_policy import confirmed_preserved_terms, residual_category
+from app.domain.bilingual_markup import bilingual_wrapper_tag
 from ..translation_cache import TranslationCache
 
 
@@ -484,8 +485,16 @@ class SemanticsTranslator:
     def _raise_if_cancelled(self) -> None:
         raise_if_cancelled(self.cancel_check)
 
+    def _is_empty_translation(self, original_html: str, translated_html: str) -> bool:
+        # HTML/whitespace is not translated prose. Media-only source blocks
+        # remain valid: image alt text, SVG and MathML are intentionally exempt.
+        return not translated_html or (
+            bool(self._visible_text(original_html))
+            and not self._visible_text(translated_html)
+        )
+
     def _invalid_translation_reason(self, original_html: str, translated_html: str) -> str | None:
-        if not translated_html:
+        if self._is_empty_translation(original_html, translated_html):
             return "模型返回空译文"
         if self._looks_like_error_response(translated_html):
             return "模型返回错误说明"
@@ -980,8 +989,10 @@ class SemanticsTranslator:
         }
 
     def _preserves_inline_tags(self, source_html: str, translated_html: str) -> bool:
+        from app.domain.html_link_contract import preserves_link_contract
         return (self._inline_tag_counter(source_html) == self._inline_tag_counter(translated_html)
-                and media_subtrees(source_html) == media_subtrees(translated_html))
+                and media_subtrees(source_html) == media_subtrees(translated_html)
+                and preserves_link_contract(source_html, translated_html))
 
     @staticmethod
     def _has_dropcap_span(html: str) -> bool:
@@ -1139,6 +1150,12 @@ class SemanticsTranslator:
         return fragment_html
 
     def _repair_inline_tags_if_safe(self, source_html: str, translated_html: str) -> tuple[str, bool]:
+        from app.domain.html_link_contract import restore_link_attributes
+        if (translated_html and not self._looks_like_error_response(translated_html)
+                and not self._looks_untranslated(source_html, translated_html)):
+            restored, changed = restore_link_attributes(source_html, translated_html)
+            if changed and self._preserves_inline_tags(source_html, restored):
+                return restored, True
         if (
             not translated_html
             or self._looks_like_error_response(translated_html)
@@ -1293,7 +1310,7 @@ class SemanticsTranslator:
 
         for segment_id, node, source_text in segments:
             translated_text = translations_map.get(segment_id, "")
-            if not translated_text:
+            if self._is_empty_translation(source_text, translated_text):
                 raise ValueError("text segment rescue returned empty translation")
             if self._looks_like_error_response(translated_text):
                 raise ValueError("text segment rescue returned error-like response")
@@ -1602,7 +1619,10 @@ class SemanticsTranslator:
         
         results = []
         for i in range(len(html_chunks)):
-            trans = translations_map.get(i, html_chunks[i])
+            trans = translations_map.get(i, "")
+            invalid = self._invalid_translation_reason(html_chunks[i], trans)
+            if invalid:
+                raise ValueError(invalid)
             results.append(trans)
             self._cache_set(html_chunks[i], trans)
             self.stats.translated_chunks += 1
@@ -1626,7 +1646,10 @@ class SemanticsTranslator:
         async with self._request_slot():
             translations_map, _ = await self._call_llm_json_batch(payload)
         
-        translated = translations_map.get(0, html_chunk)
+        translated = translations_map.get(0, "")
+        invalid = self._invalid_translation_reason(html_chunk, translated)
+        if invalid:
+            raise ValueError(invalid)
         self._cache_set(html_chunk, translated)
         self.stats.translated_chunks += 1
         return translated
@@ -1662,7 +1685,7 @@ class SemanticsTranslator:
             async with self._request_slot():
                 translations_map, meta = await self._call_llm_json_batch(payload)
             translated = translations_map.get(0, "")
-            if not translated:
+            if self._is_empty_translation(inner_html, translated):
                 raise ValueError("LLM response missing translation for chunk")
             if self._looks_like_error_response(translated) or self._looks_untranslated(inner_html, translated):
                 async with self._request_slot():
@@ -1677,12 +1700,7 @@ class SemanticsTranslator:
                         translations_map, meta = await self._call_llm_json_batch(payload)
                     translated = translations_map.get(0, "")
                     translated, _ = self._repair_inline_tags_if_safe(inner_html, translated)
-            if (
-                not translated
-                or self._looks_like_error_response(translated)
-                or self._looks_untranslated(inner_html, translated)
-                or not self._preserves_inline_tags(inner_html, translated)
-            ):
+            if self._invalid_translation_reason(inner_html, translated):
                 raise ValueError("LLM returned untranslated or invalid content")
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._cache_set(inner_html, translated)
@@ -2261,7 +2279,7 @@ class SemanticsTranslator:
                 if self._looks_like_error_response(translated):
                     repairs.append((idx, original_inner, "error-like response", initial_retry_count))
                     continue
-                if not translated or self._looks_untranslated(html_chunks[idx], translated):
+                if self._is_empty_translation(html_chunks[idx], translated) or self._looks_untranslated(html_chunks[idx], translated):
                     repairs.append((idx, original_inner, "untranslated response", initial_retry_count))
                     continue
                 translated, repaired = self._repair_inline_tags_if_safe(original_inner, translated)
@@ -2839,8 +2857,9 @@ class SemanticsTranslator:
 
                     if self.bilingual:
                         # 安全双语注入，不破坏 Box Model 结构
+                        wrapper_tag = bilingual_wrapper_tag(block.name)
                         new_content = BeautifulSoup(
-                            f'<span class="epub-original">{original_inner}</span><br/><span class="epub-translated">{translated_inner}</span>', 
+                            f'<{wrapper_tag} class="epub-original">{original_inner}</{wrapper_tag}><br/><{wrapper_tag} class="epub-translated">{translated_inner}</{wrapper_tag}>',
                             'html.parser'
                         )
                         block.clear()

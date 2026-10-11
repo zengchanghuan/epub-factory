@@ -106,6 +106,27 @@ class PdfApiTests(unittest.TestCase):
         self.assertEqual(list(self.uploads.iterdir()), [])
         self.pay.assert_not_called()
 
+    def test_default_capability_opens_only_with_durable_execution(self):
+        with patch.dict(os.environ):
+            os.environ.pop("PDF_TEXT_CONVERSION_ENABLED", None)
+            self.assertTrue(self.client.get('/api/v2/capabilities').json()['pdf_text_conversion']['enabled'])
+            with patch.object(main, "_use_celery", return_value=False):
+                self.assertFalse(main._pdf_product_enabled())
+                self.assertEqual(self.create().status_code, 503)
+            with patch.object(main, "job_store", object()):
+                self.assertFalse(main._pdf_product_enabled())
+                self.assertEqual(self.create().status_code, 503)
+            self.assertEqual(self.create().status_code, 200)
+        self.pay.assert_not_called()
+
+    def test_explicit_invalid_or_disabled_switch_does_not_open_intake(self):
+        for value in ("", "0", "false", "off", "invalid"):
+            with self.subTest(value=value), patch.dict(os.environ, {"PDF_TEXT_CONVERSION_ENABLED": value}):
+                self.assertFalse(main._pdf_product_enabled())
+                self.assertEqual(self.create().status_code, 503)
+        self.assertEqual(list(self.uploads.iterdir()), [])
+        self.pay.assert_not_called()
+
     def test_capability_requires_durable_dispatch_but_test_server_is_explicit(self):
         with patch.object(main, "_use_celery", return_value=False):
             self.assertEqual(self.create().status_code, 503)

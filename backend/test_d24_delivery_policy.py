@@ -4,11 +4,13 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from ebooklib import epub
 
 from app.domain.translation_residual_policy import residual_category, is_preserved_reference
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_qa_service import audit_translated_epub_output, build_translation_qa_report
 from app.job_runner import _apply_final_artifact_audit
+from app.domain.content_completeness import capture_content_baseline
 
 
 class DeliveryPolicyTests(unittest.TestCase):
@@ -34,12 +36,23 @@ class DeliveryPolicyTests(unittest.TestCase):
     def test_warning_does_not_block_delivery_but_failed_chunk_does(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'book.epub'
-            with zipfile.ZipFile(path, 'w') as archive:
-                archive.writestr('chapter.xhtml', '<html><body><p>已经翻译的中文正文。</p></body></html>')
+            book = epub.EpubBook()
+            book.set_identifier('delivery-test')
+            book.set_title('测试')
+            book.set_language('zh')
+            chapter = epub.EpubHtml(uid='chapter', file_name='chapter.xhtml', title='章节')
+            chapter.content = '<html><body><p>已经翻译的中文正文。</p></body></html>'
+            book.add_item(chapter)
+            book.add_item(epub.EpubNav())
+            book.add_item(epub.EpubNcx())
+            book.toc = [epub.Link('chapter.xhtml', '章节', 'toc')]
+            book.spine = [chapter]
+            epub.write_epub(str(path), book)
+            baseline = capture_content_baseline(path)
             job = SimpleNamespace(enable_translation=True, target_lang='zh-CN', bilingual=False, glossary={})
             for stats, expected in [({'audit_warn_chunks': 3}, True), ({'audit_failed_chunks': 1}, False), ({'failed_chunks': 1}, False)]:
                 result = SimpleNamespace(validation_passed=True, translation_stats=stats, error_code=None, message='')
-                _apply_final_artifact_audit(job, result, path)
+                _apply_final_artifact_audit(job, result, path, content_baseline=baseline)
                 self.assertEqual(result.validation_passed, expected)
                 self.assertEqual(result.translation_stats['deliverable'], expected)
                 self.assertEqual(result.translation_stats['qa_report']['can_deliver'], expected)

@@ -2,6 +2,7 @@
 import re
 import cssutils
 from lxml import etree
+from urllib.parse import unquote, urlsplit
 
 
 _SIDES = ('top', 'right', 'bottom', 'left')
@@ -234,7 +235,73 @@ def _upgrade_legacy_tables(root, stylesheet_loader):
                 group = None
 
 
+def _upgrade_nested_note_backlinks(root):
+    """Separate proven multi-origin note backlinks, never guess arbitrary links.
+
+    Some legacy notes wrap one return link in another. Keep both original
+    anchors/IDs and the original marker; give the formerly outer link its own
+    navigation-only label. No prose is duplicated or removed.
+    """
+    identities = {}
+    for node in root.iter():
+        for key in ('id', '{http://www.w3.org/XML/1998/namespace}id'):
+            if node.get(key):
+                identities.setdefault(node.get(key), []).append(node)
+
+    def fragment(value):
+        try:
+            uri = urlsplit(value or '')
+        except ValueError:
+            return None
+        if uri.scheme or uri.netloc or uri.path or uri.query or not uri.fragment:
+            return None
+        return unquote(uri.fragment)
+
+    for outer in list(root.iter()):
+        if _html_name(outer) != 'a' or not outer.get('href'):
+            continue
+        anchors = [node for node in outer.iterdescendants() if _html_name(node) == 'a']
+        if len(anchors) != 1 or any(_html_name(p) == 'a' for p in outer.iterancestors()):
+            continue
+        inner = anchors[0]
+        label = ''.join(inner.itertext()).strip()
+        if (not re.fullmatch(r'[0-9*†‡§¶]+', label)
+                or len(label) > 16 or ''.join(outer.itertext()).strip() != label
+                or any(_html_name(n) not in {'a', 'sup', 'span'} for n in outer.iter())):
+            continue
+        targets = [fragment(node.get('href')) for node in (outer, inner)]
+        if None in targets or targets[0] == targets[1]:
+            continue
+        origins = [identities.get(target, []) for target in targets]
+        if any(len(nodes) != 1 or _html_name(nodes[0]) != 'a' for nodes in origins):
+            continue
+        note_ids = [fragment(nodes[0].get('href')) for nodes in origins]
+        if note_ids[0] is None or note_ids[0] != note_ids[1]:
+            continue
+        notes = identities.get(note_ids[0], [])
+        if len(notes) != 1 or notes[0] not in list(outer.iterancestors()):
+            continue  # Both origin links must actually point back to this note.
+        ns = etree.QName(outer).namespace
+        tag = lambda name: f'{{{ns}}}{name}' if ns else name
+        group = etree.Element(tag('span'))
+        group.set('data-epub-compat-backlinks', 'true')
+        group.tail, outer.tail = outer.tail, None
+        parent = outer.getparent()
+        parent.replace(outer, group)
+        children, leading = list(outer), outer.text
+        for child in children:
+            outer.remove(child)
+        outer.text = None
+        marker = etree.SubElement(outer, tag('sup'), {
+            'data-epub-compat-backlink-label': 'true', 'translate': 'no'})
+        marker.text = '↩'
+        outer.tail = leading
+        group.append(outer)
+        group.extend(children)
+
+
 def upgrade_legacy_html(root, book_title='', *, stylesheet_loader=None):
+    _upgrade_nested_note_backlinks(root)
     _upgrade_legacy_tables(root, stylesheet_loader)
     def css(node, property_name, value):
         style = node.get('style') or ''

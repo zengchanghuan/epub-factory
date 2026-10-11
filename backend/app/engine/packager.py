@@ -366,6 +366,31 @@ class EpubPackager:
                         content
                     )
 
+                # ebooklib writes physical ZIP names into manifest hrefs.
+                # Encode only its generated package, after physical-name SVG
+                # matching. Embedded OPFs may use unrelated, colliding IDs.
+                if opf_path == temp_dir / self.book.FOLDER_NAME / 'content.opf':
+                    root = etree.fromstring(content.encode('utf-8'), etree.XMLParser(
+                        resolve_entities=False, no_network=True,
+                    ))
+                    manifest_changed = False
+                    for node in root.findall('./{*}manifest/{*}item'):
+                        item = self.book.get_item_with_id(node.get('id'))
+                        if item is None:
+                            continue
+                        physical = (opf_path.parent / item.file_name).resolve()
+                        if not physical.is_relative_to(temp_dir.resolve()) or not physical.is_file():
+                            continue
+                        # Never unquote: "%20" may be a literal filename.
+                        href = quote(item.file_name, safe='/')
+                        if node.get('href') != href:
+                            node.set('href', href)
+                            manifest_changed = True
+                    if manifest_changed:
+                        content = etree.tostring(
+                            root, encoding='utf-8', xml_declaration=True,
+                        ).decode('utf-8')
+
                 if content != original:
                     opf_path.write_text(content, encoding="utf-8")
                     fixes_applied.append(opf_path.name)

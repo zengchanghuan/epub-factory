@@ -120,6 +120,13 @@ D_SUITE = [
     "test_d59_pdf_store.py",
     "test_d59_pdf_checkout.py",
     "test_d59_pdf_api.py",
+    "test_d64_metadata.py",
+    "test_d64_package_uri.py",
+    "test_d80_content_completeness.py",
+    "test_d81_link_contract.py",
+    "test_d82_empty_translation.py",
+    "test_d83_quote_execution.py",
+    "test_d84_source_compat.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

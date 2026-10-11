@@ -6,6 +6,8 @@ import re
 from typing import List, Optional, Protocol, Tuple
 
 from bs4 import BeautifulSoup, Tag
+from app.domain.html_link_contract import preserves_link_contract, restore_link_attributes
+from app.domain.bilingual_markup import bilingual_wrapper_tag
 
 # 与 chunk_extractor 一致，仅用于定位
 BLOCK_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"]
@@ -157,8 +159,14 @@ def apply_chunk_results(
     for cr, node in targets:
         if node is None:
             continue
+        original_inner = "".join(str(child) for child in node.contents)
+        candidate, _ = restore_link_attributes(original_inner, cr.translated_html)
+        if not preserves_link_contract(original_inner, candidate):
+            # Never serialize a guessed/broken target, including stale cached
+            # output. Let the task fail instead of silently dropping a chunk.
+            raise ValueError("HTML link/anchor contract mismatch")
         try:
-            frag = BeautifulSoup(cr.translated_html, "html.parser")
+            frag = BeautifulSoup(candidate, "html.parser")
             
             # Check if translation is wrapped in an identical outer tag (legacy cache behavior)
             new_tag = frag.find(BLOCK_TAGS) or frag.find()
@@ -169,10 +177,11 @@ def apply_chunk_results(
 
             if bilingual:
                 # Native safe bilingual injection
-                original_span = soup.new_tag("span", attrs={"class": "epub-original"})
+                wrapper_tag = bilingual_wrapper_tag(node.name)
+                original_span = soup.new_tag(wrapper_tag, attrs={"class": "epub-original"})
                 original_span.extend(list(node.contents))
                 
-                translated_span = soup.new_tag("span", attrs={"class": "epub-translated"})
+                translated_span = soup.new_tag(wrapper_tag, attrs={"class": "epub-translated"})
                 translated_span.extend(translated_contents)
                 # Inline note/page anchors exist in both model output and source.
                 # Keep their original targets, without emitting duplicate XML IDs.
@@ -180,6 +189,14 @@ def apply_chunk_results(
                 for tag in translated_span.find_all(id=True):
                     if tag["id"] in original_ids:
                         del tag["id"]
+                original_names = {tag["name"] for tag in original_span.find_all("a", attrs={"name": True})}
+                for tag in translated_span.find_all("a", attrs={"name": True}):
+                    if tag["name"] in original_names:
+                        del tag["name"]
+                original_xml_ids = {tag["xml:id"] for tag in original_span.find_all(attrs={"xml:id": True})}
+                for tag in translated_span.find_all(attrs={"xml:id": True}):
+                    if tag["xml:id"] in original_xml_ids:
+                        del tag["xml:id"]
                 
                 node.clear()
                 node.append(original_span)

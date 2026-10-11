@@ -1,5 +1,6 @@
 """Normalize EPUB representation without changing or inventing book content."""
 from copy import deepcopy
+import hashlib
 from pathlib import PurePosixPath
 import posixpath
 import re
@@ -94,16 +95,86 @@ def valid_xml_id(value):
     except ValueError: return False
 
 
+def normalize_package_structure(tree):
+    """Recognize namespace-free legacy OPF, never reinterpret foreign elements.
+
+    Only known structural parent/child pairs receive OPF names. Comments and
+    processing instructions in resource lists are not resource declarations.
+    This operates on the parsed copy; all URI and duplicate-ID checks remain.
+    """
+    changed = False
+    if tree.tag == 'package':
+        pairs = {'package': {'metadata', 'manifest', 'spine', 'guide', 'tours'},
+                 'metadata': {'meta'}, 'manifest': {'item'}, 'spine': {'itemref'},
+                 'guide': {'reference'}, 'tours': {'tour'}, 'tour': {'site'}}
+
+        def qualify(node):
+            nonlocal changed
+            name = node.tag
+            node.tag = f'{{{OPF_NS}}}{name}'
+            changed = True
+            for child in node:
+                if isinstance(child.tag, str) and child.tag in pairs.get(name, set()):
+                    qualify(child)
+
+        qualify(tree)
+    if tree.tag != f'{{{OPF_NS}}}package':
+        raise ValueError('Unsupported OPF package namespace')
+    for section, tag in [('manifest', 'item'), ('spine', 'itemref')]:
+        parent = tree.find(f'{{{OPF_NS}}}{section}')
+        if parent is None:
+            raise ValueError('Missing OPF resource list')
+        for node in list(parent):
+            if isinstance(node, (etree._Comment, etree._ProcessingInstruction)):
+                # Retain surrounding whitespace/text, not executable PI data.
+                if node.tail:
+                    previous = node.getprevious()
+                    if previous is None: parent.text = (parent.text or '') + node.tail
+                    else: previous.tail = (previous.tail or '') + node.tail
+                parent.remove(node)
+                changed = True
+            elif node.tag != f'{{{OPF_NS}}}{tag}':
+                raise ValueError('Unsupported OPF resource declaration')
+    manifest = tree.find(f'{{{OPF_NS}}}manifest')
+    ids = [item.get('id') for item in manifest]
+    if len(ids) != len(set(ids)):
+        raise ValueError('Ambiguous OPF resource IDs')
+    by_href = {}
+    for item in list(manifest):
+        href = item.get('href')
+        prior = by_href.get(href)
+        if prior is not None:
+            # Some old writers declare the same stylesheet twice under two
+            # IDs. Only collapse byte-identical declarations with no package
+            # references to the removed ID; never guess dependency rewrites.
+            uid = item.get('id')
+            attrs = {k: v for k, v in item.attrib.items() if k != 'id'}
+            other = {k: v for k, v in prior.attrib.items() if k != 'id'}
+            referenced = uid and any(
+                uid in value.split() or '#' + uid in value.split()
+                for node in tree.iter() if node is not item
+                for key, value in node.attrib.items() if key != 'id')
+            if (not uid or referenced or item.get('media-type') != 'text/css'
+                    or attrs != other or len(item) or len(prior)
+                    or (item.text or '').strip() or (prior.text or '').strip()):
+                raise ValueError('Ambiguous duplicate OPF resource')
+            manifest.remove(item)
+            changed = True
+        else:
+            by_href[href] = item
+    return changed
+
+
 def normalize_package(archive, opf_path):
     """Repair types and remove only optional absent page maps/reading fonts."""
     raw = archive.read(opf_path)
     tree = xml_tree(raw)
+    changed = normalize_package_structure(tree)
     manifest = tree.find(f'{{{OPF_NS}}}manifest')
     spine = tree.find(f'{{{OPF_NS}}}spine')
     if manifest is None or spine is None: raise ValueError('EPUB 缺少 manifest 或 spine')
     base = posixpath.dirname(opf_path)
     names = set(archive.namelist())
-    changed = False
     ids = [item.get('id') for item in manifest]
     if len(ids) != len(set(ids)): raise ValueError('原书 manifest 存在重复资源标识，无法可靠确定章节引用。')
     # Decide before ID repair so even legacy numeric refines/dependencies stay
@@ -200,6 +271,21 @@ def normalize_metadata(book, raw):
         qname = etree.QName(node)
         attrs = dict(node.attrib)
         if qname.namespace == DC_NS and qname.localname in DC_TERMS:
+            # EPUB 3 disallows an empty DC description. Omit only an
+            # information-free optional entry; identity, refinements and
+            # unusual metadata must remain available for final QA.
+            if (qname.localname in {'description', 'coverage', 'subject', 'contributor',
+                                    'format', 'relation', 'rights', 'source', 'publisher', 'type'}
+                    and not attrs and len(node) == 0
+                    and not (node.text or '').strip(' \t\r\n')):
+                continue
+            if (qname.localname == 'identifier' and not node.get('id') and not len(node)
+                    and not (node.text or '').strip()
+                    and set(attrs) <= {f'{{{OPF_NS}}}scheme'}):
+                # An empty ISBN is not an identifier. Preserve its annotation,
+                # then use an explicitly generated package identity below.
+                compatible('legacy-empty-identifier-scheme', attrs.get(f'{{{OPF_NS}}}scheme'))
+                continue
             keep = {k: v for k, v in attrs.items() if k in {'id', 'dir', f'{{{XML_NS}}}lang'}}
             refinements = []
             for key, value in attrs.items():
@@ -212,7 +298,11 @@ def normalize_metadata(book, raw):
                 uid = f'legacy-meta-{number}'
                 while uid in used_ids: uid += '-compat'
                 used_ids.add(uid); keep['id'] = uid
-            metadata[DC_NS].setdefault(qname.localname, []).append((node.text, keep))
+            value = node.text
+            if qname.localname == 'language' and (value or '').strip() in {'简体中文', '繁體中文', '繁体中文'}:
+                compatible('legacy-dc-language', value)
+                value = {'简体中文': 'zh-Hans', '繁體中文': 'zh-Hant', '繁体中文': 'zh-Hant'}[value.strip()]
+            metadata[DC_NS].setdefault(qname.localname, []).append((value, keep))
             for property_name, value in refinements:
                 extras.append((value, {'refines': '#' + keep['id'], 'property': property_name}))
         elif qname.namespace == OPF_NS and qname.localname == 'meta':
@@ -235,6 +325,22 @@ def normalize_metadata(book, raw):
             compatible(f'{prefix}:{qname.localname}', node.text)
             for key, value in attrs.items():
                 compatible(f'{prefix}:{qname.localname}:{etree.QName(key).localname}', value)
+    identifiers = metadata[DC_NS].setdefault('identifier', [])
+    primary = next(((value, attrs) for value, attrs in identifiers
+                    if (value or '').strip() and attrs.get('id') == tree.get('unique-identifier')), None)
+    if primary is None:
+        primary = next(((value, attrs) for value, attrs in identifiers if (value or '').strip()), None)
+        if primary is None:
+            primary = ('urn:sha256:' + hashlib.sha256(raw).hexdigest(), {})
+            identifiers.append(primary)
+            compatible('epub-factory-generated-identifier', 'sha256-of-normalized-source-package')
+    if not primary[1].get('id'):
+        uid = 'epub-factory-identifier'
+        all_ids = {node.get('id') for node in tree.iter()} | used_ids
+        while uid in all_ids: uid += '-compat'
+        primary[1]['id'] = uid
+    book.IDENTIFIER_ID = primary[1]['id']
+    book.uid = primary[0]
     book.metadata = metadata
     languages = metadata[DC_NS].get('language', [])
     if languages and languages[0][0]: book.language = languages[0][0]
@@ -330,6 +436,32 @@ def _preserved_get_content(item, default=None):
         if 'value' in node.attrib:
             if 'content' not in node.attrib: node.set('content', node.get('value'))
             del node.attrib['value']
+    # This serializer always emits UTF-8. Update only unambiguous HTML
+    # encoding declarations, retaining their position/identity and all other
+    # head content. Mixed metadata semantics remain visible to final QA.
+    html_ns = 'http://www.w3.org/1999/xhtml'
+    for head in generated:
+        if head.tag not in {'head', f'{{{html_ns}}}head'}:
+            continue
+        for node in head:
+            if node.tag not in {'meta', f'{{{html_ns}}}meta'}:
+                continue
+            # A nameless legacy payload is metadata, not a new encoding claim.
+            # Keep its value and identity under an explicit preservation name.
+            if ('content' in node.attrib and not any(
+                    key in node.attrib for key in ('name', 'http-equiv', 'charset', 'property', 'itemprop'))
+                    and set(node.attrib) <= {'content', 'id', 'class', 'lang', f'{{{XML_NS}}}lang'}
+                    and not len(node) and not (node.text or '').strip()):
+                node.set('name', 'epub-factory-legacy-content')
+            if any(key in node.attrib for key in ('name', 'property', 'itemprop')):
+                continue
+            if 'http-equiv' in node.attrib and 'charset' in node.attrib:
+                continue
+            if (node.get('http-equiv') or '').strip().lower() == 'content-type':
+                node.set('http-equiv', 'content-type')
+                node.set('content', 'text/html; charset=utf-8')
+            elif 'charset' in node.attrib:
+                node.set('charset', 'utf-8')
     # The writer applies book.language; an inherited lang/xml:lang disagreement
     # introduced during serialization is invalid and confuses screen readers.
     for node in generated.iter():

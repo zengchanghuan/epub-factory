@@ -12,7 +12,8 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from lxml import etree, html
 
-from .epub_compat import OPF_NS, EPUB_NS, is_font_item, missing_font_is_optional, xml_tree
+from .epub_compat import (OPF_NS, EPUB_NS, is_font_item, missing_font_is_optional,
+                          xml_tree, normalize_package_structure)
 from .font_compat import FONT_FACE
 from .navigation_compat import (WARNING_REPAIRED_NAVIGATION, WARNING_DISABLED_NAVIGATION,
                                 WARNING_UNRESOLVED_NAVIGATION)
@@ -134,10 +135,13 @@ def build_resource_repair_plan(archive, opf_path):
 
     raw_opf = read(opf_path, MAX_METADATA_BYTES)
     package = _document(raw_opf)
+    try:
+        changed = normalize_package_structure(package)
+    except ValueError as exc:
+        raise ResourceRepairError(INVALID) from exc
     manifest, spine = package.find('{*}manifest'), package.find('{*}spine')
     if manifest is None or spine is None or not len(spine):
         raise ResourceRepairError(INVALID)
-    changed = False
     warnings = set()
     for meta in package.findall('.//{*}meta'):
         if meta.get('name') == WARNING_META and meta.get('content') in KNOWN_WARNINGS:

@@ -325,8 +325,10 @@ class LedgerTests(unittest.TestCase):
         from app.job_runner import run_job
         from app.models import Job,JobStatus,OutputMode,ErrorCode
         from app.storage import JobStore
+        from test_epub_fixture import minimal_epub_bytes
         store=JobStore();store._engine=self.engine
-        source=self.root/'book.epub';source.write_bytes(b'offline-fixture')
+        # Traverse real input/coverage validation before injecting a ledger failure.
+        source=self.root/'book.epub';source.write_bytes(minimal_epub_bytes())
         job=Job(id=uuid.uuid4().hex,source_filename='book.epub',trace_id='offline',input_path=str(source),
                 output_mode=OutputMode.simplified,enable_translation=True,status=JobStatus.pending,
                 translation_stats={'attempt_id':'one','translation_attempt':1})

@@ -86,13 +86,21 @@ class RegressionCatalogTests(unittest.TestCase):
         self.assertFalse((self.root / "TEST_EXECUTED").exists())
         return result
 
-    def test_current_110_catalog_including_d17_and_d59_matches_ast_without_running_real_scripts(self):
+    def test_current_117_catalog_including_d17_d59_d64_and_d80_to_d84_matches_ast_without_running_real_scripts(self):
         suites = catalog_literals(self.source)
         expected = suites["D_SUITE"] + suites["C_SUITE"]
-        self.assertEqual(len(expected), 110)
+        self.assertEqual(len(expected), 117)
+        self.assertIn("test_d80_content_completeness.py", expected)
+        self.assertIn("test_d81_link_contract.py", expected)
+        self.assertIn("test_d82_empty_translation.py", expected)
+        self.assertIn("test_d83_quote_execution.py", expected)
+        self.assertIn("test_d84_source_compat.py", expected)
         self.assertEqual({name for name in expected if name.startswith("test_d59_")}, {
             "test_d59_pdf_product.py", "test_d59_pdf_execution.py", "test_d59_pdf_store.py",
             "test_d59_pdf_checkout.py", "test_d59_pdf_api.py",
+        })
+        self.assertEqual({name for name in expected if name.startswith("test_d64_")}, {
+            "test_d64_metadata.py", "test_d64_package_uri.py",
         })
         self.assertEqual(len(set(expected)), len(expected))
         d17 = [name for name in expected if name.startswith("test_d17_")]

@@ -329,6 +329,17 @@ class TranslationContractTests(unittest.TestCase):
 
         def fast(**kwargs):
             self.executor_paths.append(Path(kwargs["input_path"]))
+            # The fake translator must preserve the REAL adapter's document
+            # identities/structure, not replace DOCX/MD with an unrelated EPUB.
+            output = io.BytesIO()
+            with zipfile.ZipFile(kwargs["input_path"]) as original, zipfile.ZipFile(output, 'w') as translated:
+                for entry in original.infolist():
+                    raw = original.read(entry.filename)
+                    if entry.filename.endswith(('.xhtml', '.html', '.opf', '.ncx')):
+                        raw = raw.decode().replace(SOURCE_TEXT, '爱丽丝阅读原著，思考自由与严谨推理。') \
+                            .replace('Chapter', '章节').replace('Contents', '目录').replace('Offline fixture', '离线书稿').encode()
+                    translated.writestr(entry, raw)
+            self.output_bytes = output.getvalue()
             if effect:
                 return effect(**kwargs)
             Path(kwargs["output_path"]).write_bytes(self.output_bytes)
@@ -404,6 +415,64 @@ class TranslationContractTests(unittest.TestCase):
         self.assertEqual(executor.call_args.kwargs["job"].translation_stats["translation_input"], identity)
         self.assertEqual(finished.translation_stats["translation_preflight"], preflight)
         converter.assert_not_called()
+
+    def test_missing_prose_cannot_be_delivered_as_success_with_zero_failed_chunks(self):
+        from bs4 import BeautifulSoup
+        for mutation in ('delete_block', 'empty_block', 'delete_document'):
+            with self.subTest(mutation=mutation):
+                job = self.confirmed_paid_job('.epub')
+                def incomplete(**kwargs):
+                    with zipfile.ZipFile(io.BytesIO(self.output_bytes)) as source, zipfile.ZipFile(kwargs['output_path'], 'w') as target:
+                        for entry in source.infolist():
+                            raw = source.read(entry.filename)
+                            if entry.filename == 'EPUB/chapter.xhtml':
+                                if mutation == 'delete_document':
+                                    continue
+                                soup = BeautifulSoup(raw, 'html.parser')
+                                if mutation == 'delete_block':
+                                    soup.p.decompose()
+                                else:
+                                    soup.p.clear()
+                                raw = str(soup).encode()
+                            target.writestr(entry, raw)
+                    return self.ConversionResult(translation_stats={'translated_chunks': 1, 'failed_chunks': 0})
+                finished, executor, _ = self.execute(job, incomplete)
+                executor.assert_called_once()
+                self.assertEqual(finished.status, self.JobStatus.failed)
+                self.assertEqual(finished.error_code, 'PARTIAL_TRANSLATION')
+                stats = finished.translation_stats
+                self.assertFalse(stats['deliverable'])
+                self.assertEqual(stats['artifact_audit']['content_completeness']['status'], 'failed')
+                self.assertIn('content_missing', stats['qa_report']['flags'])
+                download = self.client.get('/jobs/' + job.id + '/download', headers={'X-Job-Token': job.access_token})
+                self.assertNotEqual(download.status_code, 200)
+
+    def test_missing_source_inventory_stops_before_translation(self):
+        job = self.confirmed_paid_job('.epub')
+        with patch('app.domain.content_completeness.capture_content_baseline', side_effect=ValueError('unreadable')):
+            finished, executor, converter = self.execute(job)
+        executor.assert_not_called()
+        converter.assert_not_called()
+        self.assertEqual(finished.status, self.JobStatus.failed)
+        self.assertFalse(finished.translation_stats.get('deliverable', False))
+
+    def test_broken_body_link_fails_final_delivery_and_download(self):
+        job = self.confirmed_paid_job('.epub')
+        def broken(**kwargs):
+            with zipfile.ZipFile(io.BytesIO(self.output_bytes)) as source, zipfile.ZipFile(kwargs['output_path'], 'w') as target:
+                for entry in source.infolist():
+                    raw = source.read(entry.filename)
+                    if entry.filename == 'EPUB/chapter.xhtml':
+                        raw = raw.replace(b'</p>', '<a href="#missing">注</a></p>'.encode(), 1)
+                    target.writestr(entry, raw)
+            return self.ConversionResult(translation_stats={'translated_chunks': 1, 'failed_chunks': 0})
+        finished, executor, _ = self.execute(job, broken)
+        executor.assert_called_once()
+        self.assertEqual(finished.status, self.JobStatus.failed)
+        self.assertFalse(finished.translation_stats['deliverable'])
+        self.assertIn('artifact_links_invalid', finished.translation_stats['qa_report']['flags'])
+        response = self.client.get('/jobs/' + job.id + '/download', headers={'X-Job-Token': job.access_token})
+        self.assertNotEqual(response.status_code, 200)
 
     def test_worker_kill_switch_does_not_fallback_or_publish_paid_book(self):
         job = self.confirmed_paid_job(".docx")

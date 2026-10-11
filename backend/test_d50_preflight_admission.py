@@ -202,6 +202,9 @@ class PreflightAdmissionTests(unittest.TestCase):
         from app.models import Job, JobStatus, OutputMode, ErrorCode
         from app.storage import JobStore
         from app.infra.llm_gateway import GatewayControlError
+        from test_epub_fixture import minimal_epub_bytes
+        # This job-boundary test must reach the governor, not fail EPUB parsing.
+        self.source.write_bytes(minimal_epub_bytes())
         store = JobStore()
         store._engine = self.engine
         job = Job(id='governor-job', source_filename='source.epub', trace_id='offline',
