@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from bs4 import BeautifulSoup, Tag
-from app.domain.translation_residual_policy import residual_category, normalize_text
+from app.domain.translation_residual_policy import residual_category, normalize_text, without_reference_text_nodes
 from app.domain.translation_numeric_audit import missing_numeric_facts
 from app.engine.chunk_extractor import NON_TEXT_TAGS, media_subtrees
 from app.domain.html_link_contract import preserves_link_contract
@@ -246,7 +246,10 @@ def audit_translation_chunk(
         audit.risk_level = _set_risk(audit.risk_level, "fail")
 
     title_like = bool(BeautifulSoup(original_html or "", "html.parser").find(re.compile(r"^h[1-6]$")))
-    if _likely_untranslated_english(source_text, translated_text, preserved_terms, title_like):
+    residual_source = _text(without_reference_text_nodes(original_html))
+    residual_target = _text(without_reference_text_nodes(translated_html))
+    missing_prose = bool(re.search(r'\w', residual_source) and not re.search(r'\w', residual_target))
+    if missing_prose or _likely_untranslated_english(residual_source, residual_target, preserved_terms, title_like):
         audit.likely_untranslated = True
         audit.flags.append("likely_untranslated")
         audit.risk_level = _set_risk(audit.risk_level, "fail")

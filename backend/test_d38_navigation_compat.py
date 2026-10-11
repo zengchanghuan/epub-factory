@@ -20,7 +20,7 @@ from app.engine.navigation_compat import (
 )
 from app.engine.packager import EpubPackager
 from app.engine.toc_rebuilder import TocRebuilder
-from app.engine.unpacker import EpubUnpacker
+from app.engine.unpacker import EpubUnpacker, _InlineNavigationReader
 from app.engine.cleaners.cjk_normalizer import CjkNormalizer
 
 
@@ -42,6 +42,35 @@ def document(item):
 def hrefs(item):
     return {node.get('id'): node.get('href') for node in document(item).iter()
             if isinstance(node.tag, str) and etree.QName(node).localname == 'a'}
+
+
+class InlineNavigationReaderTests(unittest.TestCase):
+    def test_inline_labels_keep_full_text_hierarchy_links_and_source_bytes(self):
+        raw = b'''<html><body><nav epub:type="toc"><ol>
+          <li><a href="preface.xhtml"><span id="label">PREFACE</span></a></li>
+          <li><a href="part.xhtml"><em>Part I</em><span hidden="hidden">:</span><br/> POWER</a>
+            <ol><li><a href="chapter.xhtml#start">CHAPTER 1: <strong>CRISIS &amp; CHANGE</strong></a></li></ol>
+          </li><li><span><em>Appendices</em></span><ol><li><a href="a.xhtml">A</a></li></ol></li>
+          </ol></nav></body></html>'''
+        reader = _InlineNavigationReader('unused', options={})
+        nav = epub.EpubNav(file_name='text/nav.xhtml')
+        nav.content = raw
+        reader.book.add_item(nav)
+        reader._parse_nav(raw, 'text')
+        first, part, appendices = reader.book.toc
+        self.assertEqual((first.title, first.href), ('PREFACE', 'text/preface.xhtml'))
+        self.assertEqual((part[0].title, part[0].href), ('Part I: POWER', 'text/part.xhtml'))
+        self.assertEqual((part[1][0].title, part[1][0].href), ('CHAPTER 1: CRISIS & CHANGE', 'text/chapter.xhtml#start'))
+        self.assertEqual(appendices[0].title, 'Appendices')
+        self.assertEqual(nav.content, raw)
+
+    def test_page_list_inline_numbers_and_comment_text(self):
+        reader = _InlineNavigationReader('unused', options={})
+        reader._parse_nav(b'<html><body><nav epub:type="page-list"><ol><li>'
+            b'<a href="chapter.xhtml#p17"><span>1</span><!-- not label -->7</a>'
+            b'</li></ol></nav></body></html>', 'text', 'page-list')
+        self.assertEqual(reader.book.pages[0].title, '17')
+        self.assertEqual(reader.book.pages[0].href, 'text/chapter.xhtml#p17')
 
 
 class NavigationCompatibilityTests(unittest.TestCase):

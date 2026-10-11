@@ -8,26 +8,25 @@ from pathlib import Path
 from typing import Any
 
 from app.domain.book_profile_service import profile_book
-from app.domain.manifest_service import build_manifest
+from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.translation_strategy import (
     TRANSLATION_STRATEGY_LABELS,
     resolve_translation_strategy,
     strategy_recommends_bilingual,
 )
 from app.engine.glossary_service import build_consistent_glossary
-from app.models import ChapterKind
 from app.infra.llm_usage_ledger import usage_scope
 from app.domain.preflight_admission import admitted_preflight, fingerprint
 
 
-PREFLIGHT_SCHEMA_VERSION = 1
+PREFLIGHT_SCHEMA_VERSION = 2
 
 
 def _body_texts(manifest: dict[str, Any]) -> list[str]:
     return [
         str(chunk.get("text") or "").strip()
         for chapter in manifest.get("chapters") or []
-        if chapter.get("chapter_kind") == ChapterKind.body.value
+        if chapter_requires_translation(chapter)
         for chunk in chapter.get("chunks") or []
         if str(chunk.get("text") or "").strip()
     ]
@@ -78,7 +77,7 @@ def _glossary_catalog(glossary_result: Any) -> list[dict[str, Any]]:
 def _chapters(manifest: dict[str, Any], default_strategy: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for chapter in manifest.get("chapters") or []:
-        if chapter.get("chapter_kind") != ChapterKind.body.value:
+        if not chapter_requires_translation(chapter):
             continue
         file_path = str(chapter.get("file_path") or "")
         # Standalone footnote documents still participate in translation, but
@@ -200,7 +199,7 @@ def _build_translation_preflight(
     editable_chapters = _chapters(manifest, resolved_strategy)
     body_chapters = [
         chapter for chapter in manifest.get("chapters") or []
-        if chapter.get("chapter_kind") == ChapterKind.body.value
+        if chapter_requires_translation(chapter)
     ]
     return {
         "schema_version": PREFLIGHT_SCHEMA_VERSION,

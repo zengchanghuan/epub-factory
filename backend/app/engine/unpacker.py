@@ -6,6 +6,31 @@ import zipfile
 from .epub_compat import package_path, normalize_package, normalize_book, normalize_metadata
 from .epub_resource_repair import build_resource_repair_plan, MAX_METADATA_BYTES, ResourceRepairError, INVALID
 from .navigation_compat import normalize_book_navigation
+from ebooklib.utils import parse_html_string
+
+
+class _InlineNavigationReader(epub.EpubReader):
+    """Adapt ebooklib's text-only NAV parser without altering source markup.
+
+    ebooklib 0.18 reads only ``a.text`` (and the first section label's text),
+    losing nested span/em/strong text. Flatten labels only in the disposable
+    parser input; the book's original NAV bytes, IDs and inline styles remain.
+    """
+    def _parse_nav(self, data, base_path, navtype='toc'):
+        from lxml import etree
+        root = parse_html_string(data)
+        for nav in root.xpath('//nav[@*=$kind]', kind=navtype):
+            for row in nav.xpath('.//ol/li'):
+                label = row.find('a')
+                if label is None and row.find('ol') is not None and len(row):
+                    label = row[0]
+                if label is None or label.tag not in {'a', 'span'}:
+                    continue
+                text = ''.join(label.xpath('.//text()'))
+                for child in list(label):
+                    label.remove(child)
+                label.text = text
+        return super()._parse_nav(etree.tostring(root, encoding='utf-8'), base_path, navtype)
 
 
 class EpubUnpacker:
@@ -46,7 +71,9 @@ class EpubUnpacker:
                             with zipfile.ZipFile(normalized_path, 'w') as output:
                                 for info in repaired.infolist():
                                     output.writestr(info, normalized if info.filename == opf_path else repaired.read(info.filename))
-                        book = epub.read_epub(normalized_path, options=options)
+                        reader = _InlineNavigationReader(normalized_path, options=options)
+                        book = reader.load()
+                        reader.process()
             normalize_metadata(book, normalized)
             book = normalize_book(book, opf_path)
             navigation = normalize_book_navigation(book)

@@ -11,6 +11,22 @@ from app.engine.packager import EpubPackager
 
 
 class NavigationPackagingTests(unittest.TestCase):
+    def test_translated_label_removes_only_empty_decorative_spans(self):
+        book = self.make_book()
+        nav = next(item for item in book.get_items() if isinstance(item, epub.EpubNav))
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(nav.content, 'xml')
+        label = soup.find(id='entry')
+        label.append(soup.new_tag('span', attrs={'hidden': 'hidden'}))
+        label.span.string = ':'
+        protected = soup.new_tag('span', attrs={'id': 'preserved-anchor'})
+        label.append(protected)
+        nav.content = str(soup)
+        root = self.package(book)
+        self.assertEqual(len(root.xpath('//*[@id="entry"]')), 1)
+        self.assertEqual(len(root.xpath('//*[@id="preserved-anchor"]')), 1)
+        self.assertEqual(len(root.xpath('//*[@id="entry"]//*[local-name()="span" and @hidden]')), 0)
+
     def make_book(self, *, toc_target='text/chapter.xhtml#start', inline_id=True):
         book = epub.EpubBook()
         book.set_identifier('offline-navigation')

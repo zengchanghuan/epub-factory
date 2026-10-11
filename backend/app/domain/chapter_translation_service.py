@@ -10,12 +10,12 @@ from typing import Any, Dict, List
 from billiard.exceptions import SoftTimeLimitExceeded
 
 from app.storage import job_store
-from app.domain.manifest_service import build_manifest
+from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.chapter_reduce_service import apply_chunk_results
 from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.engine.unpacker import EpubUnpacker
-from app.models import ChapterKind, ChunkStatus, JobChunk
+from app.models import ChunkStatus, JobChunk
 from app.engine.cleaners.semantics_translator import SemanticsTranslator, SingleChunkResult
 from app.infra.llm_usage_ledger import usage_scope
 from app.domain.translation_attempt import attempt_id_from_stats
@@ -108,7 +108,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str, *, captured_job
             chapter_kind="",
             error="chapter not in manifest",
         )
-    if chapter["chapter_kind"] != ChapterKind.body.value:
+    if not chapter_requires_translation(chapter):
         return ChapterTranslationResult(
             job_id=job_id,
             chapter_id=chapter_id,

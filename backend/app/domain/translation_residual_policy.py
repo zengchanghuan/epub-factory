@@ -37,6 +37,38 @@ def is_preserved_reference(text: str) -> bool:
         return False
 
 
+def is_preserved_reference_node(node) -> bool:
+    """A bare domain is a reference only when its enclosing link proves it."""
+    text = str(node).strip()
+    if is_preserved_reference(text):
+        return True
+    anchor = node.find_parent('a', href=True)
+    if anchor is None or anchor.get_text().strip() != text:
+        return False
+    try:
+        destination = urlsplit(anchor.get('href', ''))
+        return bool(destination.scheme.lower() in {'https', 'http'}
+                    and destination.hostname and not destination.username and not destination.password
+                    and '.' in text and destination.hostname.casefold() == text.casefold())
+    except ValueError:
+        return False
+
+
+def without_reference_text_nodes(html: str) -> str:
+    """Audit-only copy: an intact standalone URL must not inflate English ratios.
+
+    Do not strip arbitrary URL substrings (which might consume adjacent prose),
+    attributes, or link labels such as "Read the full article". Delivery markup
+    is untouched; only complete URL/DOI text nodes are excluded from language QA.
+    """
+    from bs4 import BeautifulSoup, Comment
+    soup = BeautifulSoup(html or '', 'html.parser')
+    for node in list(soup.find_all(string=True)):
+        if not isinstance(node, Comment) and is_preserved_reference_node(node):
+            node.replace_with('')
+    return str(soup)
+
+
 def residual_category(text: str, *, source_text: str | None = None,
                       title_like: bool = False, preserved_terms: Iterable[str] = ()) -> str:
     preserved_terms = tuple(preserved_terms)

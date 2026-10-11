@@ -35,7 +35,11 @@ from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
 from app.infra.async_requests import gather_cancel_on_error as _gather_cancel_on_error
 from app.infra.llm_usage_ledger import billing_stage
 from app.infra.llm_gateway import governed_request
-from app.domain.translation_residual_policy import confirmed_preserved_terms, residual_category
+from app.domain.translation_residual_policy import (
+    confirmed_preserved_terms, residual_category, is_preserved_reference, normalize_text,
+    without_reference_text_nodes,
+    is_preserved_reference_node,
+)
 from app.domain.bilingual_markup import bilingual_wrapper_tag
 from ..translation_cache import TranslationCache
 
@@ -968,10 +972,12 @@ class SemanticsTranslator:
         """
         if not str(self.target_lang or "").lower().startswith("zh"):
             return False
-        source_text = self._visible_text(source_html)
-        translated_text = self._visible_text(translated_html)
-        if not source_text or not translated_text:
+        source_text = self._visible_text(without_reference_text_nodes(source_html))
+        translated_text = self._visible_text(without_reference_text_nodes(translated_html))
+        if not re.search(r'\w', source_text):
             return False
+        if not re.search(r'\w', translated_text):
+            return True
 
         return bool(residual_category(
             translated_text, source_text=source_text,
@@ -1209,6 +1215,11 @@ class SemanticsTranslator:
 
     def _should_translate_text_node(self, text: str) -> bool:
         stripped = (text or "").strip()
+        # Exact URLs/DOIs and explicitly confirmed terms are immutable islands,
+        # not untranslated prose. Never send them to a node-level model call.
+        if (is_preserved_reference(stripped)
+                or normalize_text(stripped) in {normalize_text(term) for term in getattr(self, 'preserved_terms', ())}):
+            return False
         from app.domain.translation_scripts import has_foreign_letters
         if not stripped or not has_foreign_letters(stripped, self.target_lang):
             return False
@@ -1236,6 +1247,11 @@ class SemanticsTranslator:
         return f"{leading}{translated}{trailing}"
 
     def _text_segment_still_untranslated(self, source_text: str, translated_text: str) -> bool:
+        if normalize_text(source_text) == normalize_text(translated_text) and (
+            is_preserved_reference(source_text)
+            or normalize_text(source_text) in {normalize_text(term) for term in getattr(self, 'preserved_terms', ())}
+        ):
+            return False
         source_words = self._latin_words(source_text)
         if len(source_words) < 2:
             return False
@@ -1275,7 +1291,7 @@ class SemanticsTranslator:
             if not is_external_text_node(node):
                 continue
             text = str(node)
-            if self._should_translate_text_node(text):
+            if not is_preserved_reference_node(node) and self._should_translate_text_node(text):
                 segments.append((len(segments), node, text))
 
         if not segments:
@@ -2075,6 +2091,7 @@ class SemanticsTranslator:
             note_soup = BeautifulSoup(original_inner or "", "html.parser")
             has_translatable_text_node = any(
                 is_external_text_node(node)
+                and not is_preserved_reference_node(node)
                 and self._should_translate_text_node(str(node))
                 for node in note_soup.find_all(string=True)
             )

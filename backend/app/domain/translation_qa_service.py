@@ -38,7 +38,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20261011-link-contract-v9"
+QA_RULES_VERSION = "20261011-reference-index-scope-v11"
 
 
 def max_free_retries() -> int:
@@ -59,7 +59,8 @@ def _is_zh_target(target_lang: str | None) -> bool:
 def _text_from_tag(tag: Tag) -> str:
     if not tag:
         return ""
-    clone = BeautifulSoup(str(tag), "html.parser")
+    from app.domain.translation_residual_policy import without_reference_text_nodes
+    clone = BeautifulSoup(without_reference_text_nodes(str(tag)), "html.parser")
     for media in clone.find_all(list(NON_TEXT_TAGS)):
         if media.parent is not None:
             media.decompose()
@@ -107,7 +108,10 @@ def _artifact_text_residual_category(text: str, block: Tag | None = None, preser
 def _is_non_body_document(member_name: str, soup: BeautifulSoup) -> bool:
     from app.domain.manifest_service import classify_chapter_kind
     from app.models import ChapterKind
-    if classify_chapter_kind(member_name) in {ChapterKind.nav, ChapterKind.copyright}:
+    # Match the manifest's established non-translated index policy even when
+    # the source uses a styled paragraph instead of h1/h2 for "Index".
+    # The shared classifier explicitly keeps index_split_N as body chapters.
+    if classify_chapter_kind(member_name) in {ChapterKind.nav, ChapterKind.copyright, ChapterKind.index}:
         return True
 
     first_heading = ""

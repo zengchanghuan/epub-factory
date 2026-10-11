@@ -79,6 +79,22 @@ def classify_chapter_kind_from_chunks(file_name: str, chunks: list[ChunkItem]) -
     return _CONTENT_HEADING_KINDS.get(first_heading, kind)
 
 
+def chapter_requires_translation(chapter: dict) -> bool:
+    """Translation scope is not the same as the chapter's display category.
+
+    Appendices, acknowledgments, author biographies and standalone notes can
+    contain prose. Keep their real kinds, but send their extracted chunks
+    through the same translation/reduce path as body chapters. Navigation has
+    its own label pass; copyright, index and cover retain their existing policy.
+    """
+    if chapter.get("chapter_kind") not in {
+        ChapterKind.body.value, ChapterKind.appendix.value, ChapterKind.other.value,
+    }:
+        return False
+    stem = Path(str(chapter.get("file_path") or "").replace("\\", "/")).stem
+    return not bool(re.match(r"^cover(?:$|[_ .-])", stem, re.I))
+
+
 def _chapter_id_from_path(file_path: str) -> str:
     """从 item 路径生成稳定 chapter_id，用于 manifest 与 chunk_id 前缀。"""
     stem = Path(file_path).stem
@@ -161,7 +177,7 @@ def build_manifest(epub_path: str, job_id: str) -> Dict[str, Any]:
             continue
 
         chapter_id = chapter_ids[file_name]
-        # 仅正文提取 chunk，非正文保留空 chunks 便于 Reduce 按 file_path 回写
+        # Extract all document chunks; translation scope is decided separately.
         chunk_list, extraction_stats = extract_chunks_with_stats(content, chapter_id)
         manifest_stats["image_note_chunks_skipped"] += int(extraction_stats.get("image_note_chunks_skipped") or 0)
         manifest_stats["image_caption_chunks"] += int(extraction_stats.get("image_caption_chunks") or 0)

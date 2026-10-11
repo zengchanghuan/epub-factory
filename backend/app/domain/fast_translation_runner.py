@@ -37,7 +37,7 @@ from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.translation_attempt import attempt_id_from_stats, new_attempt_id
 from app.domain.job_write_fence import current_job_write_fence, JobWriteConflict
 from app.domain.translation_checkpoints import TranslationCheckpoints, book_resume_key, fingerprint
-from app.domain.manifest_service import build_manifest
+from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_residual_policy import confirmed_preserved_terms
 from app.infra.llm_errors import ProviderAccountUnavailable
@@ -129,7 +129,7 @@ def _as_bytes(content: Any) -> bytes:
 def _extract_texts_from_manifest(manifest: dict) -> list[str]:
     texts: list[str] = []
     for chapter in manifest.get("chapters", []):
-        if chapter.get("chapter_kind") != ChapterKind.body.value:
+        if not chapter_requires_translation(chapter):
             continue
         for chunk in chapter.get("chunks") or []:
             text = (chunk.get("text") or "").strip()
@@ -480,7 +480,7 @@ async def _translate_manifest_async(
 
     body_chapters = [
         ch for ch in manifest.get("chapters", [])
-        if ch.get("chapter_kind") == ChapterKind.body.value and (ch.get("chunks") or [])
+        if chapter_requires_translation(ch) and (ch.get("chunks") or [])
     ]
     literary_polish_enabled = (
         quality_mode == "literary"
@@ -728,7 +728,7 @@ async def _translate_manifest_async(
             job_id=job.id,
             chapter_id=chapter["chapter_id"],
             file_path=chapter["file_path"],
-            chapter_kind=ChapterKind.body,
+            chapter_kind=ChapterKind(chapter["chapter_kind"]),
             status=_chapter_status(chunk_results),
             chunk_total=len(chunk_results),
             chunk_success=len(chunk_results) - failed,
@@ -852,7 +852,7 @@ async def _translate_manifest_async(
     for ch in manifest.get("chapters", []):
         kind = ChapterKind(ch.get("chapter_kind", ChapterKind.body.value))
         chunks = ch.get("chunks") or []
-        status = ChapterStatus.pending if kind == ChapterKind.body and chunks else ChapterStatus.completed
+        status = ChapterStatus.pending if chapter_requires_translation(ch) and chunks else ChapterStatus.completed
         _upsert_chapter(JobChapter(
             job_id=job.id,
             chapter_id=ch["chapter_id"],
@@ -911,7 +911,7 @@ async def _translate_manifest_async(
                 job_id=job.id,
                 chapter_id=chapter["chapter_id"],
                 file_path=chapter["file_path"],
-                chapter_kind=ChapterKind.body,
+                chapter_kind=ChapterKind(chapter["chapter_kind"]),
                 status=ChapterStatus.running,
                 chunk_total=len(specs),
                 started_at=started,
@@ -1611,7 +1611,7 @@ def run_fast_translation_job(
             str(output_path),
             make_get_chapter_content(reduce_job_id, attempt_id=reduce_attempt_id, execution_owner=execution_owner, required_files=[
                 chapter['file_path'] for chapter in manifest.get('chapters', [])
-                if chapter.get('chapter_kind') == ChapterKind.body.value and chapter.get('chunks')
+                if chapter_requires_translation(chapter) and chapter.get('chunks')
             ]),
             book_title=translated_book_title if translated_book_title != original_book_title else None,
             original_book_title=original_book_title,

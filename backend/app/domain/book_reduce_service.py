@@ -18,7 +18,7 @@ from typing import Callable, Iterable, Optional
 
 from bs4 import BeautifulSoup
 
-from app.domain.manifest_service import build_manifest
+from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.chapter_reduce_service import BILINGUAL_STYLE
 from app.engine.unpacker import EpubUnpacker
 from app.engine.toc_rebuilder import TocRebuilder
@@ -200,7 +200,15 @@ def _sync_book_title_metadata(book, title: str) -> None:
     book.title = title
     dc_ns = "http://purl.org/dc/elements/1.1/"
     book.metadata.setdefault(dc_ns, {})
-    book.metadata[dc_ns]["title"] = [(title, {})]
+    titles = list(book.metadata[dc_ns].get("title") or [])
+    if titles:
+        # Refinements such as <meta refines="#t1" property="title-type"> bind
+        # to the title ID. Replacing its text must not orphan those references
+        # or discard additional title/subtitle entries.
+        titles[0] = (title, dict(titles[0][1] or {}))
+    else:
+        titles = [(title, {})]
+    book.metadata[dc_ns]["title"] = titles
 
 
 def _sync_document_title_text(content: bytes, original_title: str, translated_title: str) -> bytes:
@@ -266,7 +274,7 @@ def reduce_and_package(
         return False
     file_path_to_content: dict[str, bytes] = {}
     for ch in manifest.get("chapters", []):
-        if ch.get("chapter_kind") != "body":
+        if not chapter_requires_translation(ch):
             continue
         fp = ch.get("file_path")
         if not fp:

@@ -640,6 +640,18 @@ class EpubPackager:
                     else:
                         a.append(title)
                     local_changed = True
+            # Collapsing a translated multi-span label can leave an anonymous
+            # punctuation/styling span empty. EPUB navigation forbids empty
+            # spans. Remove only empty decorative leaves; never discard an ID,
+            # semantic attribute, media subtree, or non-TOC navigation label.
+            for nav in soup.find_all('nav'):
+                if 'toc' not in str(nav.get('epub:type') or '').split():
+                    continue
+                for span in reversed(nav.find_all('span')):
+                    if (not span.get_text(strip=True) and not span.find()
+                            and set(span.attrs) <= {'class', 'style', 'hidden', 'lang', 'dir'}):
+                        span.decompose()
+                        local_changed = True
             if local_changed:
                 nav_path.write_text(str(soup), encoding="utf-8")
                 changed = True

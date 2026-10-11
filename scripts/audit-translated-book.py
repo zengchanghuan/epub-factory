@@ -10,7 +10,7 @@ import zipfile
 from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from app.domain.manifest_service import build_manifest
+from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.chapter_reduce_service import get_node_by_locator
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_qa_service import audit_translated_epub_output, QA_RULES_VERSION
@@ -24,10 +24,10 @@ def audit_book(source, target, glossary=None, *, include_chunks=False):
         raise ValueError(manifest['error'])
     counts = Counter()
     findings, alignment_failures, chunk_audits = [], [], []
-    expected = sum(len(c['chunks']) for c in manifest['chapters'] if c['chapter_kind'] == 'body')
+    expected = sum(len(c['chunks']) for c in manifest['chapters'] if chapter_requires_translation(c))
     with zipfile.ZipFile(target) as archive:
         for chapter in manifest['chapters']:
-            if chapter['chapter_kind'] != 'body':
+            if not chapter_requires_translation(chapter):
                 continue
             file_path = chapter['file_path']
             # ebooklib paths are OPF-relative, not necessarily ZIP-root-relative.
