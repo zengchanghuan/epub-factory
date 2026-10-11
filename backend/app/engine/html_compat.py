@@ -3,6 +3,7 @@ import re
 import cssutils
 from lxml import etree
 from urllib.parse import unquote, urlsplit
+from .legacy_big_compat import upgrade_legacy_big
 
 
 _SIDES = ('top', 'right', 'bottom', 'left')
@@ -301,6 +302,7 @@ def _upgrade_nested_note_backlinks(root):
 
 
 def upgrade_legacy_html(root, book_title='', *, stylesheet_loader=None):
+    upgrade_legacy_big(root, stylesheet_loader)
     _upgrade_nested_note_backlinks(root)
     _upgrade_legacy_tables(root, stylesheet_loader)
     def css(node, property_name, value):

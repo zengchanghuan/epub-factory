@@ -128,6 +128,7 @@ D_SUITE = [
     "test_d83_quote_execution.py",
     "test_d84_source_compat.py",
     "test_d85_translation_scope.py",
+    "test_d86_big_compat.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

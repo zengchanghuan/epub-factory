@@ -41,7 +41,7 @@ def main():
         from app.engine.compiler import ExtremeCompiler
         from app.engine.epub_validation import validate_epub
         from app.engine.unpacker import EpubUnpacker
-        from app.domain.manifest_service import build_manifest
+        from app.domain.manifest_service import build_manifest, chapter_requires_translation
         from app.domain.chapter_reduce_service import apply_chunk_results
         from app.domain.book_reduce_service import reduce_and_package
         from app.domain.epub_link_audit import audit_epub_links
@@ -71,7 +71,7 @@ def main():
                     output = root / ('bilingual.epub' if bilingual else 'single.epub')
                     contents = {}; restored = chunks = 0
                     for chapter in manifest['chapters']:
-                        if chapter['chapter_kind'] != 'body': continue
+                        if not chapter_requires_translation(chapter): continue
                         rows = []
                         for chunk in chapter.get('chunks', []):
                             raw = chunk['html']; soup = BeautifulSoup(raw, 'html.parser')
