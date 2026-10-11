@@ -10,6 +10,18 @@ from app.domain.translation_qa_service import audit_translated_epub_output, buil
 
 
 class NavigationNumericTests(unittest.TestCase):
+    def test_spelled_percent_is_equivalent_but_not_a_plain_number(self):
+        for source, target in [('10 percent', '10%'), ('0.01 percent', '百分之0.01'),
+                               ('-10 percent', '百分之负十'), ('10 PER CENT', '10%'),
+                               ('10 per  cent', '百分之十'), ('10 percent and 10 percent', '10%和10%'),
+                               ('10 to 20 percent', '10%到20%')]:
+            self.assertEqual(missing_numeric_facts(source, target), [], (source, target))
+        for source, target in [('10 percent', '10'), ('10 percent', '11%'),
+                               ('-10 percent', '10%'), ('10 percent and 10 percent', '10%'),
+                               ('10 percent', '10个百分点'), ('10 percentile', '10%'),
+                               ('10 percentage points', '10%'), ('10 percent points', '10%')]:
+            self.assertTrue(missing_numeric_facts(source, target), (source, target))
+
     def test_real_book_numeric_equivalents(self):
         for source, target in [('$1 million and $500,000', '100万美元和50万美元'),
                                ('$1 to $5 billion', '10亿到50亿美元'), ('7th–9th', '第7-9局'),

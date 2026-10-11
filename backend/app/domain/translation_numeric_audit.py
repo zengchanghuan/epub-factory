@@ -15,7 +15,7 @@ _TOKEN = re.compile(
     r"(?P<percent>百分之)?(?P<leading_sign>negative\s+|[+−负-])?(?P<currency>[$£€])?\s*(?P<sign>[+−负-])?"
     r"(?P<number>\d+(?:,\d{3})*(?:\.\d+)?|\.\d+|[零〇一二三四五六七八九两十百千万亿]+)"
     r"(?P<ordinal>st|nd|rd|th)?\s*(?P<scale>thousand|million|billion|trillion|grand|k(?![a-z])|万亿|万|亿|千|百)?"
-    r"\s*(?P<suffix>%|美元|英镑|欧元|人民币|日元|dollars|bucks)?", re.I)
+    r"\s*(?P<suffix>%|(?:percent|per\s+cent)\b(?!\s+points?\b)|美元|英镑|欧元|人民币|日元|dollars|bucks)?", re.I)
 
 
 def _chinese_number(text):
@@ -64,7 +64,8 @@ def numeric_facts(text):
                                        or (sign_pos > 0 and text[sign_pos-1].isascii() and text[sign_pos-1].isalpha())))
         if (sign in {'-', '−', '负'} or str(sign).lower().startswith('negative')) and not range_minus:
             value = -value
-        kind = 'percent' if m['percent'] or m['suffix'] == '%' else _CURRENCIES.get((m['currency'] or m['suffix'] or m['scale'] or '').lower(), 'number')
+        suffix = re.sub(r'\s+', ' ', (m['suffix'] or '').lower())
+        kind = 'percent' if m['percent'] or suffix in {'%', 'percent', 'per cent'} else _CURRENCIES.get((m['currency'] or m['suffix'] or m['scale'] or '').lower(), 'number')
         facts.append(NumericFact(value, kind, m.group().strip(), m.start(), m.end(), scale))
     # Only explicit numeric ranges share a trailing magnitude/currency.
     for left, right in zip(facts, facts[1:]):
