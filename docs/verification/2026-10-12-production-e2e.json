@@ -1,0 +1,457 @@
+{
+  "server": {
+    "run": "e2e-20261012-dc0bcacd74",
+    "started_at": "2026-10-12T02:13:15.996794+00:00",
+    "release": "967e8b25ea435b0aa9d05e93f50cd76e6eb1bfd7",
+    "checks": [
+      {
+        "check": "/api/v2/jobs initial upload",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "check": "/api/v2/jobs/d2d3c0f2c415 without recovered token",
+        "ok": true,
+        "status": 403
+      },
+      {
+        "check": "/api/v2/jobs duplicate recovery",
+        "ok": true,
+        "status": 409,
+        "id": "d2d3c0f2c415"
+      },
+      {
+        "check": "/api/v2/jobs recovery no-store",
+        "ok": true
+      },
+      {
+        "check": "/api/v2/jobs/d2d3c0f2c415 recovered access",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "check": "test order ownership",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "/api/v2/batches initial upload",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "check": "/api/v2/batches/f5504f6837ff without recovered token",
+        "ok": true,
+        "status": 403
+      },
+      {
+        "check": "/api/v2/batches duplicate recovery",
+        "ok": true,
+        "status": 409,
+        "id": "f5504f6837ff"
+      },
+      {
+        "check": "/api/v2/batches recovery no-store",
+        "ok": true
+      },
+      {
+        "check": "/api/v2/batches/f5504f6837ff recovered access",
+        "ok": true,
+        "status": 200
+      },
+      {
+        "check": "test order ownership",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "test order ownership",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "duplicate upload created no extra rows",
+        "ok": true
+      },
+      {
+        "check": "test-only authorization",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "test-only queue transition",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "real worker dispatch",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "test-only authorization",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "test-only queue transition",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "real worker dispatch",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "test-only authorization",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "test-only queue transition",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "real worker dispatch",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "all real conversions completed",
+        "ok": true,
+        "states": {
+          "d2d3c0f2c415": "success",
+          "f6cd2ca9ee84": "success",
+          "c31495c3205b": "success"
+        }
+      },
+      {
+        "check": "public completed task status",
+        "ok": true,
+        "id": "d2d3c0f2c415",
+        "status": "completed"
+      },
+      {
+        "check": "output EPUB intact and converted",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "individual public download matches artifact",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "original upload retained",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "no false payment verification",
+        "ok": true,
+        "job_id": "d2d3c0f2c415"
+      },
+      {
+        "check": "completed upload still recovers same token",
+        "ok": true,
+        "id": "d2d3c0f2c415"
+      },
+      {
+        "check": "public completed task status",
+        "ok": true,
+        "id": "f5504f6837ff",
+        "status": "completed"
+      },
+      {
+        "check": "output EPUB intact and converted",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "individual public download matches artifact",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "original upload retained",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "no false payment verification",
+        "ok": true,
+        "job_id": "f6cd2ca9ee84"
+      },
+      {
+        "check": "output EPUB intact and converted",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "individual public download matches artifact",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "original upload retained",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "no false payment verification",
+        "ok": true,
+        "job_id": "c31495c3205b"
+      },
+      {
+        "check": "completed upload still recovers same token",
+        "ok": true,
+        "id": "f5504f6837ff"
+      },
+      {
+        "check": "sequential ZIP download valid",
+        "ok": true,
+        "request": 0,
+        "bytes": 4076,
+        "entries": 2
+      },
+      {
+        "check": "sequential ZIP download valid",
+        "ok": true,
+        "request": 1,
+        "bytes": 4076,
+        "entries": 2
+      },
+      {
+        "check": "sequential ZIP download valid",
+        "ok": true,
+        "request": 2,
+        "bytes": 4076,
+        "entries": 2
+      },
+      {
+        "check": "four concurrent ZIP downloads valid",
+        "ok": true,
+        "downloads": [
+          {
+            "request": 3,
+            "bytes": 4076,
+            "entries": 2
+          },
+          {
+            "request": 4,
+            "bytes": 4076,
+            "entries": 2
+          },
+          {
+            "request": 5,
+            "bytes": 4076,
+            "entries": 2
+          },
+          {
+            "request": 6,
+            "bytes": 4076,
+            "entries": 2
+          }
+        ]
+      },
+      {
+        "check": "temporary batch ZIPs cleaned",
+        "ok": true,
+        "remaining": 0
+      },
+      {
+        "check": "all source and output EPUBs remain",
+        "ok": true
+      },
+      {
+        "check": "unrelated session denied",
+        "ok": true,
+        "status": 403
+      },
+      {
+        "check": "unrelated session denied",
+        "ok": true,
+        "status": 403
+      },
+      {
+        "check": "production health",
+        "ok": true
+      }
+    ],
+    "completed_at": "2026-10-12T02:13:41.306684+00:00",
+    "status": "passed"
+  },
+  "browser": {
+    "release": "967e8b25ea435b0aa9d05e93f50cd76e6eb1bfd7",
+    "run": "e2e-20261012-dc0bcacd74",
+    "checks": [
+      {
+        "name": "browser single duplicate automatically restored",
+        "ok": true,
+        "id": "d2d3c0f2c415",
+        "duplicate_status": 409,
+        "forbidden_requests": 0
+      },
+      {
+        "name": "browser EPUB download completed",
+        "ok": true,
+        "bytes": 2201,
+        "file": "fixepub-production-e2e-single.epub"
+      },
+      {
+        "name": "browser batch duplicate automatically restored",
+        "ok": true,
+        "id": "f5504f6837ff",
+        "duplicate_status": 409,
+        "forbidden_requests": 0
+      },
+      {
+        "name": "browser ZIP download completed",
+        "ok": true,
+        "bytes": 4076,
+        "file": "fixepub-production-e2e-batch.zip"
+      },
+      {
+        "name": "browser has no uncaught JavaScript exceptions",
+        "ok": true
+      }
+    ],
+    "requests": [
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 409
+      },
+      {
+        "path": "/api/v2/jobs/d2d3c0f2c415/notification-email",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d2d3c0f2c415",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d2d3c0f2c415/events",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d2d3c0f2c415/download",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches",
+        "status": 409
+      },
+      {
+        "path": "/api/v2/batches/f5504f6837ff/notification-email",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/f5504f6837ff",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/f5504f6837ff/download",
+        "status": 200
+      }
+    ],
+    "status": "passed",
+    "downloaded_archives_verified": true
+  },
+  "post_browser_checks": {
+    "source": "read-only SSH verification after browser downloads",
+    "test_orders": 3,
+    "all_completed": true,
+    "temporary_zip_files": 0,
+    "deployed_files_match": 545,
+    "service_error_entries_since_test_start": 0,
+    "services": {
+      "epub-factory": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      },
+      "epub-factory-worker": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      },
+      "epub-factory-housekeeping": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      },
+      "epub-factory-beat": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      }
+    }
+  },
+  "downloaded_artifacts": [
+    {
+      "name": "fixepub-production-e2e-single.epub",
+      "bytes": 2201,
+      "sha256": "05ff113dee685d6f8235f63ffcc1fce239d9096afae787d8368027ef28d7a069"
+    },
+    {
+      "name": "fixepub-production-e2e-batch.zip",
+      "bytes": 4076,
+      "sha256": "603a12bdf800fc521e238da348eb7050b83f626d22ec96ebfb2565abf36bb88f"
+    }
+  ],
+  "scope": {
+    "synthetic_books": 3,
+    "payment_authorization": "server_test_bypass for this run only",
+    "actual_payment_verified": false,
+    "translation_or_precision_polish_used": false,
+    "global_payment_checks_changed": false
+  },
+  "ci": {
+    "run_id": 38193654022,
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38193654022",
+    "conclusion": "success",
+    "head_sha": "967e8b25ea435b0aa9d05e93f50cd76e6eb1bfd7"
+  }
+}
