@@ -38,6 +38,8 @@ title: EPUB Factory
 
 当前生产代码架构与翻译质量门禁见 [docs/ARCHITECTURE-DIAGRAM.md](docs/ARCHITECTURE-DIAGRAM.md)。
 
+早期实现、测试与发布经过整理的历史资料见 [历史记录索引](docs/HISTORICAL-RECORDS.md)；旧方案与当前产品范围的区别在各记录开头注明。
+
 ### 存储
 
 - **默认**：内存 `JobStore`（零依赖，重启后任务列表清空）

@@ -68,3 +68,6 @@ test_*/
 /文化大革命人民的歷史*.pdf
 test_测试用例书
 test_测试用例书/
+
+# Private authenticated filing-portal captures (historical documentation review).
+/artifacts/beian-20260929/
