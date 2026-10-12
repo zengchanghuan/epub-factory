@@ -26,6 +26,7 @@ translation_cache.db
 backend/epub_jobs.db
 backend/epub_jobs.db-shm
 backend/epub_jobs.db-wal
+backend/epub_jobs.db.schema-init.lock
 backend/rate_limit.db
 backend/rate_limit.db-shm
 backend/rate_limit.db-wal
