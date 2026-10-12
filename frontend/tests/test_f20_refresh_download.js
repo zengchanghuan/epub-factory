@@ -41,6 +41,7 @@ for (const batch of [false, true]) {
     const opened = [];
     const context = {
       window: {}, localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
+      crypto: { randomUUID: () => 'recovered-browser' },
       alert() { throw new Error('Valid recovery should open the original task'); },
       openJobDetail(id) { assert.equal(context.authHeaders(id)['X-Job-Token'], 'recovered'); opened.push(['job', id]); },
       openBatchDetail(id) { assert.equal(context.getJobToken(`batch:${id}`), 'recovered'); opened.push(['batch', id]); },
@@ -79,4 +80,32 @@ test('F20-7 创建和恢复任务携带当前账号凭证，退出登录后不�
   assert.equal(context.clientHeaders()['X-Client-Session'], 'browser');
   token = '';
   assert.equal(context.clientHeaders().Authorization, undefined);
+});
+
+test('F20-8 新浏览器仅凭登录账号获取任务下载链接，退出后清除请求中的账号凭证', () => {
+  const requests = [];
+  const values = new Map([['anon_client_session_v1', 'new-browser']]);
+  let account = 'owner-account';
+  const chain = value => ({ then: fn => chain(fn(value)), catch() { return this; } });
+  const context = {
+    API: '', window: { location: {}, fixepubAuth: { getToken: () => account } },
+    localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
+    openJobDetail() { throw new Error('Owner should receive the download'); },
+    fetch(url, options) {
+      requests.push({ url, options });
+      return chain({ ok: true, json: () => ({ status: 'completed', download_url: '/api/v2/jobs/book/download?exp=123&sig=short-lived' }) });
+    },
+  };
+  vm.createContext(context); vm.runInContext(tokenSource + actionSource, context);
+  context.handleTaskPrimaryAction('book');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer owner-account');
+  assert.equal(requests[0].options.headers['X-Job-Token'], undefined);
+  assert.equal(context.window.location.href, '/api/v2/jobs/book/download?exp=123&sig=short-lived');
+  assert.equal(context.authHeaders('batch:bundle').Authorization, 'Bearer owner-account');
+  context.saveJobToken('book', 'old-job-token');
+  assert.equal(context.authHeaders('book')['X-Job-Token'], 'old-job-token');
+  assert.equal(context.authHeaders('book').Authorization, 'Bearer owner-account');
+  account = '';
+  assert.equal(context.authHeaders('book').Authorization, undefined);
+  assert.equal(context.authHeaders('book')['X-Job-Token'], 'old-job-token');
 });

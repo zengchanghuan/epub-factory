@@ -1904,8 +1904,10 @@
       loadTaskList();
     }
     function authHeaders(jobId) {
+      const headers = clientHeaders();
       const token = getJobToken(jobId);
-      return token ? { "X-Job-Token": token } : {};
+      if (token) headers["X-Job-Token"] = token;
+      return headers;
     }
     function withJobToken(url, jobId) {
       const token = getJobToken(jobId);

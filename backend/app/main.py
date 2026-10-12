@@ -1057,12 +1057,19 @@ _LEGACY_ACCESS_WINDOW_DAYS = int(_os.environ.get("LEGACY_ACCESS_WINDOW_DAYS", "3
 
 def _authorize_job_access(request: Request, job: Job) -> bool:
     """
-    匿名安全的访问鉴权：
-    1) 任务有 access_token → 严格按 X-Job-Token / cookie / ?token= 校验；
+    账号所有权与匿名任务凭证的访问鉴权：
+    1) 有效的订单所属账号可访问；已禁用账号拒绝访问。
+    2) 任务有 access_token → 严格按 X-Job-Token / cookie / ?token= 校验；
        同时若设置了 token_expires_at 且已过期，则拒绝。
-    2) 老任务（无 access_token）→ 仅在 LEGACY_ACCESS_WINDOW_DAYS（默认 30 天）内
+    3) 老任务（无 access_token）→ 仅在 LEGACY_ACCESS_WINDOW_DAYS（默认 30 天）内
        允许 session 或 IP 兜底；超过窗口直接拒绝，避免同 NAT 出口 IP 互访。
     """
+    user = get_current_user_optional(request)
+    if user is not None:
+        if not user.is_active:
+            return False
+        if job.user_id == user.id:
+            return True
     token = _extract_job_token(request, job.id)
     if job.access_token:
         if not token or token != job.access_token:
@@ -2318,7 +2325,10 @@ def _batch_payload(batch_id: str, jobs: Optional[list[Job]] = None) -> dict:
             "pending_payment": pending_payment,
         },
         "progress_percent": progress,
-        "download_url": f"/api/v2/batches/{batch_id}/download" if completed else None,
+        "download_url": (
+            _attach_download_sig(f"batch:{batch_id}", f"/api/v2/batches/{batch_id}/download")
+            if completed else None
+        ),
         "jobs": [
             {
                 "job_id": job.id,
@@ -2598,17 +2608,20 @@ def recover_batch_payment_v2(batch_id: str, request: Request, background_tasks: 
 
 
 @app.get("/api/v2/batches/{batch_id}/download")
-def download_batch_v2(batch_id: str, request: Request):
+def download_batch_v2(batch_id: str, request: Request, exp: Optional[int] = None, sig: Optional[str] = None):
     jobs = _list_batch_jobs(batch_id)
     if not jobs:
         raise HTTPException(status_code=404, detail="批次不存在")
-    if not _authorize_batch_access(request, jobs):
+    if not (_verify_download_sig(f"batch:{batch_id}", exp, sig) or _authorize_batch_access(request, jobs)):
         raise HTTPException(status_code=403, detail="无权访问该批次")
-    downloadable = [job for job in jobs if _job_can_download(job) and Path(job.output_path or "").exists()]
+    # Validate every completed artifact before filtering: missing files or paths
+    # must not silently turn a fully completed batch into a partial delivery.
+    for job in jobs:
+        if job.status == JobStatus.success:
+            _verify_download_artifact(job)
+    downloadable = [job for job in jobs if _job_can_download(job)]
     if not downloadable:
         raise HTTPException(status_code=400, detail="批次中尚无可下载的结果")
-    for job in downloadable:
-        _verify_download_artifact(job)
     with tempfile.NamedTemporaryFile(prefix=f"batch-{batch_id}-", suffix=".zip", dir=OUTPUT_DIR, delete=False) as bundle:
         zip_path = Path(bundle.name)
     try:
@@ -2617,8 +2630,10 @@ def download_batch_v2(batch_id: str, request: Request):
             for index, job in enumerate(downloadable, start=1):
                 output = Path(job.output_path or "")
                 name = output.name
-                if name in used_names:
-                    name = f"{index:02d}-{name}"
+                suffix = index
+                while name in used_names:
+                    name = f"{suffix:02d}-{output.name}"
+                    suffix += 1
                 used_names.add(name)
                 archive.write(output, arcname=name)
         return TemporaryFileResponse(zip_path, filename=f"fixepub-batch-{batch_id}.zip", media_type="application/zip")

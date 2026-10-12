@@ -273,6 +273,178 @@ def test_batch_download_cannot_bypass_integrity(store,tmp_path):
     assert response.status_code==410
 
 
+@pytest.fixture
+def delivery_client(store, tmp_path):
+    import app.main as main
+    import app.storage as storage
+    from app.auth import jwt
+    from app.models import User
+    for key in ('owner', 'other'):
+        store.create_user(User(id=key))
+    with patch.object(main, 'job_store', store), patch.object(storage, 'job_store', store), patch.object(
+            main, 'OUTPUT_DIR', tmp_path), patch.object(jwt, '_SECRET_KEY', 'offline-delivery-account-key'), patch.object(
+            main, 'DOWNLOAD_SIGN_SECRET', 'offline-delivery-download-key'):
+        client = TestClient(main.app)  # No lifespan: no background workers or production startup.
+        try:
+            yield SimpleNamespace(client=client, owner={'Authorization': 'Bearer ' + jwt.create_access_token('owner')},
+                                  other={'Authorization': 'Bearer ' + jwt.create_access_token('other')})
+        finally:
+            client.close()
+
+
+@pytest.mark.parametrize('expired', [False, True])
+def test_paid_delivery_owner_can_retrieve_without_original_token(store, tmp_path, delivery_client, expired):
+    path = tmp_path / 'output.epub'; path.write_bytes(b'paid-result')
+    job = add(store, status=JobStatus.success, output_path=str(path), user_id='owner',
+              access_token='original-token', token_expires_at=datetime.now(timezone.utc) + timedelta(days=-1 if expired else 1),
+              translation_stats={'artifact_manifest': receipt(path, 'attempt')})
+    client = delivery_client.client
+    assert client.get('/api/v2/jobs', headers=delivery_client.owner).json()['items'][0]['job_id'] == job.id
+    detail = client.get('/api/v2/jobs/order', headers=delivery_client.owner)
+    assert detail.status_code == 200
+    # Browser navigation carries no Authorization header; follow the issued link.
+    result = client.get(detail.json()['download_url'])
+    assert result.status_code == 200
+    assert result.content == b'paid-result'
+    assert client.get('/api/v2/jobs/order/download', headers=delivery_client.owner).status_code == 200
+    assert store.get(job.id).access_token == job.access_token
+    assert store.get(job.id).token_expires_at == job.token_expires_at
+
+
+def test_paid_delivery_owner_access_does_not_weaken_other_identities(store, tmp_path, delivery_client):
+    from app.models import User
+    path = tmp_path / 'output.epub'; path.write_bytes(b'paid-result')
+    add(store, status=JobStatus.success, output_path=str(path), user_id='owner', access_token='original-token',
+        token_expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    for headers in ({}, delivery_client.other, {'Authorization': 'Bearer invalid'}):
+        for suffix in ('', '/download'):
+            assert delivery_client.client.get('/api/v2/jobs/order' + suffix, headers=headers).status_code == 403
+    # Anonymous capability access continues to work, independently of account login.
+    assert delivery_client.client.get('/api/v2/jobs/order/download', headers={'X-Job-Token': 'original-token'}).status_code == 200
+    store.update_user(User(id='owner', is_active=False))
+    for token in ({}, {'X-Job-Token': 'original-token'}):
+        for suffix in ('', '/download'):
+            assert delivery_client.client.get('/api/v2/jobs/order' + suffix,
+                headers={**delivery_client.owner, **token}).status_code == 403
+
+
+def test_paid_delivery_expired_anonymous_token_is_still_rejected(store, tmp_path, delivery_client):
+    path = tmp_path / 'output.epub'; path.write_bytes(b'paid-result')
+    add(store, status=JobStatus.success, output_path=str(path), access_token='expired',
+        token_expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+    for headers in ({'X-Job-Token': 'expired'}, delivery_client.owner):
+        assert delivery_client.client.get('/api/v2/jobs/order/download', headers=headers).status_code == 403
+
+
+def test_paid_delivery_owner_can_recover_payment_without_original_token(store, delivery_client):
+    import app.main as main
+    add(store, user_id='owner', access_token='expired', token_expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+    trade = {'out_trade_no': 'order', 'trade_status': 'TRADE_SUCCESS', 'total_amount': '5.99'}
+    with patch('app.infra.alipay.query_verified_trade', return_value=trade) as query, patch.object(
+            main, '_use_celery', return_value=True), patch('app.infra.job_dispatch_publisher.publish_conversion') as publish, patch.object(
+            main, '_record_verified_payment'):
+        assert delivery_client.client.post('/api/v2/jobs/order/recover', headers=delivery_client.other).status_code == 403
+        query.assert_not_called()
+        result = delivery_client.client.post('/api/v2/jobs/order/recover', headers=delivery_client.owner)
+    assert result.status_code == 200
+    assert result.json()['recovered']
+    assert store.get('order').status == JobStatus.pending
+    publish.assert_called_once()
+    assert len(store.list_dispatches('order')) == 1
+
+
+@pytest.mark.parametrize('paid', [False, True])
+def test_paid_delivery_owner_retry_still_requires_payment(store, tmp_path, delivery_client, paid):
+    import app.main as main
+    from app.domain.payment_entitlement import quote_entitlement, grant_verified_entitlement
+    source = tmp_path / 'source.epub'; source.write_bytes(b'offline-source-not-executed')
+    job = Job(id='retry', source_filename='source.epub', input_path=str(source), trace_id='delivery-retry',
+              status=JobStatus.failed, output_mode=OutputMode.simplified, enable_translation=True,
+              user_id='owner', access_token='old', token_expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+              expected_amount='5.99', translation_model='deepseek-flash',
+              translation_stats={'attempt_id': 'failed-attempt'})
+    job.payment_entitlement = quote_entitlement(job)
+    store.add(job)
+    if paid:
+        grant_verified_entitlement(store, job, '5.99', 'verified_query')
+    with patch.object(main, '_use_celery', return_value=True), patch(
+            'app.infra.job_dispatch_publisher.publish_conversion') as publish, patch.object(
+            main, 'run_job', side_effect=AssertionError('No book execution')), patch.dict(
+            os.environ, {'SKIP_PAYMENT_CHECK': '0', 'EPUB_TRANSLATION_MAX_FREE_RETRIES': '2'}):
+        assert delivery_client.client.post('/api/v2/jobs/retry/restart-translation',
+            headers=delivery_client.other).status_code == 403
+        result = delivery_client.client.post('/api/v2/jobs/retry/restart-translation', headers=delivery_client.owner)
+    assert result.status_code == (200 if paid else 402), result.text
+    if paid:
+        assert store.get(job.id).status == JobStatus.pending
+        assert store.get(job.id).translation_stats['attempt_id'] != 'failed-attempt'
+        assert store.get(job.id).payment_entitlement['state'] == 'paid'
+        publish.assert_called_once()
+    else:
+        assert store.get(job.id).status == JobStatus.failed
+        publish.assert_not_called()
+
+
+@pytest.mark.parametrize('damage', ['missing', 'empty_path', 'tampered'])
+def test_paid_delivery_batch_never_silently_omits_completed_artifact(store, tmp_path, delivery_client, damage):
+    for index in range(2):
+        path = tmp_path / f'{index}.epub'; path.write_bytes(b'good')
+        add(store, str(index), status=JobStatus.success, output_path=str(path), user_id='owner',
+            batch_id='batch', batch_index=index, translation_stats={'artifact_manifest': receipt(path, 'attempt')})
+    if damage == 'missing':
+        path.unlink()
+    elif damage == 'empty_path':
+        with store._Session() as session:
+            session.execute(update(JobRecord).where(JobRecord.id == '1').values(output_path=None))
+            session.commit()
+    else:
+        path.write_bytes(b'evil')
+    result = delivery_client.client.get('/api/v2/batches/batch/download', headers=delivery_client.owner)
+    assert result.status_code == 410
+    assert '无需再次付款' in result.json()['detail']
+    assert not list(tmp_path.glob('batch-*.zip'))
+
+
+def test_paid_delivery_batch_names_survive_extraction_and_links_are_scoped(store, tmp_path, delivery_client):
+    import io
+    import zipfile
+    import app.main as main
+    from urllib.parse import urlsplit
+    names = ['03-book.epub', 'book.epub', 'book.epub', '04-book.epub', 'book.epub']
+    contents = []
+    for index, name in enumerate(names):
+        directory = tmp_path / str(index); directory.mkdir()
+        path = directory / name
+        content = f'paid-book-{index}'.encode(); contents.append(content); path.write_bytes(content)
+        add(store, str(index), status=JobStatus.success, output_path=str(path), user_id='owner', access_token='old',
+            token_expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+            batch_id='batch', batch_index=index, translation_stats={'artifact_manifest': receipt(path, 'attempt')})
+    client = delivery_client.client
+    detail = client.get('/api/v2/batches/batch', headers=delivery_client.owner)
+    assert detail.status_code == 200
+    url = detail.json()['download_url']
+    result = client.get(url)  # A real anchor navigation has no account header.
+    assert result.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
+        assert len(archive.namelist()) == len(set(archive.namelist())) == len(names)
+        archive.extractall(tmp_path / 'extracted')
+    assert sorted(p.read_bytes() for p in (tmp_path / 'extracted').iterdir()) == sorted(contents)
+    assert not list(tmp_path.glob('batch-*.zip'))
+    assert client.get('/api/v2/batches/batch/download').status_code == 403
+    assert client.get('/api/v2/batches/batch/download', headers=delivery_client.other).status_code == 403
+    # A single-child signature must never authorize downloading the whole batch.
+    child_url = detail.json()['jobs'][0]['download_url']
+    assert client.get('/api/v2/batches/batch/download?' + urlsplit(child_url).query).status_code == 403
+    assert client.get('/api/v2/jobs/0/download?' + urlsplit(url).query).status_code == 403
+    add(store, 'foreign', status=JobStatus.success, output_path=str(path), user_id='other', access_token='foreign',
+        batch_id='other-batch', batch_index=0)
+    assert client.get(url.replace('/batches/batch/', '/batches/other-batch/')).status_code == 403
+    assert client.get(url.replace('sig=', 'sig=invalid')).status_code == 403
+    with patch.object(main, 'DOWNLOAD_SIGN_TTL_SECONDS', -1):
+        expired = client.get('/api/v2/batches/batch', headers=delivery_client.owner).json()['download_url']
+    assert client.get(expired).status_code == 403
+
+
 def test_repeated_batch_download_cleans_archives_but_preserves_epubs(store, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     import io
