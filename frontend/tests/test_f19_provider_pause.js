@@ -56,3 +56,31 @@ test("F19-4 切换质量档位不覆盖用户选择的模型", () => {
   assert.ok(handler.includes('$("translationQuality").value = quality'));
   assert.ok(!handler.includes('$("translationModel").value ='));
 });
+
+for (const status of ["failed", "blocked"]) {
+  test(`人工排查优先于 ${status} 的质检条目和服务暂停提示`, () => {
+    const summary = "该任务需要人工排查，请联系客服并提供订单号；无需重新付款。";
+    const elements = render({ status, manual_review_required: true, summary,
+      checks: [{ code: "artifact_links_invalid", message: "成品存在链接错误" }],
+      retryable: false });
+    assert.equal(elements.get("qaTitle").textContent, "任务需要人工排查");
+    assert.equal(elements.get("qaSummary").textContent, summary);
+    assert.ok(elements.get("qaChecks").innerHTML.includes("成品存在链接错误"));
+    assert.equal(elements.get("retryTranslationBtn").disabled, true);
+    assert.equal(elements.get("retryTranslationBtn").textContent, "当前不可重译");
+  });
+}
+
+test("人工排查缺少摘要时仍提供客服和无需重新付款指引", () => {
+  const elements = render({ status: "failed", manual_review_required: true,
+    checks: [], retryable: false });
+  assert.ok(elements.get("qaSummary").textContent.includes("联系客服"));
+  assert.ok(elements.get("qaSummary").textContent.includes("无需重新付款"));
+});
+
+test("人工排查标记禁止重译，即使摘要同时携带旧 retryable 标记", () => {
+  const elements = render({ status: "failed", manual_review_required: true,
+    summary: "请联系客服", checks: [], retryable: true });
+  assert.equal(elements.get("retryTranslationBtn").disabled, true);
+  assert.equal(elements.get("retryTranslationBtn").textContent, "当前不可重译");
+});

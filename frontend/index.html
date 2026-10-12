@@ -128,7 +128,7 @@
         "name": "电子书翻译功能支持双语对照吗？翻译质量如何？",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "支持。开启「电子书翻译」并勾选「双语并排」，系统将使用先进的大语言模型提供语境感知的文学级翻译，译文自然流畅，特别适合学术书籍与英文小说。"
+          "text": "支持。开启「电子书翻译」并勾选「双语并排」，系统会结合全书语境、文体和术语信息自动生成译文，便于与原文对照阅读。专业术语和重要内容建议结合原文复核。"
         }
       },
       {
@@ -2798,8 +2798,12 @@
       const checks = Array.isArray(report.checks) ? report.checks : [];
       const providerBlocked = report.status === "blocked";
       const reviewOnly = report.status === "warning";
-      $("qaTitle").textContent = providerBlocked ? "翻译因服务问题暂停" : reviewOnly ? "译本可下载，建议复核" : "翻译质检未通过";
-      $("qaSummary").textContent = reviewOnly
+      const manualReviewRequired = report.manual_review_required === true;
+      const retryable = !manualReviewRequired && report.retryable;
+      $("qaTitle").textContent = manualReviewRequired ? "任务需要人工排查" : providerBlocked ? "翻译因服务问题暂停" : reviewOnly ? "译本可下载，建议复核" : "翻译质检未通过";
+      $("qaSummary").textContent = manualReviewRequired
+        ? (report.summary || "该任务需要人工排查，请联系客服并提供订单号；无需重新付款。")
+        : reviewOnly
         ? `${report.summary || "部分段落建议复核"}。规则告警不等同于已确认的翻译错误。`
         : providerBlocked ? report.summary : checks.length
         ? "翻译结果未达到交付标准，请查看下列问题。"
@@ -2814,9 +2818,9 @@
         : providerBlocked
         ? `已保留成功译文 · 当前第 ${attempt} 次尝试`
         : `质检分 ${report.score ?? 0} / 100 · 当前第 ${attempt} 次尝试 · ${retryMeta}`;
-      retryTranslationBtn.disabled = !report.retryable;
+      retryTranslationBtn.disabled = !retryable;
       retryTranslationBtn.hidden = reviewOnly;
-      retryTranslationBtn.textContent = report.retryable ? (providerBlocked ? "服务恢复后继续翻译" : "重新翻译") : "当前不可重译";
+      retryTranslationBtn.textContent = retryable ? (providerBlocked ? "服务恢复后继续翻译" : "重新翻译") : "当前不可重译";
       retryTranslationBtn.dataset.jobId = data.job_id || currentJobId || "";
       translationDiagnosticsBtn.dataset.jobId = data.job_id || currentJobId || "";
       qaReport.classList.add("visible");
@@ -4477,8 +4481,8 @@
           <p>针对 Kindle 墨水屏设备进行深度排版优化，完美支持 <strong>MOBI-KF8 转换</strong>。系统自动调整段落边距、行间距及字体大小，解决电子书在 Kindle 上显示的锯齿、断行等问题，为您带来纸质书般的沉浸式阅读体验。</p>
         </div>
         <div class="feature-card">
-          <h3>AI 智能英译中与语境理解</h3>
-          <p>集成大语言模型（LLM）实现高质量的英文书籍翻译。不同于传统的机翻，我们的 电子书翻译能够深度理解语义语境，提供自然流畅的中文译文，并支持精细的双语对照排版，是学术研究与文学鉴赏的得力助手。</p>
+          <h3>整本翻译与双语对照</h3>
+          <p>结合全书语境、文体和术语信息自动翻译电子书，支持原文与译文双语对照，并尽量保留目录、插图和可重排布局。译文适合辅助阅读，专业术语和重要内容建议结合原文复核。</p>
         </div>
         <div class="feature-card">
           <h3>文字型 PDF 的独立转换入口</h3>
