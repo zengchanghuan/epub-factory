@@ -80,10 +80,10 @@ test("6. 翻译关闭时，formatJobMeta 不含双语文字", () => {
     bilingual: false,
   });
   assert.ok(!meta.includes("双语"), `不应含双语，实际: ${meta}`);
-  assert.ok(!meta.includes("AI翻译"), `不应含AI翻译，实际: ${meta}`);
+  assert.ok(!meta.includes("电子书翻译"), `不应含电子书翻译，实际: ${meta}`);
 });
 
-test("7. 翻译开启+单语，含 AI翻译 但不含 双语并排", () => {
+test("7. 翻译开启+单语，含 电子书翻译 但不含 双语并排", () => {
   const meta = formatJobMeta({
     output_mode: "simplified",
     device: "kindle",
@@ -91,7 +91,7 @@ test("7. 翻译开启+单语，含 AI翻译 但不含 双语并排", () => {
     target_lang: "zh-CN",
     bilingual: false,
   });
-  assert.ok(meta.includes("AI翻译(zh-CN)"), `应含 AI翻译目标语言，实际: ${meta}`);
+  assert.ok(meta.includes("电子书翻译(zh-CN)"), `应含 电子书翻译目标语言，实际: ${meta}`);
   assert.ok(meta.includes("Kindle"), `应保留设备信息，实际: ${meta}`);
   assert.ok(!meta.includes("通用繁体"), `翻译任务不应显示繁简转换方向，实际: ${meta}`);
   assert.ok(!meta.includes("→ 简体"), `翻译任务不应显示繁简转换方向，实际: ${meta}`);

@@ -146,7 +146,7 @@ function formatJobMeta(job) {
   if (job.output_mode === "original" || job.pdf_conversion) return "PDF → EPUB · 保留原文";
   const device = formatDevice(job.device);
   if (job.enable_translation) {
-    const parts = [`AI翻译(${job.target_lang || "zh-CN"}) / ${device}`];
+    const parts = [`电子书翻译(${job.target_lang || "zh-CN"}) / ${device}`];
     const qualityLabel = {
       standard: "标准",
       high: "高质量",
@@ -251,7 +251,7 @@ function formatLedgerCost(ledger) {
   if (!ledger || ledger.coverage === 'historical_unknown') return '历史费用未知';
   const amounts = Object.entries(ledger.calculated_totals || {})
     .map(([currency, amount]) => `${currency} ${amount}`);
-  const known = amounts.length ? amounts.join(' + ') : ledger.coverage === 'complete' && ledger.requests === 0 ? '0（无新增模型请求）' : '已知部分暂无金额';
+  const known = amounts.length ? amounts.join(' + ') : ledger.coverage === 'complete' && ledger.requests === 0 ? '0（无新增翻译请求）' : '已知部分暂无金额';
   return known + (ledger.coverage === 'complete' ? '（价目计算）' : '（部分，待核实）');
 }
 
@@ -270,8 +270,8 @@ function isSafeMode(summaryText) {
 
 const ERROR_CODE_HINTS = {
   CONVERT_FAILED: "引擎转换失败，可能是文件格式不兼容",
-  TRANSLATION_FAILED: "AI 翻译未成功写入任何译文，请检查模型服务连接或稍后重试",
-  TRANSLATION_PROVIDER_UNAVAILABLE: "模型服务暂不可用，成功译文缓存已保留，恢复服务后可继续翻译",
+  TRANSLATION_FAILED: "翻译未成功写入任何译文，请稍后重试或联系支持",
+  TRANSLATION_PROVIDER_UNAVAILABLE: "翻译服务暂不可用，成功译文缓存已保留，恢复服务后可继续翻译",
   PARTIAL_TRANSLATION: "部分段落翻译失败，结果不可下载，可直接免费重新翻译",
   EPUB_VALIDATION_FAILED: "EPUB 校验未通过，结果不可交付，请重试或联系支持",
   UPLOAD_TOO_LARGE: "文件超过大小限制",

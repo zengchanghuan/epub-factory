@@ -100,7 +100,8 @@ class EpubConverter:
             stage_callback=stage_callback,
         )
         success = compiler.run()
-        if not success:
+        validation = getattr(compiler, "_epubcheck_result", None)
+        if not success and not (validation and not validation.passed):
             raise RuntimeError(compiler.final_message or "ExtremeCompiler failed to convert EPUB")
 
         lexicon_stats = LexiconStats.empty()
@@ -118,14 +119,17 @@ class EpubConverter:
         except Exception:
             pass
 
+        stats = dict(compiler.get_translation_stats() or {})
+        if validation:
+            stats["epub_validation"] = validation.summary()
         return ConversionResult(
             quality_stats=compiler.job_stats,
-            translation_stats=compiler.get_translation_stats(),
+            translation_stats=stats,
             lexicon_stats=lexicon_stats,
             metrics_summary=compiler.metrics.summary(),
             message=compiler.final_message or "转换成功",
             error_code=compiler.error_code,
-            validation_passed=getattr(compiler, "validation_passed", True),
+            validation_passed=getattr(compiler, "validation_passed", False),
         )
 
     # ──────────────────────────────────────────────────────────────────────

@@ -38,6 +38,23 @@ class JobStore:
                 self._dispatches.setdefault(intent["dispatch_id"], intent)
             self._jobs[job.id] = deepcopy(job)
 
+    def add_many(self, jobs: list[Job]) -> None:
+        with self._lock:
+            if len({job.id for job in jobs}) != len(jobs) or any(job.id in self._jobs for job in jobs):
+                raise ValueError("Duplicate job identity")
+            prepared = []
+            for job in jobs:
+                snapshot = deepcopy(job)
+                intent = None
+                if snapshot.status == JobStatus.pending:
+                    snapshot.translation_stats, intent = self._prepare_dispatch_locked(snapshot)
+                prepared.append((job, snapshot, intent))
+            for original, snapshot, intent in prepared:
+                self._jobs[snapshot.id] = snapshot
+                if intent:
+                    self._dispatches.setdefault(intent["dispatch_id"], intent)
+                    original.translation_stats = deepcopy(snapshot.translation_stats)
+
     def _prepare_dispatch_locked(self, job: Job, *, now=None) -> tuple[dict, dict]:
         stats, intent = build_dispatch_intent(job, now=now)
         return stats, self._dispatches.get(intent["dispatch_id"], intent)
@@ -310,6 +327,46 @@ class JobStore:
             }
             return True
 
+    def continue_translation_attempt(
+        self, job_id: str, *, expected_attempt_id: str, continuation_stats: dict,
+        queued_at: datetime, expected_execution_owner: str,
+        expected_updated_at: datetime | None = None,
+    ) -> tuple[Optional[Job], str]:
+        """Yield an owned execution and rearm its existing outbox atomically."""
+        from .domain.dispatch_intent import dispatch_identity
+        from .domain.translation_continuation import queued_continuation_stats
+        if not isinstance(continuation_stats, dict):
+            raise TypeError("continuation_stats must be a dictionary")
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None, "missing"
+            if not job.enable_translation:
+                return deepcopy(job), "not_translation"
+            if job.status != JobStatus.running:
+                return deepcopy(job), "inactive"
+            if not expected_attempt_id or execution_identity(job) != expected_attempt_id:
+                return deepcopy(job), "stale_attempt"
+            if expected_updated_at is not None and utc_datetime(job.updated_at) != utc_datetime(expected_updated_at):
+                return deepcopy(job), "stale_state"
+            key = dispatch_identity(job_id, expected_attempt_id)
+            execution = self._executions.get(key)
+            if (not expected_execution_owner or not execution or execution["state"] != "running"
+                    or execution["owner"] != expected_execution_owner):
+                return deepcopy(job), "stale_owner"
+            if not self._check_write_locked(job_id, expected_attempt_id=expected_attempt_id,
+                                             expected_statuses={JobStatus.running}):
+                return deepcopy(job), "stale_state"
+            stats = queued_continuation_stats(job.translation_stats, continuation_stats)
+            outbox = recovery_outbox(job_id, expected_attempt_id, exhausted=False,
+                                     now=timestamp(queued_at), existing=self._dispatches.get(key))
+            job.translation_stats = stats
+            job.status, job.message, job.error_code = JobStatus.pending, "任务已保存进度，正在自动续跑", None
+            job.updated_at = queued_at
+            execution.update(state="queued", owner="", heartbeat_at=timestamp(queued_at))
+            self._dispatches[key] = outbox
+            return deepcopy(job), "ok"
+
     def restart_translation_attempt(
         self,
         job_id: str,
@@ -349,9 +406,13 @@ class JobStore:
             if entitlement_error:
                 return deepcopy(job), entitlement_error
             previous = dict(job.translation_stats or {})
-            free_retry_count = int(previous.get("free_retry_count") or 0)
-            if max_free_retries >= 0 and free_retry_count >= max_free_retries:
-                return deepcopy(job), "retry_limit"
+            from .domain.retry_policy import blocked_reason, outcome
+            blocked = blocked_reason(previous, error_code=job.error_code, limit=max_free_retries)
+            if blocked:
+                return deepcopy(job), blocked
+            previous["last_outcome"] = outcome(previous, status=job.status.value,
+                error_code=job.error_code, message=job.message,
+                finished_at=job.updated_at.isoformat())
 
             stats = restarted_translation_stats(
                 previous,

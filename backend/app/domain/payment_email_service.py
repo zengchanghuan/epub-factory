@@ -17,14 +17,15 @@ from decimal import Decimal
 from app.storage import job_store
 from . import completion_email_service as completion_mail
 from .payment_email_repository import PaymentEmailRepository
+from .order_service import SERVICE_LABELS
 
 logger = logging.getLogger("epub_factory")
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 600
 BEIJING = timezone(timedelta(hours=8))
-ORDER_KINDS = {"translation": "AI 翻译", "conversion": "EPUB 转换", "repair": "EPUB 修复",
-               "batch": "批量处理", "batch_translation": "批量 AI 翻译", "batch_conversion": "批量 EPUB 转换",
-               "polish": "AI 精校"}
+ORDER_KINDS = {"translation": "电子书翻译", "conversion": "EPUB 转换", "repair": "EPUB 修复",
+               "batch": "批量处理", "batch_translation": "批量电子书翻译", "batch_conversion": "批量 EPUB 转换",
+               "polish": "用词精校", **SERVICE_LABELS}
 
 
 def _enabled():

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from bs4 import BeautifulSoup
+from billiard.exceptions import SoftTimeLimitExceeded
 
 from app.cancellation import CancelCheck, raise_if_cancelled, JobCancelled
 from app.converter import converter
@@ -37,6 +38,7 @@ from app.domain.failed_chunk_archive import archive_failed_chunk
 from app.domain.translation_attempt import attempt_id_from_stats, new_attempt_id
 from app.domain.job_write_fence import current_job_write_fence, JobWriteConflict
 from app.domain.translation_checkpoints import TranslationCheckpoints, book_resume_key, fingerprint
+from app.domain.translation_continuation import TranslationSliceExpired, slice_expired, cumulative_slice_usage
 from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_residual_policy import confirmed_preserved_terms
@@ -373,7 +375,7 @@ def _translation_delivery_gate_result(
     progress_callback: ProgressCallback | None = None,
 ) -> ConversionResult:
     message = (
-        f"AI 翻译失败：仍有 {failed}/{total} 个段落未成功翻译。"
+        f"电子书翻译失败：仍有 {failed}/{total} 个段落未成功翻译。"
         "为避免生成中英混杂的 EPUB，已停止打包；请稍后重试或降低并发后重试。"
         f"最后错误：{last_error}"
     )
@@ -523,6 +525,7 @@ async def _translate_manifest_async(
                         "checkpoint_io_errors": 0}
     checkpoint_store = None
     saved_chunks = {}
+    slice_has_saved_progress = False
     try:
         checkpoint_store = TranslationCheckpoints(job.id, fingerprint({
             "book": resume_key or book_resume_key(job, manifest),
@@ -536,13 +539,25 @@ async def _translate_manifest_async(
         logger.warning("book checkpoint storage unavailable; translation cache remains active")
 
     def save_checkpoint(spec, context, result, *, phase="draft"):
+        nonlocal slice_has_saved_progress
         if checkpoint_store is None:
             return
         payload = {"source": fingerprint([spec["html"], spec.get("locator"), context]),
                    "attempt_id": expected_attempt_id, "phase": phase, "result": asdict(result)}
         try:
             raise_if_cancelled(cancel_check)
+            previous = saved_chunks.get(spec["chunk_id"]) or {}
+            previous_result = previous.get("result") or {}
+            if not isinstance(previous_result, dict):
+                previous_result = {}
             checkpoint_store.put("chunk:" + spec["chunk_id"], payload)
+            if result.translated_html and not result.error and (
+                not previous_result.get("translated_html")
+                or previous_result.get("error")
+                or previous.get("source") != payload["source"]
+                or (phase == "final" and previous.get("phase") != "final")
+            ):
+                slice_has_saved_progress = True
             saved_chunks[spec["chunk_id"]] = payload
         except (OSError, sqlite3.Error):
             checkpoint_stats["checkpoint_io_errors"] += 1
@@ -745,7 +760,7 @@ async def _translate_manifest_async(
 
     def _build_translation_stats(*, live: bool, flat_results: list[ChunkResult] | None = None) -> dict[str, Any]:
         translator._sync_adaptive_concurrency_stats()
-        stats = translator.stats.to_dict(translator.model)
+        stats = cumulative_slice_usage(translator.stats.to_dict(translator.model), job.translation_stats)
         audit_summary = dict(audit)
         if flat_results is not None:
             audit_summary.update(_audit_summary_from_results(flat_results))
@@ -831,7 +846,7 @@ async def _translate_manifest_async(
                 translation_stats=stats,
                 expected_attempt_id=expected_attempt_id,
             )
-        except JobCancelled:
+        except (JobCancelled, SoftTimeLimitExceeded):
             raise
         except Exception:
             logger.warning("failed to publish live translation stats", exc_info=True)
@@ -897,9 +912,15 @@ async def _translate_manifest_async(
             contexts.append("\n".join(parts))
         return contexts
 
-    async def run_chapter(chapter: dict) -> list[ChunkResult]:
+    async def run_chapter(chapter: dict) -> list[ChunkResult] | None:
         async with chapter_sem:
             raise_if_cancelled(cancel_check)
+            # Only stop admitting new chapters. Requests, review, rescue and
+            # checkpoint writes for an admitted chapter must drain normally.
+            # A large cached prefix must not consume every slice before any
+            # unfinished chapter is reached. Real soft limits still bound work.
+            if slice_has_saved_progress and slice_expired():
+                return None
             started = _now()
             chapter_strategy = chapter_strategy_overrides.get(
                 chapter["chapter_id"],
@@ -1225,8 +1246,18 @@ async def _translate_manifest_async(
             stats.update(provider_blocked=True, provider_error=exc.reason,
                          blocked_provider=exc.provider, last_error=str(exc), deliverable=False)
             _publish_translation_stats(stats, message=str(exc), force=True)
+        elif isinstance(exc, (SoftTimeLimitExceeded, asyncio.CancelledError)):
+            stats = _build_translation_stats(live=False)
+            stats["deliverable"] = False
+            # A soft signal in asyncio's selector can cancel the map coroutine
+            # while the outer asyncio.run raises the actual soft-limit error.
+            _publish_translation_stats(stats, message="本轮已停止，已保存当前进度", force=True)
         raise
     raise_if_cancelled(cancel_check)
+    if any(results is None for results in chapter_results):
+        message = "本轮进度已保存，等待自动续跑"
+        _publish_translation_stats(_build_translation_stats(live=False), message=message, force=True)
+        raise TranslationSliceExpired(message)
     chapter_results_by_id = {
         ch["chapter_id"]: results
         for ch, results in zip(body_chapters, chapter_results)
@@ -1275,7 +1306,7 @@ def run_fast_translation_job(
 
         raise_if_cancelled(cancel_check)
         t = time.monotonic()
-        stage_callback("preprocessing", "开始预处理 EPUB（非 LLM 清洗）", None)
+        stage_callback("preprocessing", "开始预处理 EPUB", None)
         pre_result = converter.convert_file_to_horizontal(
             input_path,
             preprocessed,
@@ -1456,7 +1487,7 @@ def run_fast_translation_job(
                 raise_if_cancelled(cancel_check)
                 preparations.put("glossary", _serialize_glossary(glossary_result))
             else:
-                progress_callback("术语模型部分请求未完成，暂用已得到的术语；该结果不作为可复用的完整术语表")
+                progress_callback("术语翻译部分请求未完成，暂用已得到的术语；该结果不作为可复用的完整术语表")
         character_glossary = {
             str(character.get("source_name") or "").strip(): str(character.get("translated_name") or "").strip()
             for character in book_profile.get("characters") or []
@@ -1578,11 +1609,11 @@ def run_fast_translation_job(
         raise_if_cancelled(cancel_check)
 
         if translation_stats.get("all_failed"):
-            last_error = translation_stats.get("last_error") or "上游模型调用失败"
+            last_error = translation_stats.get("last_error") or "第三方处理服务调用失败"
             _log_stage("translating_failed", error=last_error)
-            progress_callback(f"AI 翻译全失败：未成功写入任何译文。最后错误：{_short_log(last_error)}")
-            stage_callback("translating_failed", f"AI 翻译全失败：{_short_log(last_error)}", None)
-            raise RuntimeError(f"AI 翻译失败：未成功写入任何译文。最后错误：{last_error}")
+            progress_callback(f"电子书翻译全失败：未成功写入任何译文。最后错误：{_short_log(last_error)}")
+            stage_callback("translating_failed", f"电子书翻译全失败：{_short_log(last_error)}", None)
+            raise RuntimeError(f"电子书翻译失败：未成功写入任何译文。最后错误：{last_error}")
         if _translation_failures_exceed_delivery_gate(translation_stats):
             failed = int(translation_stats.get("failed_chunks") or 0)
             total = int(translation_stats.get("total_chunks") or 0)
@@ -1633,6 +1664,8 @@ def run_fast_translation_job(
     validation_results: list[EpubValidationResult] = []
     validation_passed = _run_epubcheck(output_path, on_result=validation_results.append)
     validation_result = validation_results[-1] if validation_results else None
+    if validation_result:
+        translation_stats["epub_validation"] = validation_result.summary()
     timings.append(("EpubCheck", (time.monotonic() - t) * 1000))
     _log_stage("validating", timings[-1][1], passed=validation_passed)
     if not validation_passed:

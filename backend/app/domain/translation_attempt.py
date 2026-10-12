@@ -14,7 +14,8 @@ def new_attempt_id() -> str:
 def initial_translation_stats(existing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return the minimal durable identity for a first translation attempt."""
     stats = dict(existing or {})
-    stats.setdefault("attempt_id", new_attempt_id())
+    if not stats.get("attempt_id"):
+        stats["attempt_id"] = new_attempt_id()
     stats.setdefault("translation_attempt", 1)
     stats.setdefault("restart_count", 0)
     stats.setdefault("free_retry_count", 0)
@@ -107,6 +108,10 @@ def restarted_translation_stats(
         "cost_usd": None,
         "live": False,
     }
+    if old.get("upload_fingerprint"):
+        stats["upload_fingerprint"] = old["upload_fingerprint"]
+    if old.get("payment_verified"):
+        stats["payment_verified"] = True
     # Preserve available cost evidence while resetting per-attempt counters.
     history = list(old.get("cost_history") or [])
     history.append({key: old.get(key) for key in (
@@ -114,6 +119,9 @@ def restarted_translation_stats(
         "completion_tokens", "total_tokens", "cost_usd",
     )})
     stats["cost_history"] = history
+    stats["attempt_history"] = list(old.get("attempt_history") or [])
+    if isinstance(old.get("last_outcome"), dict):
+        stats["attempt_history"].append(dict(old["last_outcome"]))
     # Confirmation is user authority, not a per-attempt runtime counter. Losing
     # it both changes the agreed book strategy and needlessly reruns profiling.
     preflight = old.get("translation_preflight")

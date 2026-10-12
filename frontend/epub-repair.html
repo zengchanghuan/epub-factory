@@ -268,6 +268,10 @@
       margin-top: 6px;
     }
 
+    @media (max-width: 640px) {
+      .topbar { padding: 8px 16px; height: auto; flex-wrap: wrap; }
+      .topbar-nav { order: 1; flex-basis: 100%; min-width: 0; overflow-x: auto; }
+    }
     @media (max-width: 520px) {
       header h1 { font-size: 22px; }
       .btn-row { flex-direction: column; }
@@ -282,6 +286,7 @@
   <div class="topbar-divider"></div>
   <div class="topbar-nav">
     <a href="/">✦ 转换 &amp; 翻译</a>
+    <a href="/#pdfUploadCard">📄 PDF 转 EPUB</a>
     <a href="/epub-repair.html" class="active">🔧 格式修复</a>
   </div>
   <div style="flex:1"></div>
@@ -434,7 +439,7 @@
 </footer>
 
 <script src="/vendor/qrcode.js?v=1.5.4"></script>
-<script src="/lib.js?v=20260918-return-later"></script>
+<script src="/lib.js?v=20261012-merged"></script>
 <script src="/return-later.js?v=20260918"></script>
 <script src="/repair-checkout.js?v=20260919-payment"></script>
 <script>

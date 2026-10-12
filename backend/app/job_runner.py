@@ -42,6 +42,11 @@ from .domain.job_write_fence import job_write_scope, JobWriteConflict
 from .domain.pdf_product import (is_pdf_job, validate_pdf_job, prepare_pdf_artifact,
                                  copy_prepared_pdf, PdfProductError)
 
+from .domain.artifact_receipt import receipt
+from .domain.translation_continuation import (
+    TranslationSliceExpired, translation_slice, start_slice_stats, continuation_decision,
+)
+
 logger = logging.getLogger("epub_factory")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -274,32 +279,95 @@ def _convert_filename_stem_for_mode(stem: str, output_mode: OutputMode, traditio
         return stem
 
 
+def _can_continue_translation(job) -> bool:
+    return (bool(getattr(job, "enable_translation", False))
+            and Path(job.input_path).suffix.lower() in {".epub", ".docx", ".md", ".markdown"}
+            and os.environ.get("EPUB_FAST_TRANSLATION", "1").lower() not in {"0", "false", "no"})
+
+
+def _continue_after_timeout(job, attempt_id, lease, reason):
+    """Keep paid work pending only when its current executor can safely resume."""
+    lease.assert_owned()
+    current = job_store.get(job.id)
+    if (not current or current.status != JobStatus.running
+            or attempt_id_from_stats(current.translation_stats) != (attempt_id or "")):
+        return False
+    continuation, blocked = continuation_decision(current.translation_stats, job.id, reason)
+    if not (_can_continue_translation(current) and attempt_id
+            and callable(getattr(job_store, "continue_translation_attempt", None))):
+        blocked = "任务达到运行时限，当前处理方式不支持自动续跑，请联系客服。"
+    now = datetime.now(timezone.utc)
+    lease.assert_owned()
+    if not blocked:
+        resumed, outcome = job_store.continue_translation_attempt(
+            job.id, expected_attempt_id=attempt_id, continuation_stats=continuation,
+            queued_at=now, expected_updated_at=current.updated_at,
+            expected_execution_owner=lease.owner,
+        )
+        if outcome != "ok":
+            return False  # Cancelled, superseded or already queued: do not reopen it.
+        logger.info("translation slice saved for automatic continuation", extra={"job_id": job.id})
+        return True
+    terminal_qa = {"status": "blocked", "delivery_status": "blocked", "can_deliver": False,
+                  "summary": blocked, "score": None, "retryable": False,
+                  "flags": ["continuation_stopped"],
+                  "checks": [{"code": "continuation_stopped", "message": blocked}],
+                  "free_retry_count": (current.translation_stats or {}).get("free_retry_count", 0)}
+    stopped = job_store.update_status(job.id, JobStatus.failed, blocked,
+        error_code=ErrorCode.TRANSLATION_FAILED, expected_attempt_id=attempt_id or None,
+        translation_stats={"continuation": continuation, "live": False, "deliverable": False,
+                           "qa_report": terminal_qa})
+    if (stopped and stopped.status == JobStatus.failed
+            and attempt_id_from_stats(stopped.translation_stats) == (attempt_id or "")):
+        notify_job_completed(job.id, JobStatus.failed, blocked,
+            error_code=ErrorCode.TRANSLATION_FAILED.value, source_filename=job.source_filename)
+    return False
+
+
+
 def run_job(job_id: str, expected_attempt_id: str | None = None, *, retry_if_busy: bool = False) -> None:
     """Ignore stale/terminal deliveries and admit one executor per attempt."""
-    job = job_store.get(job_id)
-    if not job:
-        return
-    if job.status != JobStatus.pending:
-        return
-    current_attempt = attempt_id_from_stats(job.translation_stats)
-    # None is an old caller without a captured identity. An explicitly empty
-    # first-conversion identity must not adopt a newer retry's nonempty ID.
-    if expected_attempt_id is not None and expected_attempt_id != current_attempt:
-        return
-    identity = execution_identity(job)
-    with execution_lease(job_id, identity) as lease:
-        if lease is None:
-            logger.info("duplicate job delivery ignored", extra={"job_id": job_id})
-            if retry_if_busy:
-                raise ExecutionLeaseBusy("同一次翻译已被执行器占用，延后核验，不重复执行")
+    while True:
+        job = job_store.get(job_id)
+        if not job:
             return
-        # None permits a legacy caller to adopt the FIRST observed attempt,
-        # not a different attempt created while acquiring this attempt's lock.
-        # Otherwise the runner and recovery scanner would hold different keys.
-        _run_job_locked(job_id, current_attempt, lease)
+        if job.status != JobStatus.pending:
+            return
+        current_attempt = attempt_id_from_stats(job.translation_stats)
+        # None is an old caller without a captured identity. An explicitly empty
+        # first-conversion identity must not adopt a newer retry's nonempty ID.
+        if expected_attempt_id is not None and expected_attempt_id != current_attempt:
+            return
+        identity = execution_identity(job)
+        with execution_lease(job_id, identity) as lease:
+            if lease is None:
+                logger.info("duplicate job delivery ignored", extra={"job_id": job_id})
+                if retry_if_busy:
+                    raise ExecutionLeaseBusy("同一次翻译已被执行器占用，延后核验，不重复执行")
+                return
+            # None permits a legacy caller to adopt the FIRST observed attempt,
+            # not a different attempt created while acquiring this attempt's lock.
+            # Otherwise the runner and recovery scanner would hold different keys.
+            with translation_slice(_can_continue_translation(job)):
+                continued = _run_job_locked(job_id, current_attempt, lease)
+        if not continued:
+            return
+        # Only publish after releasing the execution lease. The same outbox is
+        # durable if the broker is down; the independent dispatcher can retry.
+        if hasattr(job_store, "_Session") and (os.environ.get("CELERY_BROKER_URL") or os.environ.get("REDIS_URL")):
+            try:
+                from .domain.job_dispatch_service import dispatch_pending
+                from .infra.job_dispatch_publisher import publish_conversion
+                dispatch_pending(job_store, publish_conversion, job_id=job_id)
+            except Exception:
+                logger.warning("translation continuation awaiting durable dispatch", extra={"job_id": job_id})
+            return
+        # A replacement may appear after this slice releases its lease. Keep
+        # the captured identity so the old executor cannot adopt that work.
+        expected_attempt_id = current_attempt
 
 
-def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None:
+def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> bool | None:
     """从 store 加载 job 并执行整本转换，更新状态与输出路径。"""
     job = job_store.get(job_id)
     if not job:
@@ -332,6 +400,8 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
         stats.setdefault("attempt_started_at", now_utc.isoformat())
         attempt_id = expected_attempt_id or attempt_id_from_stats(stats)
         stats["attempt_id"] = attempt_id
+        if _can_continue_translation(job):
+            stats["continuation"] = start_slice_stats(stats, job.id)
         translation_stats = stats
         job.translation_stats = stats
         if not existing_attempt_id:
@@ -358,7 +428,7 @@ def _run_job_locked(job_id: str, expected_attempt_id: str | None, lease) -> None
         lease.assert_owned()
         with job_write_scope(job.id, attempt_id, lease.owner):
             try:
-                _execute_admitted_job(job, attempt_id, translation_stats, lease)
+                return _execute_admitted_job(job, attempt_id, translation_stats, lease)
             except JobWriteConflict:
                 # Includes conflicts raised from an error/cancellation handler.
                 # They are not a fresh cancellation and must never write back.
@@ -603,6 +673,8 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
         ):
             on_stage("translation_quality_gate_failed", result.message or "翻译交付质检未通过")
         status, message, error_code = resolve_after_conversion(result)
+        if status != JobStatus.failed and not output_path.is_file():
+            status, message, error_code = JobStatus.failed, "成品文件缺失，已停止交付，请联系客服。", "EPUB_VALIDATION_FAILED"
         if status != JobStatus.failed:
             check_cancelled()
             output_path = _finalize_attempt_output(
@@ -650,6 +722,8 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                 extra={"trace_id": job.trace_id, "job_id": job.id},
             )
             return
+        result.translation_stats = {**dict(result.translation_stats or {}),
+                                    "artifact_manifest": receipt(output_path, attempt_id)}
         publication_attempted = True
         update_job_status(
             status,
@@ -668,11 +742,13 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             source_filename=job.source_filename,
         )
         logger.info("job success", extra={"trace_id": job.trace_id, "job_id": job.id})
-    except SoftTimeLimitExceeded:
-        # Preserve current progress/checkpoints and the running execution row.
-        # Bounded durable recovery, not a new purchase/manual restart, resumes it.
-        logger.warning("job soft time limit reached; awaiting durable recovery", extra={"job_id": job.id})
-        raise
+    except (TranslationSliceExpired, SoftTimeLimitExceeded) as exc:
+        if not _can_continue_translation(job):
+            # Nontranslation work retains the remote heartbeat recovery policy.
+            logger.warning("job soft time limit reached; awaiting durable recovery", extra={"job_id": job.id})
+            raise
+        reason = "chapter_slice" if isinstance(exc, TranslationSliceExpired) else "soft_time_limit"
+        return _continue_after_timeout(job, attempt_id, lease, reason)
     except ExecutionLeaseLost:
         logger.error("execution lease lost; old executor stopped", extra={"job_id": job.id})
         # Never overwrite a new owner's status or artifact after losing ownership.
@@ -748,7 +824,7 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                                  blocked_provider=exc.provider, last_error=message,
                                  live=False, deliverable=False)
             failure_stats = attach_translation_qa_report(failure_stats, error_code=error_code.value)
-        if "AI 翻译失败" in message or "翻译流程未完成" in message:
+        if any(text in message for text in ("电子书翻译失败", "AI 翻译失败", "翻译流程未完成")):
             error_code = ErrorCode.TRANSLATION_FAILED
         if getattr(job, "enable_precision_polish", False):
             error_code = ErrorCode.PRECISION_POLISH_FAILED

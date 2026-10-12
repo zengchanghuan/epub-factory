@@ -199,7 +199,7 @@ class PaymentHookTests(unittest.TestCase):
             result = self.client.post('/jobs/paid-job/recover', headers={'X-Job-Token': 'private-owner-token'})
             self.assertTrue(result.json()['recovered'])
         self.assertEqual(mail.dispatch_pending_payment_emails()['sent'], 1)
-        self.assertIn('AI 翻译', self.send.call_args.args[2])
+        self.assertIn('电子书翻译', self.send.call_args.args[2])
         self.callback(total_amount='5.99')
         mail.dispatch_pending_payment_emails()
         self.send.assert_called_once()

@@ -161,7 +161,7 @@ class TestTranslationQaService(unittest.TestCase):
         self.assertFalse(report["retryable"])
         self.assertEqual(report["max_free_retries"], 1)
 
-    def test_retry_is_unlimited_by_default(self):
+    def test_retry_is_bounded_by_default(self):
         old_value = os.environ.get("EPUB_TRANSLATION_MAX_FREE_RETRIES")
         os.environ.pop("EPUB_TRANSLATION_MAX_FREE_RETRIES", None)
         try:
@@ -178,8 +178,8 @@ class TestTranslationQaService(unittest.TestCase):
                 os.environ["EPUB_TRANSLATION_MAX_FREE_RETRIES"] = old_value
 
         self.assertEqual(report["status"], "failed")
-        self.assertTrue(report["retryable"])
-        self.assertEqual(report["max_free_retries"], -1)
+        self.assertFalse(report["retryable"])
+        self.assertEqual(report["max_free_retries"], 3)
 
     def test_artifact_audit_fails_on_untranslated_body_paragraph(self):
         with tempfile.TemporaryDirectory() as tmp:

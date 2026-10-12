@@ -1,5 +1,5 @@
 /**
- * 测试 F10：转换与 AI 翻译互斥模式
+ * 测试 F10：转换与 电子书翻译互斥模式
  */
 
 const fs = require("fs");
@@ -18,27 +18,27 @@ const repairCheckout = fs.readFileSync(path.resolve(__dirname, "../repair-checko
 
 test("F10-1 使用任务模式二选一入口", () => {
   assert.ok(html.includes('name="taskMode" value="convert"'), "应有转换模式");
-  assert.ok(html.includes('name="taskMode" value="translate"'), "应有 AI 翻译模式");
+  assert.ok(html.includes('name="taskMode" value="translate"'), "应有 电子书翻译模式");
   assert.ok(html.includes('id="conversionOptions"'), "转换设置应在独立面板");
   assert.ok(html.includes('id="translationDetails"'), "翻译设置应在独立面板");
 });
 
-test("F10-2 AI 精校从属于转换模式", () => {
+test("F10-2 用词精校从属于转换模式", () => {
   const conversionStart = html.indexOf('id="conversionOptions"');
   const polish = html.indexOf('id="enablePrecisionPolish"');
   const translationStart = html.indexOf('id="translationDetails"');
-  assert.ok(conversionStart >= 0 && polish > conversionStart, "AI 精校应位于转换面板内");
-  assert.ok(translationStart > polish, "AI 翻译面板应在转换面板之后");
+  assert.ok(conversionStart >= 0 && polish > conversionStart, "用词精校应位于转换面板内");
+  assert.ok(translationStart > polish, "电子书翻译面板应在转换面板之后");
   assert.ok(html.includes('if (enablePrecisionPolish.checked) setTaskMode("convert")'), "勾选精校应保持转换模式");
 });
 
 test("F10-3 提交参数按当前模式互斥", () => {
   assert.ok(html.includes('const isTranslationMode = getTaskMode() === "translate"'), "提交时应读取任务模式");
   assert.ok(html.includes('form.append("enable_precision_polish", !isTranslationMode && enablePrecisionPolish.checked)'), "翻译模式不应发送精校");
-  assert.ok(html.includes('form.append("enable_translation", isTranslationMode)'), "AI 翻译参数应由任务模式决定");
+  assert.ok(html.includes('form.append("enable_translation", isTranslationMode)'), "电子书翻译参数应由任务模式决定");
 });
 
-test("F10-4 AI 翻译可选择模型", () => {
+test("F10-4 电子书翻译可选择模型", () => {
   assert.ok(html.includes('class="model-picker"'), "模型选择区域应更醒目");
   assert.ok(html.includes('id="translationModel" value="deepseek-flash"'), "默认应使用 flash 模型");
   assert.ok(html.includes('name="translationModelChoice" value="deepseek-flash" checked'), "Flash radio 应默认选中");
@@ -49,7 +49,7 @@ test("F10-4 AI 翻译可选择模型", () => {
   assert.ok(html.includes('form.append("translation_model", $("translationModel").value || "deepseek-flash")'), "提交时应传 translation_model");
 });
 
-test("F10-4b AI 翻译可选择标准/高质量/文学档位", () => {
+test("F10-4b 电子书翻译可选择标准/高质量/文学档位", () => {
   assert.ok(html.includes('id="translationQuality" value="standard"'), "默认应为标准质量");
   assert.ok(html.includes('name="translationQualityChoice" value="high"'), "应提供高质量模式");
   assert.ok(html.includes('name="translationQualityChoice" value="literary"'), "应提供文学模式");
@@ -69,7 +69,7 @@ test("F10-5 MOBI/AZW3 禁用翻译模式", () => {
 test("F10-6 支付宝付款在独立小窗口打开", () => {
   assert.ok(
     html.includes('id="translationPayLink" href="#" target="fixepub-alipay"'),
-    "AI 翻译支付链接应使用命名支付窗口"
+    "电子书翻译支付链接应使用命名支付窗口"
   );
   assert.ok(
     html.includes('window.open(') && html.includes('"fixepub-alipay"'),

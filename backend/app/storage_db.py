@@ -816,16 +816,21 @@ class PersistentJobStore:
         self._Session = sessionmaker(bind=self._engine)
 
     def add(self, job: Job) -> None:
+        self.add_many([job])
+
+    def add_many(self, jobs: list[Job]) -> None:
         with self._Session() as session:
-            record = _job_to_record(job)
-            session.add(record)
-            if job.status == JobStatus.pending:
-                self._ensure_dispatch_in_session(session, record)
+            prepared = []
+            for job in jobs:
+                record = _job_to_record(job)
+                session.add(record)
+                if job.status == JobStatus.pending:
+                    self._ensure_dispatch_in_session(session, record)
+                prepared.append((job, record))
             session.commit()
-            # Match the memory store's first-attempt identity for callers that
-            # retain the just-created Job instead of reading it back.
-            if job.status == JobStatus.pending:
-                job.translation_stats = _record_to_job(record).translation_stats
+            for job, record in prepared:
+                if job.status == JobStatus.pending:
+                    job.translation_stats = _record_to_job(record).translation_stats
 
     @staticmethod
     def _dispatch_dict(record) -> dict:
@@ -1501,6 +1506,54 @@ class PersistentJobStore:
             session.commit()
             return True
 
+    def continue_translation_attempt(
+        self, job_id: str, *, expected_attempt_id: str, continuation_stats: dict,
+        queued_at: datetime, expected_execution_owner: str,
+        expected_updated_at: datetime | None = None,
+    ) -> tuple[Optional[Job], str]:
+        """Commit progress, execution release and current outbox in one transaction."""
+        import json
+        from .domain.dispatch_intent import dispatch_identity
+        from .domain.translation_continuation import queued_continuation_stats
+        if not isinstance(continuation_stats, dict):
+            raise TypeError("continuation_stats must be a dictionary")
+        with self._Session() as session:
+            record = self._lock_execution_job(session, job_id)
+            if record is None:
+                return None, "missing"
+            job = _record_to_job(record)
+            if not job.enable_translation:
+                return job, "not_translation"
+            if job.status != JobStatus.running:
+                return job, "inactive"
+            if not expected_attempt_id or execution_identity(job) != expected_attempt_id:
+                return job, "stale_attempt"
+            if expected_updated_at is not None and utc_datetime(job.updated_at) != utc_datetime(expected_updated_at):
+                return job, "stale_state"
+            key = dispatch_identity(job_id, expected_attempt_id)
+            execution = session.get(ExecutionRecord, key)
+            if (not expected_execution_owner or execution is None or execution.state != "running"
+                    or execution.owner != expected_execution_owner):
+                return job, "stale_owner"
+            if not self._check_write_locked(session, record, job_id,
+                    expected_attempt_id=expected_attempt_id, expected_statuses={JobStatus.running}):
+                return job, "stale_state"
+            stats = queued_continuation_stats(job.translation_stats, continuation_stats)
+            existing = session.get(DispatchRecord, key)
+            outbox = recovery_outbox(job_id, expected_attempt_id, exhausted=False,
+                now=timestamp(queued_at), existing=self._dispatch_dict(existing) if existing else None)
+            record.translation_stats_json = json.dumps(stats, ensure_ascii=False)
+            record.status, record.message, record.error_code = JobStatus.pending.value, "任务已保存进度，正在自动续跑", None
+            record.updated_at = queued_at
+            execution.state, execution.owner, execution.heartbeat_at = "queued", "", timestamp(queued_at)
+            if existing is None:
+                session.add(DispatchRecord(**outbox))
+            else:
+                for field, value in outbox.items():
+                    setattr(existing, field, value)
+            session.commit()
+            return _record_to_job(record), "ok"
+
     def restart_translation_attempt(
         self,
         job_id: str,
@@ -1552,9 +1605,13 @@ class PersistentJobStore:
                     previous = {}
             except Exception:
                 previous = {}
-            free_retry_count = int(previous.get("free_retry_count") or 0)
-            if max_free_retries >= 0 and free_retry_count >= max_free_retries:
-                return _record_to_job(record), "retry_limit"
+            from .domain.retry_policy import blocked_reason, outcome
+            blocked = blocked_reason(previous, error_code=record.error_code, limit=max_free_retries)
+            if blocked:
+                return _record_to_job(record), blocked
+            previous["last_outcome"] = outcome(previous, status=record.status,
+                error_code=record.error_code, message=record.message,
+                finished_at=record.updated_at.isoformat())
 
             stats = restarted_translation_stats(
                 previous,

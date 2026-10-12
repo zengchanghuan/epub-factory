@@ -62,7 +62,7 @@ class FlashAliasTests(unittest.TestCase):
         self.assertIn('OPENAI_MODEL=deepseek-flash', (root / 'backend/.env.example').read_text())
         html = (root / 'frontend/index.html').read_text()
         self.assertIn('id="translationModel" value="deepseek-flash"', html)
-        self.assertIn('DeepSeek V4.1 Flash', html)
+        self.assertIn('标准版', html)
 
     def test_flash_repair_cannot_silently_upgrade_to_pro(self):
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'offline-only',

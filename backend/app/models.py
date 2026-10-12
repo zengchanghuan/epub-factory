@@ -52,6 +52,7 @@ class TraditionalVariant(str, Enum):
 class ErrorCode(str, Enum):
     """所有已定义的错误码，集中管理避免魔法字符串。"""
     CONVERT_FAILED = "CONVERT_FAILED"
+    EXECUTION_INTERRUPTED = "EXECUTION_INTERRUPTED"
     TRANSLATION_FAILED = "TRANSLATION_FAILED"
     TRANSLATION_PROVIDER_UNAVAILABLE = "TRANSLATION_PROVIDER_UNAVAILABLE"
     PARTIAL_TRANSLATION = "PARTIAL_TRANSLATION"
@@ -145,7 +146,7 @@ class ConversionResult:
     metrics_summary: str = ""
     message: str = ""
     error_code: Optional[str] = None
-    validation_passed: bool = True  # EpubCheck 通过才可交付；False 时应标为 failed
+    validation_passed: bool = False  # 只有明确通过 EpubCheck 才可交付
 
 @dataclass
 class Job:

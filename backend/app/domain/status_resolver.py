@@ -3,7 +3,7 @@
 
 规则（与设计文档 12.3 一致）：
 - completed：结果可下载且可信（打包成功 + EpubCheck 通过，且非“部分翻译失败”的告警）
-- partial_completed：部分译文失败但结果仍可交付（API 层由 success + error_code PARTIAL_TRANSLATION 映射）
+- partial translation：质检失败，保持 failed，不允许下载
 - failed：全翻译失败、打包失败、校验失败等不可交付
 """
 
@@ -23,12 +23,11 @@ def resolve_after_conversion(result: ConversionResult) -> Tuple[JobStatus, str, 
     :param result: 转换器返回的 ConversionResult
     :return: (JobStatus, message, error_code)
     """
-    msg = result.message or "转换成功"
     code = result.error_code
-    if not getattr(result, "validation_passed", True):
+    if not getattr(result, "validation_passed", False) or code:
         return (
             JobStatus.failed,
-            msg or "EPUB 校验未通过，结果不可交付",
+            result.message or "EPUB 校验未通过，结果不可交付",
             code or EPUB_VALIDATION_FAILED,
         )
-    return (JobStatus.success, msg, code)
+    return (JobStatus.success, result.message or "转换成功", code)

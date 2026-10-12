@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image (与生产同 Python/依赖/epubcheck)
-        run: docker build -t epub-factory:ci .
+        run: docker build --build-arg INSTALL_TEST_DEPENDENCIES=1 -t epub-factory:ci .
 
       - name: Run offline regression in container
         # 在与生产一致的镜像里跑回归，挡住「依赖/Python/翻译逻辑」漂移。

@@ -166,11 +166,11 @@ class ToolLandingTests(unittest.TestCase):
         for filename in ("vertical-to-horizontal.html", "traditional-to-simplified.html"):
             html = generated[filename]
             self.assertIn("<strong>¥0.99 / 本</strong>", html)
-            self.assertIn("AI 精校不包含在基础价中", html)
+            self.assertIn("用词精校不包含在基础价中", html)
             self.assertIn(".mobi", html)
             self.assertIn(".azw3", html)
         translator = generated["epub-translator.html"]
-        self.assertIn("AI 翻译按主页当前报价收费", translator)
+        self.assertIn("电子书翻译按主页当前报价收费", translator)
         self.assertNotIn("¥0.99", translator)
         self.assertIn("MOBI / AZW3 不提供直接翻译", translator)
 

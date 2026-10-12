@@ -86,10 +86,10 @@ class RegressionCatalogTests(unittest.TestCase):
         self.assertFalse((self.root / "TEST_EXECUTED").exists())
         return result
 
-    def test_current_117_catalog_including_d17_d59_d64_and_d80_to_d84_matches_ast_without_running_real_scripts(self):
+    def test_current_catalog_including_d17_d59_d64_and_d80_to_d84_matches_ast_without_running_real_scripts(self):
         suites = catalog_literals(self.source)
         expected = suites["D_SUITE"] + suites["C_SUITE"]
-        self.assertEqual(len(expected), 117)
+        self.assertEqual(len(expected), 127)
         self.assertIn("test_d80_content_completeness.py", expected)
         self.assertIn("test_d81_link_contract.py", expected)
         self.assertIn("test_d82_empty_translation.py", expected)

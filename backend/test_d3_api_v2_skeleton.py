@@ -255,7 +255,7 @@ class TestApiV2Skeleton(unittest.TestCase):
             },
         )
         self.assertEqual(res.status_code, 400)
-        self.assertIn("translation_model", res.text)
+        self.assertIn("所选电子书翻译方案不可用", res.json()["detail"])
 
     def test_v2_get_job_404(self):
         """GET /api/v2/jobs/{id} 不存在返回 404。"""
@@ -400,7 +400,8 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(detail["qa_report"]["translation_attempt"], 6)
         self.assertEqual(detail["qa_report"]["free_retry_count"], 5)
         self.assertEqual(detail["qa_report"]["max_free_retries"], main_module.max_free_retries())
-        self.assertTrue(detail["qa_report"]["retryable"])
+        self.assertFalse(detail["qa_report"]["retryable"])
+        self.assertTrue(detail["qa_report"]["manual_review_required"])
 
     def test_v2_translation_timing_attribution(self):
         """任务详情返回翻译耗时归因，便于判断瓶颈。"""
@@ -993,7 +994,7 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         data = res.json()
         self.assertEqual(data["error_categories"]["untranslated_response"], 1)
-        self.assertIn("模型返回原文", data["summary"]["last_error"])
+        self.assertIn("返回内容为原文", data["summary"]["last_error"])
         self.assertIn("HTML 内联标签不匹配", data["summary"]["last_error"])
 
     def test_v2_list_jobs_after_create(self):

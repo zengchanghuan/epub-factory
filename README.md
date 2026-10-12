@@ -156,7 +156,7 @@ python3 -m http.server 5173
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `file` | File | — | .epub、.mobi、.azw3、.docx 或 .md 文件；暂不支持 PDF |
+| `file` | File | — | .epub、.mobi、.azw3、.docx 或 .md 文件；普通上传入口不支持 PDF；文本 PDF 使用独立 `/api/v2/pdf-jobs` 入口（保留原文） |
 | `output_mode` | string | `simplified` | `simplified` \| `traditional` |
 | `device` | string | `generic` | `generic` \| `kindle` \| `apple` |
 | `enable_translation` | bool | `false` | 是否开启 AI 翻译 |
@@ -203,7 +203,7 @@ backend/.venv/bin/python scripts/release-gate.py \
 - [ ] **Dark / Light 模式**：前端适配暗黑模式，提升夜间使用体验。
 
 ### 核心功能 (P2)
-- [ ] **PDF 翻译（方案待审核，入口仍关闭）**：文本／扫描／混合 PDF，MinerU 免费 API 与 DeepSeek Flash OCR 双通道，输出 EPUB＋原页码对照；详见 [PDF 翻译技术架构](docs/PDF-TRANSLATION-ARCHITECTURE.md)。
+- [ ] **PDF 翻译 / 扫描 OCR（历史实验，未接入当前产品）**：旧模块与离线样例保留供研究，不能通过旧开关恢复公共入口。当前产品只提供独立的文本 PDF → 原文 EPUB，图片保持原样；见 [当前 PDF 架构](docs/PDF-TRANSLATION-ARCHITECTURE.md)。
 - [ ] 幽灵目录 AI 语义提取（LLM 推断无标签章节）
 - [ ] AI 生成图片 Alt 文本（ADA/A11y 合规）
 - [ ] 图片像素文字 OCR 翻译（可选 OCR、术语表复用、安全重绘/回退、独立 QA 与成本统计）
@@ -211,3 +211,21 @@ backend/.venv/bin/python scripts/release-gate.py \
 - [ ] 用户鉴权（Supabase Auth）
 - [ ] 域名上线 + SEO 内容发布
 - [ ] ProductHunt 发布
+
+
+### 2026-10-12 合并后的本地回归
+
+以远端 `a78a38f` 为基础，保留支付权益、统一调度 outbox、执行持有者检查、文本 PDF 独立产品和统一主页。
+本地补丁迁入了长书分段续跑、重复上传保护、批次原子创建、交付文件摘要、重试历史/次数限制、中文书名质检、公司信息及服务文案。
+续跑在一个事务中保存进度、释放执行持有者并重启原 outbox，不改变付款权益或免费重试次数。
+
+本地测试需在独立虚拟环境安装 `backend/requirements-test.txt`；可使用
+`python scripts/test-delivery-reliability.py` 运行无网络、禁用真实 `.env` 的交付回归。
+完整 D/C 清单由 `backend/run_regression.py --list` 输出，新增 pytest 文件也支持直接执行。
+CI 用 `INSTALL_TEST_DEPENDENCIES=1` 构建测试镜像，生产镜像默认不安装测试工具。
+Linux prefork Worker、真实 EPUBCheck 与历史书稿验收仍须在具备对应依赖的隔离环境执行。
+
+旧 `backend/app/domain/pdf/` 与 `frontend/pdf-translation.js` 保留为离线实验；公共 API/页面不加载旧 OCR/翻译产品。
+旧 D37/D46 API 测试已改为禁止旧开关绕过新版产品边界；新版支付/确认/交付由 D59 回归覆盖。
+旧调度策略由 D43–D47 新版 outbox/执行恢复回归替代，`job_dispatch.py` 仅保留新版接口的兼容导入。
+合并前完整改动备份保留在 stash `1e46c562877ebe306080d42df0bab4eca5d615a8`。

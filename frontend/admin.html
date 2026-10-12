@@ -77,7 +77,7 @@
     <!-- 余额卡片 -->
     <div class="card">
       <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
-        <h2 style="margin:0;">大模型账户余额</h2>
+        <h2 style="margin:0;">翻译服务账户余额</h2>
         <button id="refreshBalanceBtn" style="font-size:13px;padding:6px 14px;">查询余额</button>
       </div>
       <div class="row" style="margin-top:14px;">
@@ -371,7 +371,7 @@
               "<td title=\"" + (row.source_filename || "") + "\">" + trunc(row.source_filename, 32) + "</td>" +
               "<td><span class=\"" + badgeClass + "\">" + code + "</span></td>" +
               "<td class=\"msg-cell\">" + esc(row.message) + "</td>" +
-              "<td style=\"font-size:12px;\">" + (row.output_mode || "") + (row.enable_translation ? " + AI翻译" : "") + "</td>" +
+              "<td style=\"font-size:12px;\">" + (row.output_mode || "") + (row.enable_translation ? " + 翻译" : "") + "</td>" +
               "<td style=\"font-size:12px;white-space:nowrap;\">" + fmtDate(row.created_at) + "</td>";
             tbody.appendChild(tr);
           });

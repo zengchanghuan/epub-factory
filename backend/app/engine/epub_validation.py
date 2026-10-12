@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.models import ErrorCode
@@ -17,6 +17,11 @@ class EpubValidationResult:
     message: str
     error_code: str | None = None
     warnings: int = 0
+    issues: list[dict] = field(default_factory=list)
+
+    def summary(self) -> dict:
+        return {"passed": self.passed, "error_code": self.error_code,
+                "message": self.message, "warnings": self.warnings, "issues": self.issues}
 
 
 def _unavailable(reason: str) -> EpubValidationResult:
@@ -78,11 +83,28 @@ def validate_epub(output_path: str | Path, jar_path: str | Path) -> EpubValidati
             )):
                 return _unavailable("EPUBCheck 报告计数与记录不一致")
             if counts["FATAL"] or counts["ERROR"]:
+                # Keep diagnostic codes and EPUB member locations, never raw
+                # process output or excerpts of the customer's book.
+                issues = []
+                for item in messages:
+                    if item["severity"] not in {"FATAL", "ERROR", "WARNING"}:
+                        continue
+                    locations = item.get("locations") or []
+                    loc = locations[0] if locations and isinstance(locations[0], dict) else {}
+                    path = str(loc.get("path") or "")
+                    if path.startswith(("/", "file:")) or ".." in path.split("/"):
+                        path = Path(path).name
+                    issues.append({"code": str(item.get("ID") or item.get("id") or "unknown")[:80],
+                                   "severity": item["severity"], "path": path[:250],
+                                   "line": loc.get("line"), "column": loc.get("column")})
+                    if len(issues) >= 100:
+                        break
                 return EpubValidationResult(
                     False,
                     f"EPUB 校验未通过：{counts['FATAL']} 个致命错误、{counts['ERROR']} 个错误，结果不可交付",
                     ErrorCode.EPUB_VALIDATION_FAILED.value,
                     counts["WARNING"],
+                    issues,
                 )
             if process.returncode != 0:
                 return _unavailable(f"EPUBCheck 异常退出（退出码 {process.returncode}）")

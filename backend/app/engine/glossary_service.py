@@ -208,19 +208,18 @@ def build_consistent_glossary(
 ) -> GlossaryBuildResult:
     import asyncio
 
+    # Own and close the loop for synchronous worker jobs. A loop left open here
+    # was orphaned by the following asyncio.run(title/body) calls on every book.
+    operation = build_consistent_glossary_async(
+        texts, target_lang=target_lang, user_glossary=user_glossary,
+        min_count=min_count, max_terms=max_terms, cancel_check=cancel_check,
+    )
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    if loop.is_running():
-        import nest_asyncio
-        nest_asyncio.apply()
-    return loop.run_until_complete(build_consistent_glossary_async(
-        texts,
-        target_lang=target_lang,
-        user_glossary=user_glossary,
-        min_count=min_count,
-        max_terms=max_terms,
-        cancel_check=cancel_check,
-    ))
+        return asyncio.run(operation)
+    # Preserve the existing nested-loop entry point for interactive callers;
+    # never close a loop owned by the caller.
+    import nest_asyncio
+    nest_asyncio.apply(loop)
+    return loop.run_until_complete(operation)

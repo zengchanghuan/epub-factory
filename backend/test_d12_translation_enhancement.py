@@ -706,34 +706,59 @@ def test_structured_note_without_natural_language_is_preserved_without_retry():
 
 def test_structured_note_allows_short_italic_title_to_remain_english():
     """斜体短书名可保留英文，不能因此丢弃同一脚注中已完成的正文译文。"""
+    for title_tag in ("em", "i", "cite"):
+        t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
+        html = f'<p class="footnote">See <{title_tag}>Political Tracts</{title_tag}> for the complete argument.</p>'
+
+        async def fake_call(payload, *, preferred_model=None):
+            return (
+                {
+                    item["id"]: (
+                        item["html"]
+                        if "Political Tracts" in item["html"]
+                        else "完整论述见"
+                    )
+                    for item in payload
+                },
+                {
+                    "model": preferred_model or "fake-model",
+                    "base_url": "fake://llm",
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "attempts": 1,
+                },
+            )
+
+        t._call_llm_json_batch = fake_call
+        out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
+
+        assert out[0].error is None
+        assert "完整论述见" in out[0].translated_html
+        assert f"<{title_tag}>Political Tracts</{title_tag}>" in out[0].translated_html
+
+
+def test_structured_note_preserves_citation_identifier_tail():
+    """卷期/页码/DOI 没有待译正文，不能因返回原值耗尽重试。"""
     t = SemanticsTranslator(target_lang=f"zh-CN-test-{uuid.uuid4().hex[:8]}")
-    html = '<p class="footnote">See <em>Political Tracts</em> for the complete argument.</p>'
+    tail = ' 45, no. 6 (2008): 633–44, doi: 10.1509/jmkr.45.6.633.'
+    html = '<p class="footnote">The psychology of honest people, <i>Journal of Marketing Research</i>' + tail + '</p>'
+    calls = []
 
     async def fake_call(payload, *, preferred_model=None):
-        return (
-            {
-                item["id"]: (
-                    item["html"]
-                    if "Political Tracts" in item["html"]
-                    else "完整论述见"
-                )
-                for item in payload
-            },
-            {
-                "model": preferred_model or "fake-model",
-                "base_url": "fake://llm",
-                "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "attempts": 1,
-            },
-        )
+        calls.append(payload)
+        assert all(item['html'] != tail for item in payload)
+        return ({item['id']: item['html'] if 'Journal' in item['html'] else '诚实者的心理学，' for item in payload},
+                {'model': 'fake-model', 'attempts': 1})
 
     t._call_llm_json_batch = fake_call
-    out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=["text_nodes"]))
-
+    out = asyncio.run(t.translate_many_chunks_async([html], translation_strategies=['text_nodes']))
     assert out[0].error is None
-    assert "完整论述见" in out[0].translated_html
-    assert "<em>Political Tracts</em>" in out[0].translated_html
+    assert len(calls) == 1
+    assert '诚实者的心理学' in out[0].translated_html
+    assert '<i>Journal of Marketing Research</i>' + tail in out[0].translated_html
+    assert not t._should_translate_text_node(tail)
+    assert t._should_translate_text_node('This study explains the result, doi: 10.1509/jmkr.45.6.633.')
+    assert t._should_translate_text_node(tail + ' This study explains the result.')
 
 
 def test_structured_note_retries_on_flash_after_untranslated_response():
@@ -1216,6 +1241,7 @@ def _run():
         test_translate_many_chunks_routes_structured_note_through_text_nodes,
         test_structured_note_without_natural_language_is_preserved_without_retry,
         test_structured_note_allows_short_italic_title_to_remain_english,
+        test_structured_note_preserves_citation_identifier_tail,
         test_structured_note_retries_on_flash_after_untranslated_response,
         test_structured_note_reports_exact_retry_budget_exhaustion,
         test_translate_many_chunks_honors_per_chunk_retry_budget,

@@ -61,6 +61,7 @@ epub-factory.zip
 /artifacts/translated-books/*.json
 # Private originals, customer-book diagnostics and local regression outputs.
 /artifacts/repair-regression-*/
+/artifacts/delivery-revalidation-*/
 test.pdf
 test[0-9]*.pdf
 test_*/

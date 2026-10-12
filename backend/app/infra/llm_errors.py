@@ -11,5 +11,5 @@ class ProviderAccountUnavailable(RuntimeError):
     def __init__(self, provider: str, reason: str = "insufficient_balance"):
         self.provider = provider
         self.reason = reason
-        detail = "模型服务余额不足" if reason == "insufficient_balance" else "模型服务鉴权或权限失败"
-        super().__init__(f"翻译暂停：{detail}（{provider}）。已完成译文缓存已保留；恢复服务后可复用缓存继续。")
+        detail = "第三方处理服务余额不足" if reason == "insufficient_balance" else "第三方处理服务鉴权或权限失败"
+        super().__init__(f"翻译暂停：{detail}。已完成译文缓存已保留；恢复服务后可复用缓存继续。")

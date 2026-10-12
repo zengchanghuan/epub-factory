@@ -130,6 +130,13 @@ D_SUITE = [
     "test_d85_translation_scope.py",
     "test_d86_big_compat.py",
     "test_d88_numeric_temporal.py",
+    "test_d43_delivery_reliability.py",
+    "test_d47_chinese_title_qa.py",
+    "test_d48_continuation_store.py",
+    "test_d49_translation_slicing.py",
+    "test_d50_timeout_continuation.py",
+    "test_d51_timeout_propagation.py",
+    "test_d37_pdf_api.py",
 ]
 C_SUITE = [
     "test_c1_typography_and_fallback.py",

@@ -224,6 +224,8 @@ class ExtremeCompiler:
             print(f"❌ [Translation] {exc}")
             print(self.metrics.summary())
             return False
+        except (JobCancelled, SoftTimeLimitExceeded):
+            raise
         except Exception as exc:
             print(f"⚠️ [Fallback] Full pipeline failed: {exc}")
             print("🔄 [Fallback] Retrying in safe mode (direction-only)…")
@@ -346,17 +348,17 @@ class ExtremeCompiler:
 
         translation_stats = self.get_translation_stats()
         if self.enable_translation and translation_stats.get("all_failed"):
-            last_error = translation_stats.get("last_error") or "上游模型调用失败"
+            last_error = translation_stats.get("last_error") or "第三方处理服务调用失败"
             low = last_error.lower()
             if any(k in low for k in ("authentication", "unauthorized", "api key", "permission", "401", "403")):
-                hint = "模型 API Key 无效或无权限，请检查 OPENAI_API_KEY 配置。"
+                hint = "第三方处理服务授权异常，请联系客服处理。"
             else:
-                hint = "请检查模型服务连接。"
+                hint = "第三方处理服务连接异常，请稍后重试或联系客服。"
             self.progress_callback(
-                f"AI 翻译全失败：未成功写入任何译文。最后错误：{str(last_error)[:160]}"
+                f"电子书翻译全失败：未成功写入任何译文。最后错误：{str(last_error)[:160]}"
             )
             raise TranslationPipelineError(
-                f"AI 翻译失败：未成功写入任何译文。{hint}最后错误：{last_error}"
+                f"电子书翻译失败：未成功写入任何译文。{hint}最后错误：{last_error}"
             )
         if self.enable_translation and translation_stats.get("failed_chunks"):
             self.error_code = self._ErrorCode.PARTIAL_TRANSLATION

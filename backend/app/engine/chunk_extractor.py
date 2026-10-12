@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup, Tag, NavigableString, Comment
 
 
 BLOCK_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"]
-MEDIA_TAGS = {"img", "svg", "image"}
+MEDIA_TAGS = {"img", "svg", "image", "math"}
 NON_TEXT_TAGS = MEDIA_TAGS | {"script", "style"}
 IMAGE_ANNOTATION_CLASS_RE = re.compile(
     r"(figcaption|caption|figure|photo|picture|image|diagram|illustration|illus|legend|credit)",
@@ -66,6 +66,8 @@ def is_external_text_node(node: NavigableString) -> bool:
     return (
         isinstance(node, NavigableString) and not isinstance(node, Comment)
         and not any(getattr(parent, "name", "") in NON_TEXT_TAGS for parent in node.parents)
+        and not any(getattr(parent, "name", "") == 'code' and 'pdf-math' in (parent.get('class') or [])
+                    for parent in node.parents)
     )
 
 

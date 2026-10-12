@@ -343,7 +343,7 @@ class TranslationContractTests(unittest.TestCase):
             if effect:
                 return effect(**kwargs)
             Path(kwargs["output_path"]).write_bytes(self.output_bytes)
-            return self.ConversionResult(translation_stats={"translated_chunks": 1, "failed_chunks": 0,
+            return self.ConversionResult(validation_passed=True, translation_stats={"translated_chunks": 1, "failed_chunks": 0,
                 "api_calls": 1, "translation_quality": job.translation_quality, "cache_policy": job.cache_policy})
 
         with patch.object(fast_translation_runner, "run_fast_translation_job", side_effect=fast) as executor, \
@@ -383,7 +383,7 @@ class TranslationContractTests(unittest.TestCase):
                     kwargs["stage_callback"]("offline_executor", "captured full paid plan")
                     Path(kwargs["output_path"]).write_bytes(self.output_bytes)
                     seen.append(normalized)
-                    return self.ConversionResult(translation_stats={"translated_chunks": 1, "failed_chunks": 0})
+                    return self.ConversionResult(validation_passed=True, translation_stats={"translated_chunks": 1, "failed_chunks": 0})
 
                 finished, executor, old_converter = self.execute(job, capture)
                 executor.assert_called_once()
@@ -435,7 +435,7 @@ class TranslationContractTests(unittest.TestCase):
                                     soup.p.clear()
                                 raw = str(soup).encode()
                             target.writestr(entry, raw)
-                    return self.ConversionResult(translation_stats={'translated_chunks': 1, 'failed_chunks': 0})
+                    return self.ConversionResult(validation_passed=True, translation_stats={'translated_chunks': 1, 'failed_chunks': 0})
                 finished, executor, _ = self.execute(job, incomplete)
                 executor.assert_called_once()
                 self.assertEqual(finished.status, self.JobStatus.failed)
@@ -465,7 +465,7 @@ class TranslationContractTests(unittest.TestCase):
                     if entry.filename == 'EPUB/chapter.xhtml':
                         raw = raw.replace(b'</p>', '<a href="#missing">注</a></p>'.encode(), 1)
                     target.writestr(entry, raw)
-            return self.ConversionResult(translation_stats={'translated_chunks': 1, 'failed_chunks': 0})
+            return self.ConversionResult(validation_passed=True, translation_stats={'translated_chunks': 1, 'failed_chunks': 0})
         finished, executor, _ = self.execute(job, broken)
         executor.assert_called_once()
         self.assertEqual(finished.status, self.JobStatus.failed)
@@ -549,7 +549,7 @@ class TranslationContractTests(unittest.TestCase):
             self.store.update_status(job.id, self.JobStatus.cancelled, "offline cancellation")
             self.assertTrue(kwargs["cancel_check"]())
             Path(kwargs["output_path"]).write_bytes(self.output_bytes)
-            return self.ConversionResult(translation_stats={"translated_chunks": 1})
+            return self.ConversionResult(validation_passed=True, translation_stats={"translated_chunks": 1})
 
         finished, executor, old_converter = self.execute(job, cancel)
         self.assertEqual(finished.status, self.JobStatus.cancelled)
@@ -575,7 +575,7 @@ class TranslationContractTests(unittest.TestCase):
             saved_newer.append(copy.deepcopy(self.store.get(job.id).translation_stats))
             self.assertTrue(kwargs["cancel_check"]())
             Path(kwargs["output_path"]).write_bytes(self.output_bytes)
-            return self.ConversionResult(translation_stats={"translated_chunks": 1})
+            return self.ConversionResult(validation_passed=True, translation_stats={"translated_chunks": 1})
 
         finished, executor, old_converter = self.execute(job, supersede)
         self.assertEqual(finished.status, self.JobStatus.pending)
@@ -608,7 +608,7 @@ class TranslationContractTests(unittest.TestCase):
                 self.assertEqual(Path(source), Path(job.input_path))
                 self.assertFalse(kwargs["enable_translation"])
                 Path(destination).write_bytes(epub_bytes())
-                return self.ConversionResult()
+                return self.ConversionResult(validation_passed=True)
 
             with patch.object(self.runner.converter, "convert_file_to_horizontal", side_effect=convert) as converter, \
                  patch.object(fast_translation_runner, "run_fast_translation_job") as executor:

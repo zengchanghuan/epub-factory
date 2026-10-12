@@ -4,6 +4,7 @@ from pathlib import Path
 
 from sqlalchemy import Column, String
 from .auth import AdminBase
+from ..domain.order_service import order_kind, SERVICE_LABELS
 
 
 class PaymentCheck(AdminBase):
@@ -61,6 +62,8 @@ def order_view(job, payment, upload_dir, output_dir, *, expected=None):
         "price_cny": expected if expected is not None else (job.expected_amount or None),
         "price_scope": "整批价格，勿重复相加" if job.batch_id else "订单价格",
         "batch_id": job.batch_id or None, "translation": job.enable_translation,
+        "service": order_kind(job), "service_label": SERVICE_LABELS[order_kind(job)],
+        "pricing": ((stats.get('translation_preflight') or {}).get('pdf') or {}).get('pricing'),
         "model": job.translation_model if job.enable_translation else None,
         "error_code": job.error_code, "message": job.message,
         "cost": cost_view(stats),

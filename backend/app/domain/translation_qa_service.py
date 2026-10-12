@@ -38,11 +38,17 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20261012-explicit-temporal-facts-v13"
+QA_RULES_VERSION = "20261012-temporal-chinese-title-v14"
 
 
 def max_free_retries() -> int:
-    return int(os.environ.get("EPUB_TRANSLATION_MAX_FREE_RETRIES", "-1"))
+    # A customer retry remains bounded even if an old deployment specified -1.
+    # Administrators can deliberately authorize a further attempt after review.
+    try:
+        configured = int(os.environ.get("EPUB_TRANSLATION_MAX_FREE_RETRIES", "3"))
+    except ValueError:
+        configured = 3
+    return min(10, max(0, configured)) if configured >= 0 else 3
 
 
 def _flag(report: dict[str, Any], code: str, message: str) -> None:
@@ -56,6 +62,17 @@ def _is_zh_target(target_lang: str | None) -> bool:
     return str(target_lang or "").lower().startswith("zh")
 
 
+def _title_already_in_chinese(title: str, target_lang: str | None) -> bool:
+    # Equality alone is not a translation failure for an already-Chinese title.
+    # Require an explicit Chinese target and Han text; mixed foreign-language
+    # titles still need review, including Japanese kana and non-Latin scripts.
+    return (
+        _is_zh_target(target_lang)
+        and bool(re.search(r"[\u3400-\u9fff]", title))
+        and not any(ch.isalpha() for ch in re.sub(r"[\u3400-\u9fff]", "", title))
+    )
+
+
 def _text_from_tag(tag: Tag) -> str:
     if not tag:
         return ""
@@ -64,6 +81,8 @@ def _text_from_tag(tag: Tag) -> str:
     for media in clone.find_all(list(NON_TEXT_TAGS)):
         if media.parent is not None:
             media.decompose()
+    for formula in clone.select('code.pdf-math'):
+        formula.decompose()
     for br in clone.find_all("br"):
         br.replace_with(" ")
     text = clone.get_text("", strip=False)
@@ -290,7 +309,7 @@ def build_translation_qa_report(
         report.update(status="blocked", delivery_status="blocked", score=None,
                       retryable=(report["max_free_retries"] < 0
                                  or report["free_retry_count"] < report["max_free_retries"]),
-                      summary=stats.get("last_error") or "模型服务暂不可用，译文缓存已保留")
+                      summary=stats.get("last_error") or "第三方处理服务暂不可用，译文缓存已保留")
         _flag(report, "provider_unavailable", report["summary"])
         return report
 
@@ -349,10 +368,15 @@ def build_translation_qa_report(
         _flag(report, "artifact_links_invalid", f"成品存在 {link_errors} 处链接或锚点错误")
         report["score"] -= min(80, link_errors * 5)
 
-    if title_original and title_translated and title_original == title_translated:
+    if (title_original and title_translated and title_original == title_translated
+            and not _title_already_in_chinese(title_original, artifact_audit.get("target_lang"))):
         _flag(report, "title_untranslated", "书名元数据未翻译")
         report["score"] -= 15
 
+    pdf_pending = (stats.get('pdf_extraction') or {}).get('pending_pages') or []
+    if pdf_pending:
+        _flag(report, 'pdf_ocr_review_required', f'PDF 有 {len(pdf_pending)} 页 OCR 内容待人工核验，完整译文尚未就绪')
+        report['requires_manual_review'] = True
     if error_code == "PARTIAL_TRANSLATION":
         _flag(report, "partial_translation", "翻译结果不完整")
 

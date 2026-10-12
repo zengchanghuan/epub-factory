@@ -24,9 +24,9 @@ function render(report) {
 }
 
 test("F19-1 余额不足显示服务暂停，不显示质检分数", () => {
-  const elements = render({ status: "blocked", summary: "模型服务余额不足，缓存已保留",
+  const elements = render({ status: "blocked", flags: ["provider_unavailable"], summary: "模型服务余额不足，缓存已保留",
     score: null, checks: [{ code: "provider_unavailable", message: "模型服务余额不足" }], retryable: true });
-  assert.equal(elements.get("qaTitle").textContent, "翻译因模型服务问题暂停");
+  assert.equal(elements.get("qaTitle").textContent, "翻译因服务问题暂停");
   assert.ok(elements.get("qaSummary").textContent.includes("余额不足"));
   assert.ok(!elements.get("qaMeta").textContent.includes("质检分"));
   assert.equal(elements.get("retryTranslationBtn").textContent, "服务恢复后继续翻译");

@@ -157,7 +157,9 @@ class TocRebuilder:
             file_name, _ = self._normalize_href(file_name)
             soup = BeautifulSoup(item.get_content(), "html.parser")
             for heading in soup.find_all(list(self.TAG_LEVELS)):
-                text = re.sub(r"\s+", " ", heading.get_text("", strip=False)).strip()
+                translated = heading.select_one(".epub-translated")
+                label = translated if translated is not None else heading
+                text = re.sub(r"\s+", " ", label.get_text("", strip=False)).strip()
                 if not self._is_meaningful_heading(text):
                     continue
                 if re.search(r"[\u3400-\u9fff]", text):
@@ -208,7 +210,9 @@ class TocRebuilder:
         exact = exact_headings.get((file_name, fragment)) if fragment else None
         if exact:
             return exact
-        if href_file_counts.get(file_name, 0) == 1:
+        # A file-only link targets its opening heading even when child entries
+        # point to anchors in the same document (a common part/chapter layout).
+        if not fragment or href_file_counts.get(file_name, 0) == 1:
             heading = first_headings.get(file_name)
             if heading:
                 return heading

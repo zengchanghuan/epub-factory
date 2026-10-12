@@ -53,8 +53,16 @@ def book_resume_key(job, manifest: dict) -> str:
             for block in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(block)
         source_sha = digest.hexdigest()
+    chapters = manifest.get("chapters", [])
+    pdf = (settings.get('preflight') or {}).get('pdf') or {}
+    if source_path.suffix.lower() == '.pdf' and source_sha and pdf.get('source_sha256') == source_sha:
+        # Resolving one pending OCR page changes that page's chunks, not the source
+        # book or approved settings. Per-chunk HTML/locator/context fingerprints and
+        # current QA still gate reuse; avoid invalidating every other paid chapter.
+        chapters = [{'chapter_id': ch.get('chapter_id'), 'file_path': ch.get('file_path')} for ch in chapters]
+        settings['pdf_resume_version'] = 1
     return fingerprint({"version": CHECKPOINT_VERSION, "source_sha256": source_sha, "settings": settings,
-                        "chapters": manifest.get("chapters", [])})
+                        "chapters": chapters})
 
 
 class TranslationCheckpoints:

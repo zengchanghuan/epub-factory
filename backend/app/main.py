@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import uuid
 import html as html_lib
 import zipfile
@@ -34,6 +35,8 @@ from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_not
 from .job_runner import run_job
 from .models import DeviceProfile, ErrorCode, Job, JobStage, JobStatus, OutputMode, StageStatus, TraditionalVariant
 from .storage import job_store
+from .domain.upload_guard import upload_guard
+from .infra.temporary_file_response import TemporaryFileResponse
 from .order_events import BrowserEvent, record_event, make_event_router
 from .auth.deps import get_current_user_optional
 from .domain.translation_qa_service import build_translation_qa_report, max_free_retries
@@ -203,7 +206,7 @@ def _normalize_translation_model(
     value = (model or DEFAULT_TRANSLATION_MODEL).strip()
     if value not in TRANSLATION_MODEL_CHOICES:
         allowed = ", ".join(TRANSLATION_MODEL_CHOICES)
-        raise HTTPException(status_code=400, detail=f"translation_model 仅支持：{allowed}")
+        raise HTTPException(status_code=400, detail="所选电子书翻译方案不可用，请刷新页面后重新选择")
     return value
 
 
@@ -392,11 +395,20 @@ def _job_to_v2_status(job: Job) -> str:
 
 def _job_can_download(job: Job) -> bool:
     """只有完整成功的任务才允许下载，部分翻译失败不交付。"""
+    if ((job.translation_stats or {}).get("qa_report") or {}).get("can_deliver") is False:
+        return False
     return (
         job.status == JobStatus.success
         and bool(job.output_path)
-        and job.error_code not in {ErrorCode.PARTIAL_TRANSLATION.value, ErrorCode.PRECISION_POLISH_FAILED.value}
+        and not job.error_code
     )
+
+
+def _verify_download_artifact(job: Job) -> None:
+    from .domain.artifact_receipt import matches
+    if not matches(job.output_path, (job.translation_stats or {}).get("artifact_manifest")):
+        raise HTTPException(status_code=410, detail="成品已缺失或完整性校验未通过，请联系客服恢复；无需再次付款。")
+
 
 
 def _download_unavailable_detail(job: Job) -> str:
@@ -434,11 +446,13 @@ def _job_qa_report(job: Job) -> dict | None:
     report["free_retry_count"] = int(stats.get("free_retry_count") or report.get("free_retry_count") or 0)
     report["translation_attempt"] = int(stats.get("translation_attempt") or report.get("translation_attempt") or 1)
     report["max_free_retries"] = max_free_retries()
-    if report.get("status") == "failed":
-        report["retryable"] = (
-            report["max_free_retries"] < 0
-            or report["free_retry_count"] < report["max_free_retries"]
-        )
+    if report.get("status") in {"failed", "blocked"}:
+        from .domain.retry_policy import blocked_reason
+        blocked = blocked_reason(stats, error_code=job.error_code, limit=report["max_free_retries"])
+        report["retryable"] = not blocked
+        report["manual_review_required"] = bool(blocked)
+        if blocked:
+            report["summary"] = "该任务需要人工排查，请联系客服并提供订单号；无需重新付款。"
     return report
 
 
@@ -447,7 +461,7 @@ def _diagnostic_last_error(raw_error: str, error_categories: dict | None = None,
     lower = raw.lower()
     has_untranslated = bool((error_categories or {}).get("untranslated_response") or (audit_flags_count or {}).get("likely_untranslated"))
     if has_untranslated and ("html tag mismatch" in lower or "html 内联标签不匹配" in raw):
-        return "模型返回原文或近似原文；补译仍未通过（初始触发：HTML 内联标签不匹配）"
+        return "返回内容为原文或近似原文；补译仍未通过（初始触发：HTML 内联标签不匹配）"
     return raw
 
 
@@ -1326,6 +1340,7 @@ def download_result(
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在")
     _validate_pdf_download(job, output_path)
+    _verify_download_artifact(job)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
@@ -1720,242 +1735,262 @@ async def create_job_v2(
         )
     file_size = bytes_written
 
-    # ── 通过所有"无副作用"的校验后，才创建支付订单 ────────────────────
-    pay_url = None
-    qr_code = None
-    job_status = JobStatus.pending
-    expected_amount = ""
-    estimated_chars = 0
+    try:
+        with upload_guard(job_store, user_id=current_user.id if current_user else None,
+                allow_access_recovery=current_user is None or current_user.is_active,
+                client_session=client_session, paths=[input_path], options={
+                    "mode": output_mode.value, "device": device.value,
+                    "translation": enable_translation, "target_lang": target_lang,
+                    "bilingual": bilingual, "model": translation_model, "quality": translation_quality,
+                    "cache_policy": cache_policy, "strategy": translation_strategy, "glossary": glossary,
+                    "temperature": temperature, "variant": traditional_variant.value,
+                    "lexicon_domains": lexicon_domains, "proper_noun": enable_proper_noun,
+                    "polish": enable_precision_polish, "confirmation": profile_confirmation,
+                    "test": _is_admin_test or _skip_payment,
+                }) as (upload_fingerprint, upload_lease):
+            # ── 通过所有"无副作用"的校验后，才创建支付订单 ────────────────────
+            pay_url = None
+            qr_code = None
+            job_status = JobStatus.pending
+            expected_amount = ""
+            estimated_chars = 0
 
-    pricing_info = {}
-    translation_preflight = None
-    translation_input_identity = None
-    conversion_base_amount = None
-    precision_polish_amount = None
-    polish_inspection = None
-    if enable_precision_polish:
-        from .domain.precision_polish_service import inspect_precision_polish_source
-        from .engine.cleaners.llm_polish import calculate_polish_price
-        try:
-            polish_inspection = await asyncio.to_thread(
-                inspect_precision_polish_source, input_path,
-                traditional_variant=traditional_variant.value, lexicon_domains=lexicon_domains,
-                enable_proper_noun=enable_proper_noun,
-            )
-            estimated_chars = int(polish_inspection.get("char_count") or 0)
-            if estimated_chars <= 0 or not int(polish_inspection.get("candidates") or 0):
-                raise ValueError("未发现可精校的正文风险词，请关闭 AI 精校后使用普通转换；不会收取精校费")
-        except Exception as exc:
-            input_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=str(exc) or "无法分析精校正文，请检查 EPUB 文件")
-        precision_polish_amount = _TEST_PRICE if _is_admin_test else f"{calculate_polish_price(estimated_chars):.2f}"
-    require_profile_confirmation = bool(enable_translation and profile_confirmation)
-    if enable_translation:
-        try:
-            pricing_info, translation_preflight, translation_input_identity, input_warnings = await asyncio.to_thread(
-                _prepare_translation_request, input_path=input_path, source_name=safe_name,
-                job_id=job_id, target_lang=target_lang, translation_model=translation_model,
-                translation_quality=translation_quality, translation_strategy=translation_strategy,
-                glossary=glossary, profile_confirmation=require_profile_confirmation,
-                cache_policy=cache_policy,
-                budget_principal=(f"user:{current_user.id}" if current_user else f"anonymous:{client_ip}:{client_session}"),
-                budget_subjects=([f"user:{current_user.id}", f"ip:{client_ip}"] if current_user else [f"ip:{client_ip}"]),
-            )
-            source_warnings = list(dict.fromkeys([*source_warnings, *input_warnings]))
-            estimated_chars = pricing_info.get("total_chars", 0)
-            expected_amount = (
-                _TEST_PRICE
-                if _is_admin_test
-                else pricing_info.get(
-                    "price_cny",
-                    _calc_translation_price(estimated_chars, translation_quality, translation_model),
-                )
-            )
-            if require_profile_confirmation:
-                job_status = JobStatus.awaiting_confirmation
-        except TranslationInputError as exc:
-            input_path.unlink(missing_ok=True)
-            raise _translation_input_http_error(exc) from None
-        except GatewayControlError as exc:
-            input_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=getattr(exc, "status_code", 503), detail=str(exc)) from None
-        except (AccountingError, Exception) as exc:
-            input_path.unlink(missing_ok=True)
-            logger.error(
-                "Failed to build translation preflight: %s",
-                exc,
-                exc_info=True,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="图书分析暂时失败，请稍后重试",
-            )
-    if not require_profile_confirmation and not _skip_payment:
-        try:
-            if enable_translation:
-                # Every format has already been normalized, inspected and
-                # quoted before any payment-side effect.
-                subject = f"EPUB AI 翻译服务 - {safe_name[:50]}"
-                pay_url = create_alipay_page_pay(
-                    out_trade_no=job_id,
-                    total_amount=expected_amount,
-                    subject=subject,
-                    return_url=f"https://fixepub.com/?job_id={job_id}",
-                )
-            else:
-                # 格式转换：固定价格。优先尝试扫码支付；若支付宝应用未开通当面付，
-                # 回退到已审核通过的电脑网站支付，避免用户看到“支付渠道不可用”。
-                from .infra.alipay import create_alipay_precreate
-                base_amount = Decimal(_TEST_PRICE) if _is_admin_test else Decimal(CONVERSION_PRICE_CNY)
-                conversion_base_amount = f"{base_amount:.2f}"
-                precision_polish_amount = precision_polish_amount or "0.00"
-                if enable_precision_polish:
-                    base_amount += Decimal(precision_polish_amount)
-                expected_amount = f"{base_amount:.2f}"
-                subject = f"EPUB 格式转换服务 - {safe_name[:50]}"
-                disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
+            pricing_info = {}
+            translation_preflight = None
+            translation_input_identity = None
+            conversion_base_amount = None
+            precision_polish_amount = None
+            polish_inspection = None
+            if enable_precision_polish:
+                from .domain.precision_polish_service import inspect_precision_polish_source
+                from .engine.cleaners.llm_polish import calculate_polish_price
                 try:
-                    if disable_precreate:
-                        raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
-                    qr_code = create_alipay_precreate(
-                        out_trade_no=job_id,
-                        total_amount=expected_amount,
-                        subject=subject,
+                    polish_inspection = await asyncio.to_thread(
+                        inspect_precision_polish_source, input_path,
+                        traditional_variant=traditional_variant.value, lexicon_domains=lexicon_domains,
+                        enable_proper_noun=enable_proper_noun,
                     )
-                except Exception as precreate_exc:
-                    logger.warning(
-                        "Alipay precreate unavailable, fallback to page pay",
-                        extra={"job_id": job_id, "error": str(precreate_exc)},
+                    estimated_chars = int(polish_inspection.get("char_count") or 0)
+                    if estimated_chars <= 0 or not int(polish_inspection.get("candidates") or 0):
+                        raise ValueError("未发现可精校的正文风险词，请关闭 AI 精校后使用普通转换；不会收取精校费")
+                except Exception as exc:
+                    input_path.unlink(missing_ok=True)
+                    raise HTTPException(status_code=400, detail=str(exc) or "无法分析精校正文，请检查 EPUB 文件")
+                precision_polish_amount = _TEST_PRICE if _is_admin_test else f"{calculate_polish_price(estimated_chars):.2f}"
+            require_profile_confirmation = bool(enable_translation and profile_confirmation)
+            if enable_translation:
+                try:
+                    pricing_info, translation_preflight, translation_input_identity, input_warnings = await asyncio.to_thread(
+                        _prepare_translation_request, input_path=input_path, source_name=safe_name,
+                        job_id=job_id, target_lang=target_lang, translation_model=translation_model,
+                        translation_quality=translation_quality, translation_strategy=translation_strategy,
+                        glossary=glossary, profile_confirmation=require_profile_confirmation,
+                        cache_policy=cache_policy,
+                        budget_principal=(f"user:{current_user.id}" if current_user else f"anonymous:{client_ip}:{client_session}"),
+                        budget_subjects=([f"user:{current_user.id}", f"ip:{client_ip}"] if current_user else [f"ip:{client_ip}"]),
                     )
-                    pay_url = create_alipay_page_pay(
-                        out_trade_no=job_id,
-                        total_amount=expected_amount,
-                        subject=subject,
-                        return_url=f"https://fixepub.com/?job_id={job_id}",
+                    source_warnings = list(dict.fromkeys([*source_warnings, *input_warnings]))
+                    estimated_chars = pricing_info.get("total_chars", 0)
+                    expected_amount = (
+                        _TEST_PRICE
+                        if _is_admin_test
+                        else pricing_info.get(
+                            "price_cny",
+                            _calc_translation_price(estimated_chars, translation_quality, translation_model),
+                        )
                     )
-            job_status = JobStatus.pending_payment
-            logger.info("Created alipay payment order", extra={
-                "job_id": job_id, "amount": expected_amount, "translation": enable_translation
-            })
-        except Exception as e:
-            input_path.unlink(missing_ok=True)
-            logger.error(f"Failed to create alipay order: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
+                    if require_profile_confirmation:
+                        job_status = JobStatus.awaiting_confirmation
+                except TranslationInputError as exc:
+                    input_path.unlink(missing_ok=True)
+                    raise _translation_input_http_error(exc) from None
+                except GatewayControlError as exc:
+                    input_path.unlink(missing_ok=True)
+                    raise HTTPException(status_code=getattr(exc, "status_code", 503), detail=str(exc)) from None
+                except (AccountingError, Exception) as exc:
+                    input_path.unlink(missing_ok=True)
+                    logger.error(
+                        "Failed to build translation preflight: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail="图书分析暂时失败，请稍后重试",
+                    )
+            if not require_profile_confirmation and not _skip_payment:
+                try:
+                    if enable_translation:
+                        # Every format has already been normalized, inspected and
+                        # quoted before any payment-side effect.
+                        subject = f"EPUB AI 翻译服务 - {safe_name[:50]}"
+                        pay_url = create_alipay_page_pay(
+                            out_trade_no=job_id,
+                            total_amount=expected_amount,
+                            subject=subject,
+                            return_url=f"https://fixepub.com/?job_id={job_id}",
+                        )
+                    else:
+                        # 格式转换：固定价格。优先尝试扫码支付；若支付宝应用未开通当面付，
+                        # 回退到已审核通过的电脑网站支付，避免用户看到“支付渠道不可用”。
+                        from .infra.alipay import create_alipay_precreate
+                        base_amount = Decimal(_TEST_PRICE) if _is_admin_test else Decimal(CONVERSION_PRICE_CNY)
+                        conversion_base_amount = f"{base_amount:.2f}"
+                        precision_polish_amount = precision_polish_amount or "0.00"
+                        if enable_precision_polish:
+                            base_amount += Decimal(precision_polish_amount)
+                        expected_amount = f"{base_amount:.2f}"
+                        subject = f"EPUB 格式转换服务 - {safe_name[:50]}"
+                        disable_precreate = _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes")
+                        try:
+                            if disable_precreate:
+                                raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
+                            qr_code = create_alipay_precreate(
+                                out_trade_no=job_id,
+                                total_amount=expected_amount,
+                                subject=subject,
+                            )
+                        except Exception as precreate_exc:
+                            logger.warning(
+                                "Alipay precreate unavailable, fallback to page pay",
+                                extra={"job_id": job_id, "error": str(precreate_exc)},
+                            )
+                            pay_url = create_alipay_page_pay(
+                                out_trade_no=job_id,
+                                total_amount=expected_amount,
+                                subject=subject,
+                                return_url=f"https://fixepub.com/?job_id={job_id}",
+                            )
+                    job_status = JobStatus.pending_payment
+                    logger.info("Created alipay payment order", extra={
+                        "job_id": job_id, "amount": expected_amount, "translation": enable_translation
+                    })
+                except Exception as e:
+                    input_path.unlink(missing_ok=True)
+                    logger.error(f"Failed to create alipay order: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
 
-    job = Job(
-        id=job_id,
-        source_filename=safe_name,
-        output_mode=output_mode,
-        trace_id=trace_id,
-        input_path=str(input_path),
-        access_token=uuid.uuid4().hex,
-        token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
-        creator_ip=client_ip,
-        creator_session=client_session,
-        is_test_order=_is_admin_test or _skip_payment,
-        expected_amount=expected_amount,
-        enable_translation=enable_translation,
-        target_lang=target_lang,
-        bilingual=bilingual,
-        translation_model=translation_model,
-        translation_quality=translation_quality,
-        cache_policy=cache_policy,
-        translation_strategy=translation_strategy,
-        glossary=glossary,
-        device=device,
-        temperature=temperature,
-        traditional_variant=traditional_variant.value,
-        lexicon_domains=lexicon_domains,
-        enable_proper_noun=enable_proper_noun,
-        enable_precision_polish=enable_precision_polish,
-        precision_polish_order_no=job_id if enable_precision_polish else "",
-        polish_char_count=estimated_chars if enable_precision_polish else 0,
-        user_id=current_user.id if current_user else None,
-        status=job_status,
-        message=(
-            "请确认图书画像与翻译设定"
-            if job_status == JobStatus.awaiting_confirmation
-            else (
-                "请完成支付以启动任务"
-                if job_status == JobStatus.pending_payment
-                else "任务已创建，已进入后台队列"
-            )
-        ),
-        translation_stats=(
-            {
-                **initial_translation_stats(),
-                **(
-                    {"translation_preflight": translation_preflight}
-                    if translation_preflight else {}
+            job = Job(
+                id=job_id,
+                source_filename=safe_name,
+                output_mode=output_mode,
+                trace_id=trace_id,
+                input_path=str(input_path),
+                access_token=uuid.uuid4().hex,
+                token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
+                creator_ip=client_ip,
+                creator_session=client_session,
+                is_test_order=_is_admin_test or _skip_payment,
+                expected_amount=expected_amount,
+                enable_translation=enable_translation,
+                target_lang=target_lang,
+                bilingual=bilingual,
+                translation_model=translation_model,
+                translation_quality=translation_quality,
+                cache_policy=cache_policy,
+                translation_strategy=translation_strategy,
+                glossary=glossary,
+                device=device,
+                temperature=temperature,
+                traditional_variant=traditional_variant.value,
+                lexicon_domains=lexicon_domains,
+                enable_proper_noun=enable_proper_noun,
+                enable_precision_polish=enable_precision_polish,
+                precision_polish_order_no=job_id if enable_precision_polish else "",
+                polish_char_count=estimated_chars if enable_precision_polish else 0,
+                user_id=current_user.id if current_user else None,
+                status=job_status,
+                message=(
+                    "请确认图书画像与翻译设定"
+                    if job_status == JobStatus.awaiting_confirmation
+                    else (
+                        "请完成支付以启动任务"
+                        if job_status == JobStatus.pending_payment
+                        else "任务已创建，已进入后台队列"
+                    )
                 ),
-            }
-            if enable_translation or enable_precision_polish else {}
-        ),
-    )
-    if source_warnings:
-        job.translation_stats["source_warnings"] = source_warnings
-    if translation_input_identity:
-        job.translation_stats["translation_input"] = translation_input_identity
-    if enable_translation and pricing_info:
-        # Retain the original quote through confirmation, refresh and retries.
-        # Existing orders are never retroactively repriced by this code path.
-        pricing_info = dict(pricing_info, price_cny=expected_amount, quoted_amount=expected_amount)
-        job.translation_stats["translation_pricing"] = pricing_info
-    if job_status == JobStatus.pending_payment:
-        job.translation_stats["payment_checkout"] = checkout_snapshot(
-            job_id, expected_amount, pay_url=pay_url, qr_code=qr_code)
-    if enable_precision_polish:
-        job.translation_stats["precision_polish"] = {
-            "version": 1, "status": "awaiting_payment" if job_status == JobStatus.pending_payment else "pending",
-            "order_no": job_id, "char_count": estimated_chars,
-            "quoted_amount": precision_polish_amount,
-            "candidates": int(polish_inspection.get("candidates") or 0),
-            "api_calls": 0, "reviewed": 0, "changed": 0, "refund_required": False,
-        }
-    if enable_translation or enable_precision_polish:
-        job.payment_entitlement = quote_entitlement(job, test_bypass=_skip_payment)
-    job_store.add(job)
-
-    if job_status == JobStatus.pending:
-        await asyncio.to_thread(_enqueue_conversion, job, background_tasks)
-
-    return {
-        "job_id": job.id,
-        "trace_id": job.trace_id,
-        "access_token": job.access_token,
-        "status": _job_to_v2_status(job),
-        "message": (
-            "请确认图书画像与翻译设定"
-            if job_status == JobStatus.awaiting_confirmation
-            else (
-                "请完成支付以启动任务"
-                if job_status == JobStatus.pending_payment
-                else "任务已创建，已进入后台队列"
+                translation_stats=(
+                    {
+                        **initial_translation_stats(),
+                        **(
+                            {"translation_preflight": translation_preflight}
+                            if translation_preflight else {}
+                        ),
+                    }
+                    if enable_translation or enable_precision_polish else {}
+                ),
             )
-        ),
-        "source_filename": job.source_filename,
-        "enable_translation": job.enable_translation,
-        "target_lang": job.target_lang,
-        "bilingual": job.bilingual,
-        "translation_model": job.translation_model,
-        "translation_quality": job.translation_quality,
-        "cache_policy": job.cache_policy,
-        "translation_strategy": job.translation_strategy,
-        "temperature": job.temperature,
-        "device": job.device.value,
-        "traditional_variant": job.traditional_variant,
-        "created_at": job.created_at.isoformat(),
-        "pay_url": pay_url,
-        "qr_code": qr_code,
-        "amount": expected_amount,
-        "base_amount": conversion_base_amount,
-        "precision_polish_amount": precision_polish_amount,
-        "precision_polish": (job.translation_stats or {}).get("precision_polish"),
-        "estimated_chars": estimated_chars,
-        "pricing": pricing_info or None,
-        "translation_preflight": translation_preflight,
-        "source_warnings": source_warnings,
-    }
+            if source_warnings:
+                job.translation_stats["source_warnings"] = source_warnings
+            if translation_input_identity:
+                job.translation_stats["translation_input"] = translation_input_identity
+            if enable_translation and pricing_info:
+                # Retain the original quote through confirmation, refresh and retries.
+                # Existing orders are never retroactively repriced by this code path.
+                pricing_info = dict(pricing_info, price_cny=expected_amount, quoted_amount=expected_amount)
+                job.translation_stats["translation_pricing"] = pricing_info
+            if job_status == JobStatus.pending_payment:
+                job.translation_stats["payment_checkout"] = checkout_snapshot(
+                    job_id, expected_amount, pay_url=pay_url, qr_code=qr_code)
+            if enable_precision_polish:
+                job.translation_stats["precision_polish"] = {
+                    "version": 1, "status": "awaiting_payment" if job_status == JobStatus.pending_payment else "pending",
+                    "order_no": job_id, "char_count": estimated_chars,
+                    "quoted_amount": precision_polish_amount,
+                    "candidates": int(polish_inspection.get("candidates") or 0),
+                    "api_calls": 0, "reviewed": 0, "changed": 0, "refund_required": False,
+                }
+            if enable_translation or enable_precision_polish:
+                job.payment_entitlement = quote_entitlement(job, test_bypass=_skip_payment)
+            job.translation_stats["upload_fingerprint"] = upload_fingerprint
+            if upload_lease:
+                upload_lease.assert_owned()
+            job_store.add(job)
+
+            if job_status == JobStatus.pending:
+                await asyncio.to_thread(_enqueue_conversion, job, background_tasks)
+
+            return {
+                "job_id": job.id,
+                "trace_id": job.trace_id,
+                "access_token": job.access_token,
+                "status": _job_to_v2_status(job),
+                "message": (
+                    "请确认图书画像与翻译设定"
+                    if job_status == JobStatus.awaiting_confirmation
+                    else (
+                        "请完成支付以启动任务"
+                        if job_status == JobStatus.pending_payment
+                        else "任务已创建，已进入后台队列"
+                    )
+                ),
+                "source_filename": job.source_filename,
+                "enable_translation": job.enable_translation,
+                "target_lang": job.target_lang,
+                "bilingual": job.bilingual,
+                "translation_model": job.translation_model,
+                "translation_quality": job.translation_quality,
+                "cache_policy": job.cache_policy,
+                "translation_strategy": job.translation_strategy,
+                "temperature": job.temperature,
+                "device": job.device.value,
+                "traditional_variant": job.traditional_variant,
+                "created_at": job.created_at.isoformat(),
+                "pay_url": pay_url,
+                "qr_code": qr_code,
+                "amount": expected_amount,
+                "base_amount": conversion_base_amount,
+                "precision_polish_amount": precision_polish_amount,
+                "precision_polish": (job.translation_stats or {}).get("precision_polish"),
+                "estimated_chars": estimated_chars,
+                "pricing": pricing_info or None,
+                "translation_preflight": translation_preflight,
+                "source_warnings": source_warnings,
+            }
+    except Exception:
+        if not job_store.get(job_id):
+            input_path.unlink(missing_ok=True)
+        raise
 
 
 def _confirmed_translation_preflight(
@@ -2429,79 +2464,96 @@ async def create_batch_v2(
     skip_payment = _os.environ.get("SKIP_PAYMENT_CHECK", "").lower() in ("1", "true", "yes")
     admin_secret = (_os.environ.get("ADMIN_SECRET") or "").strip()
     is_admin_test = bool(admin_secret and admin_key and _hmac.compare_digest(admin_key.strip(), admin_secret))
-    expected_amount = ""
-    qr_code = None
-    pay_url = None
-    job_status = JobStatus.pending
+    try:
+        with upload_guard(job_store, user_id=current_user.id if current_user else None,
+                allow_access_recovery=current_user is None or current_user.is_active,
+                client_session=client_session, paths=[path for _, _, path in saved],
+                options={"mode": output_mode.value, "device": device.value,
+                         "variant": traditional_variant.value, "test": is_admin_test or skip_payment}
+                ) as (upload_fingerprint, upload_lease):
+            expected_amount = ""
+            qr_code = None
+            pay_url = None
+            job_status = JobStatus.pending
 
-    if not skip_payment:
-        expected_amount = "0.01" if is_admin_test else f"{Decimal(CONVERSION_PRICE_CNY) * len(saved):.2f}"
-        order_no = f"batch_{batch_id}"
-        subject = f"EPUB 批量转换服务 - {len(saved)} 个文件"
-        try:
-            from .infra.alipay import create_alipay_precreate
-            if _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes"):
-                raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
-            qr_code = create_alipay_precreate(order_no, expected_amount, subject)
-        except Exception as precreate_exc:
-            logger.warning(
-                "Batch Alipay precreate unavailable, fallback to page pay",
-                extra={"job_id": order_no, "error": str(precreate_exc)},
-            )
-            try:
-                pay_url = create_alipay_page_pay(
-                    out_trade_no=order_no,
-                    total_amount=expected_amount,
-                    subject=subject,
-                    return_url=f"https://fixepub.com/?batch_id={batch_id}",
-                )
-            except Exception:
-                for _, _, path in saved:
-                    path.unlink(missing_ok=True)
-                raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
-        job_status = JobStatus.pending_payment
+            if not skip_payment:
+                expected_amount = "0.01" if is_admin_test else f"{Decimal(CONVERSION_PRICE_CNY) * len(saved):.2f}"
+                order_no = f"batch_{batch_id}"
+                subject = f"EPUB 批量转换服务 - {len(saved)} 个文件"
+                try:
+                    from .infra.alipay import create_alipay_precreate
+                    if _os.environ.get("ALIPAY_DISABLE_PRECREATE", "").lower() in ("1", "true", "yes"):
+                        raise RuntimeError("precreate disabled by ALIPAY_DISABLE_PRECREATE")
+                    qr_code = create_alipay_precreate(order_no, expected_amount, subject)
+                except Exception as precreate_exc:
+                    logger.warning(
+                        "Batch Alipay precreate unavailable, fallback to page pay",
+                        extra={"job_id": order_no, "error": str(precreate_exc)},
+                    )
+                    try:
+                        pay_url = create_alipay_page_pay(
+                            out_trade_no=order_no,
+                            total_amount=expected_amount,
+                            subject=subject,
+                            return_url=f"https://fixepub.com/?batch_id={batch_id}",
+                        )
+                    except Exception:
+                        for _, _, path in saved:
+                            path.unlink(missing_ok=True)
+                        raise HTTPException(status_code=500, detail="支付渠道暂时不可用，请稍后重试或联系客服")
+                job_status = JobStatus.pending_payment
 
-    for index, (job_id, safe_name, input_path) in enumerate(saved):
-        job_store.add(Job(
-            id=job_id,
-            source_filename=safe_name,
-            output_mode=output_mode,
-            trace_id=uuid.uuid4().hex,
-            input_path=str(input_path),
-            access_token=access_token,
-            token_expires_at=token_expires_at,
-            creator_ip=client_ip,
-            creator_session=client_session,
-            user_id=current_user.id if current_user else None,
-            is_test_order=is_admin_test,
-            expected_amount=expected_amount if index == 0 else "",
-            batch_id=batch_id,
-            batch_index=index,
-            batch_size=len(saved),
-            device=device,
-            traditional_variant=traditional_variant.value,
-            status=job_status,
-            message="等待批次支付" if job_status == JobStatus.pending_payment else "批次任务已排队",
-            translation_stats={
-                **({"source_warnings": source_warnings_by_file[index]} if source_warnings_by_file[index] else {}),
-                **({"payment_checkout": checkout_snapshot(
-                    f"batch_{batch_id}", expected_amount, pay_url=pay_url, qr_code=qr_code)}
-                   if index == 0 and job_status == JobStatus.pending_payment else {}),
-            },
-        ))
+            batch_jobs = []
+            for index, (job_id, safe_name, input_path) in enumerate(saved):
+                batch_jobs.append(Job(
+                    id=job_id,
+                    source_filename=safe_name,
+                    output_mode=output_mode,
+                    trace_id=uuid.uuid4().hex,
+                    input_path=str(input_path),
+                    access_token=access_token,
+                    token_expires_at=token_expires_at,
+                    creator_ip=client_ip,
+                    creator_session=client_session,
+                    user_id=current_user.id if current_user else None,
+                    is_test_order=is_admin_test,
+                    expected_amount=expected_amount if index == 0 else "",
+                    batch_id=batch_id,
+                    batch_index=index,
+                    batch_size=len(saved),
+                    device=device,
+                    traditional_variant=traditional_variant.value,
+                    status=job_status,
+                    message="等待批次支付" if job_status == JobStatus.pending_payment else "批次任务已排队",
+                    translation_stats={
+                        **({"source_warnings": source_warnings_by_file[index]} if source_warnings_by_file[index] else {}),
+                        **({"payment_checkout": checkout_snapshot(
+                            f"batch_{batch_id}", expected_amount, pay_url=pay_url, qr_code=qr_code)}
+                           if index == 0 and job_status == JobStatus.pending_payment else {}),
+                    },
+                ))
+                batch_jobs[-1].translation_stats["upload_fingerprint"] = upload_fingerprint
+            if upload_lease:
+                upload_lease.assert_owned()
+            job_store.add_many(batch_jobs)
 
-    if job_status == JobStatus.pending:
-        await asyncio.to_thread(_enqueue_batch, batch_id, background_tasks)
+            if job_status == JobStatus.pending:
+                await asyncio.to_thread(_enqueue_batch, batch_id, background_tasks)
 
-    payload = _batch_payload(batch_id)
-    payload.update({
-        "access_token": access_token,
-        "amount": expected_amount,
-        "qr_code": qr_code,
-        "pay_url": pay_url,
-        "message": "请完成一次支付以启动整批任务" if job_status == JobStatus.pending_payment else "批次已进入后台队列",
-    })
-    return payload
+            payload = _batch_payload(batch_id)
+            payload.update({
+                "access_token": access_token,
+                "amount": expected_amount,
+                "qr_code": qr_code,
+                "pay_url": pay_url,
+                "message": "请完成一次支付以启动整批任务" if job_status == JobStatus.pending_payment else "批次已进入后台队列",
+            })
+            return payload
+    except Exception:
+        for key, _, path in saved:
+            if not job_store.get(key):
+                path.unlink(missing_ok=True)
+        raise
 
 
 @app.get("/api/v2/batches/{batch_id}")
@@ -2555,17 +2607,24 @@ def download_batch_v2(batch_id: str, request: Request):
     downloadable = [job for job in jobs if _job_can_download(job) and Path(job.output_path or "").exists()]
     if not downloadable:
         raise HTTPException(status_code=400, detail="批次中尚无可下载的结果")
-    zip_path = OUTPUT_DIR / f"batch-{batch_id}.zip"
-    used_names: set[str] = set()
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for index, job in enumerate(downloadable, start=1):
-            output = Path(job.output_path or "")
-            name = output.name
-            if name in used_names:
-                name = f"{index:02d}-{name}"
-            used_names.add(name)
-            archive.write(output, arcname=name)
-    return FileResponse(zip_path, filename=f"fixepub-batch-{batch_id}.zip", media_type="application/zip")
+    for job in downloadable:
+        _verify_download_artifact(job)
+    with tempfile.NamedTemporaryFile(prefix=f"batch-{batch_id}-", suffix=".zip", dir=OUTPUT_DIR, delete=False) as bundle:
+        zip_path = Path(bundle.name)
+    try:
+        used_names: set[str] = set()
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, job in enumerate(downloadable, start=1):
+                output = Path(job.output_path or "")
+                name = output.name
+                if name in used_names:
+                    name = f"{index:02d}-{name}"
+                used_names.add(name)
+                archive.write(output, arcname=name)
+        return TemporaryFileResponse(zip_path, filename=f"fixepub-batch-{batch_id}.zip", media_type="application/zip")
+    except BaseException:
+        zip_path.unlink(missing_ok=True)
+        raise
 
 
 @app.post("/api/v2/estimate-polish")
@@ -2721,6 +2780,7 @@ def download_result_v2(
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="结果文件不存在")
     _validate_pdf_download(job, output_path)
+    _verify_download_artifact(job)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
@@ -2739,6 +2799,7 @@ def preview_book_v2(job_id: str, request: Request, chapter: int = 0):
     if not output.is_file():
         raise HTTPException(status_code=404, detail="结果文件不存在")
     _validate_pdf_download(job, output)
+    _verify_download_artifact(job)
     try:
         return build_book_preview(output, chapter)
     except IndexError:
@@ -3190,7 +3251,7 @@ def _translation_diagnostics(job: Job, limit: int = 20) -> dict:
     untranslated_count = int((stats.get("audit_flags_count") or {}).get("likely_untranslated") or 0)
     balance_count = int(error_categories.get("provider_balance") or 0)
     if error_categories.get("untranslated_response") or untranslated_count > balance_count:
-        likely_causes.append("模型返回原文或近似原文，系统已拦截以避免中英混杂交付")
+        likely_causes.append("返回内容为原文或近似原文，系统已拦截以避免中英混杂交付")
     if error_categories.get("timeout") or model_timeout_count:
         likely_causes.append("模型 API 响应超时，可能与上游服务负载或单批内容过长有关")
     if connection_count:
@@ -3477,6 +3538,8 @@ def _restart_translation_job(
     )
     if reason == "retry_limit":
         raise HTTPException(status_code=400, detail="重译次数已用完，请联系客服处理")
+    if reason == "manual_review":
+        raise HTTPException(status_code=409, detail="该任务需要人工排查原文件或重复失败原因，请联系客服；无需重新付款。")
     if reason == "active":
         raise HTTPException(status_code=409, detail="任务已被其他请求重启，请勿重复提交")
     if reason == "payment_required":

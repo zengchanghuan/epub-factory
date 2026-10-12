@@ -24,7 +24,7 @@ test("F16-1b 支持递归选择整个文件夹", () => {
 test("F16-2 多文件提交到批次 API", () => {
   assert.ok(html.includes('selectedFiles.forEach(file => form.append("files", file))'), "应逐个追加 files 字段");
   assert.ok(html.includes('`${API}/api/v2/batches`'), "多文件应调用批次 API");
-  assert.ok(html.includes("批量模式当前仅支持转换与排版处理"), "批量模式应禁用 AI 翻译");
+  assert.ok(html.includes("批量模式当前仅支持转换与排版处理"), "批量模式应禁用 电子书翻译");
 });
 
 test("F16-3 批次共享 token 并轮询汇总进度", () => {

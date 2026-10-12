@@ -87,7 +87,7 @@ class TestPaidTranslationRegression(unittest.TestCase):
     def test_job_passes_bilingual_mode_to_auditor(self):
         with patch('app.job_runner.audit_translated_epub_output', return_value={'status': 'passed'}) as audit:
             _apply_final_artifact_audit(SimpleNamespace(enable_translation=True, bilingual=True),
-                                        ConversionResult(), Path('/sample.epub'))
+                                        ConversionResult(validation_passed=True), Path('/sample.epub'))
         self.assertTrue(audit.call_args.kwargs['bilingual'])
 
     def test_timeout_bonus_and_retry_budget_count_actual_requests(self):

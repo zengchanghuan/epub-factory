@@ -1044,13 +1044,13 @@ class SemanticsTranslator:
         replacements: dict[str, str] = {}
         counter = 0
         for tag in list(soup.find_all(True)):
-            if not isinstance(tag, Tag) or tag.name in BLOCK_TAGS:
+            if not isinstance(tag, Tag) or tag.name in BLOCK_TAGS or tag.find_parent(list(MEDIA_TAGS)):
                 continue
             open_marker = f"[[EPUB_TAG_{counter}_OPEN]]"
             close_marker = f"[[EPUB_TAG_{counter}_CLOSE]]"
             single_marker = f"[[EPUB_TAG_{counter}_SELF]]"
             counter += 1
-            if tag.name in VOID_TAGS or not tag.contents:
+            if tag.name in VOID_TAGS | MEDIA_TAGS or not tag.contents or (tag.name == 'code' and 'pdf-math' in (tag.get('class') or [])):
                 replacements[single_marker] = str(tag)
                 tag.replace_with(NavigableString(single_marker))
                 continue
@@ -1220,6 +1220,14 @@ class SemanticsTranslator:
         if (is_preserved_reference(stripped)
                 or normalize_text(stripped) in {normalize_text(term) for term in getattr(self, 'preserved_terms', ())}):
             return False
+        # Citation tails contain identifiers, not prose. Match the whole node
+        # so explanatory text before/after a DOI still requires translation.
+        if re.fullmatch(
+            r"(?:[\d\s.,;:()\[\]–—-]|(?:nos?|vols?|pp?|issue)\.)*"
+            r"doi\s*:\s*10\.\d{4,9}/[^\s<>]+",
+            stripped, re.I,
+        ):
+            return False
         from app.domain.translation_scripts import has_foreign_letters
         if not stripped or not has_foreign_letters(stripped, self.target_lang):
             return False
@@ -1333,7 +1341,7 @@ class SemanticsTranslator:
             source_words = self._latin_words(source_text)
             parent_name = getattr(getattr(node, "parent", None), "name", "")
             preservable_title = (
-                parent_name in {"em", "cite"}
+                parent_name in {"em", "i", "cite"}
                 and 1 <= len(source_words) <= 8
                 and len(source_text.strip()) <= 100
             )

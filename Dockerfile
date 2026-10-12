@@ -6,6 +6,7 @@
 FROM python:3.10.12-slim
 
 ARG INSTALL_CALIBRE=0
+ARG INSTALL_TEST_DEPENDENCIES=0
 ARG EPUBCHECK_VERSION=5.1.0
 
 ENV PYTHONUNBUFFERED=1 \
@@ -40,6 +41,9 @@ WORKDIR /app
 # 先装依赖（利用层缓存：lock 不变则不重装）
 COPY backend/requirements.lock /app/backend/requirements.lock
 RUN pip install --upgrade pip && pip install -r /app/backend/requirements.lock
+
+COPY backend/requirements-test.txt /app/backend/requirements-test.txt
+RUN if [ "$INSTALL_TEST_DEPENDENCIES" = "1" ]; then pip install -r /app/backend/requirements-test.txt; fi
 
 # 再拷代码
 COPY . /app

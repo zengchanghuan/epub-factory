@@ -22,11 +22,21 @@ import app.engine.glossary_service as glossary_service
 from app.domain.fast_translation_runner import (
     _translation_delivery_gate_result,
     _translation_failures_exceed_delivery_gate,
-    run_fast_translation_job,
+    run_fast_translation_job as _run_fast_translation_job,
 )
 from app.engine.cleaners.semantics_translator import SemanticsTranslator
 from app.models import ChunkStatus, ConversionResult, DeviceProfile, ErrorCode, Job, OutputMode
 from app.storage import job_store
+
+
+def run_fast_translation_job(**kwargs):
+    # These are offline executor/translation unit tests, not EPUBCheck acceptance.
+    from unittest.mock import patch
+    from app.engine.epub_validation import EpubValidationResult
+    result = EpubValidationResult(True, "offline validation fixture")
+    with patch("app.engine.compiler.validate_epub", return_value=result), \
+         patch("app.domain.fast_translation_runner.validate_epub", return_value=result):
+        return _run_fast_translation_job(**kwargs)
 
 
 def _make_epub(path: Path, marker: str) -> None:

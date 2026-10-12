@@ -180,9 +180,10 @@ def make_router(store, upload_dir, output_dir, enqueue):
             if job.status == JobStatus.pending_payment:
                 try:
                     from ..domain.payment_email_service import queue_paid_order_email
+                    from ..domain.order_service import order_kind
                     jobs = store.list_jobs_by_batch_id(job.batch_id) if job.batch_id else [job]
                     queue_paid_order_email(number, amount,
-                        "batch" if job.batch_id else "translation" if job.enable_translation else "conversion",
+                        "batch" if job.batch_id else order_kind(job),
                         file_count=len(jobs), is_test_order=any(j.is_test_order for j in jobs))
                 except Exception:
                     logger.warning("Paid order email could not be queued", extra={"job_id": number})
@@ -296,6 +297,18 @@ def make_router(store, upload_dir, output_dir, enqueue):
             result = record_view(row)
         if result.get("metadata_invalid"):
             return result
+        job = get_job(job_id)
+        stats = job.translation_stats or {}
+        from app.domain.dispatch_intent import dispatch_identity
+        dispatch = store.get_dispatch(dispatch_identity(job_id, str(stats.get("attempt_id") or "")))
+        result["delivery"] = {
+            "attempt_id": stats.get("attempt_id"),
+            "validation": stats.get("epub_validation"),
+            "artifact": stats.get("artifact_manifest"),
+            "attempt_history": stats.get("attempt_history") or [],
+            "dispatch": ({key: dispatch.get(key) for key in
+                          ("status", "attempts", "last_error", "next_attempt_at")} if dispatch else None),
+        }
         # Expose only failure/attempt summaries, not raw paths, keys, or provider payloads.
         result["stages"] = [{"name": s.stage_name, "status": s.status.value,
                              "started_at": s.started_at.isoformat() if s.started_at else None,
@@ -371,6 +384,10 @@ def make_router(store, upload_dir, output_dir, enqueue):
                          upload_dir if kind == "source" else output_dir)
         if not path:
             raise HTTPException(410, "文件不存在或已过期")
+        if kind == "output":
+            from app.domain.artifact_receipt import matches
+            if not matches(path, (job.translation_stats or {}).get("artifact_manifest")):
+                raise HTTPException(410, "成品完整性校验失败，请排查文件存储")
         return FileResponse(path, filename=path.name, media_type="application/octet-stream",
                             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 

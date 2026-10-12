@@ -32,5 +32,5 @@ test("F13-3 点击停止会调用 cancel 接口并保持停止中状态", () => 
   assert.ok(html.includes("function cancelJob(jobId)"), "应有 cancelJob 处理点击");
   assert.ok(html.includes('/cancel`'), "应请求 /api/v2/jobs/{job_id}/cancel");
   assert.ok(html.includes("cancelRequestedJobId"), "停止请求中不应被轮询重新启用按钮");
-  assert.ok(html.includes("已请求停止翻译，正在停止新的模型请求"), "UI 日志应提示停止请求");
+  assert.ok(html.includes("已请求停止翻译，正在停止新的翻译请求"), "UI 日志应提示停止请求");
 });

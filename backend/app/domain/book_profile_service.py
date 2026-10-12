@@ -118,6 +118,8 @@ def _extract_metadata_and_toc(epub_path: str) -> tuple[dict[str, Any], list[str]
             if cleaned:
                 metadata[key] = cleaned[:12]
         _flatten_toc(getattr(book, "toc", []), out=toc)
+    except (JobCancelled, SoftTimeLimitExceeded):
+        raise
     except Exception as exc:
         logger.warning("book profiler metadata extraction failed: %s", exc)
     return metadata, toc

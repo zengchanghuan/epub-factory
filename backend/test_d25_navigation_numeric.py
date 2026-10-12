@@ -118,6 +118,26 @@ class NavigationNumericTests(unittest.TestCase):
         self.assertEqual(mixed.title, '克里斯蒂安·库拉马吉')
         self.assertEqual(mixed.href, 'four.xhtml')
 
+    def test_bilingual_part_label_uses_start_heading_with_same_file_children(self):
+        book = epub.EpubBook()
+        chapter = epub.EpubHtml(uid='part', file_name='part.xhtml', title='Part')
+        chapter.content = ('<html><body><h1><span class="epub-original">Those Who Play</span>'
+                           '<span class="epub-translated">那些玩游戏的人</span></h1>'
+                           '<h1 id="chapter"><span class="epub-original">The First Chapter</span>'
+                           '<span class="epub-translated">第一章</span></h1></body></html>')
+        book.add_item(chapter)
+        section = epub.Link('part.xhtml', 'Those Who Play', 'section')
+        child = epub.Link('part.xhtml#chapter', 'The First Chapter', 'chapter')
+        unknown = epub.Link('part.xhtml#unknown', 'Unknown Section', 'unknown')
+        book.toc = [(section, [child, unknown])]
+        before = [(node.href, node.uid) for node in (section, child, unknown)]
+        TocRebuilder().rebuild(book, target_lang='zh-CN')
+        self.assertEqual(section.title, '那些玩游戏的人')
+        self.assertEqual(child.title, '第一章')
+        self.assertEqual(unknown.title, 'Unknown Section')
+        self.assertEqual(before, [(node.href, node.uid) for node in (section, child, unknown)])
+        self.assertIs(book.toc[0][1][0], child)
+
     def test_navigation_audit_checks_real_reader_targets_and_deduplicates(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'book.epub'
