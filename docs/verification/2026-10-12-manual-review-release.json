@@ -1,0 +1,464 @@
+{
+  "release": "6a6fc1ed7571cfbe6c6908d5b578d251a2ff6f05",
+  "site": "https://fixepub.com",
+  "evidence_sources": {
+    "ci": "gh run view 38198240825 --json (GitHub Actions record)",
+    "browser": "Original sanitized production browser report",
+    "deployment_and_health": "Normalized from deployment log and read-only verification outputs in the same deployment session; not a new deployment"
+  },
+  "ci": {
+    "conclusion": "success",
+    "createdAt": "2026-10-12T03:03:22Z",
+    "databaseId": 38198240825,
+    "headSha": "6a6fc1ed7571cfbe6c6908d5b578d251a2ff6f05",
+    "jobs": [
+      {
+        "completedAt": "2026-10-12T03:13:33Z",
+        "conclusion": "success",
+        "databaseId": 114645626116,
+        "name": "regression",
+        "startedAt": "2026-10-12T03:03:26Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-12T03:03:27Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-12T03:03:27Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:03:28Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@v4",
+            "number": 2,
+            "startedAt": "2026-10-12T03:03:27Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:04:48Z",
+            "conclusion": "success",
+            "name": "Build image (与生产同 Python/依赖/epubcheck)",
+            "number": 3,
+            "startedAt": "2026-10-12T03:03:28Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:13:16Z",
+            "conclusion": "success",
+            "name": "Run offline regression in container",
+            "number": 4,
+            "startedAt": "2026-10-12T03:04:48Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:13:30Z",
+            "conclusion": "success",
+            "name": "Verify quota Lua against actual Redis 6 and 7",
+            "number": 5,
+            "startedAt": "2026-10-12T03:13:16Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:13:30Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@v4",
+            "number": 10,
+            "startedAt": "2026-10-12T03:13:30Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:13:30Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 11,
+            "startedAt": "2026-10-12T03:13:30Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38198240825/job/114645626116"
+      },
+      {
+        "completedAt": "2026-10-12T03:04:47Z",
+        "conclusion": "success",
+        "databaseId": 114645626284,
+        "name": "frontend",
+        "startedAt": "2026-10-12T03:03:26Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-12T03:03:27Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-12T03:03:26Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:03:28Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@v4",
+            "number": 2,
+            "startedAt": "2026-10-12T03:03:27Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:03:28Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-node@v4",
+            "number": 3,
+            "startedAt": "2026-10-12T03:03:28Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:03:30Z",
+            "conclusion": "success",
+            "name": "Run frontend regression",
+            "number": 4,
+            "startedAt": "2026-10-12T03:03:28Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:03:30Z",
+            "conclusion": "success",
+            "name": "Check static tool pages cannot regenerate checkout copies",
+            "number": 5,
+            "startedAt": "2026-10-12T03:03:30Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:04:45Z",
+            "conclusion": "success",
+            "name": "Exercise unified tool entries in isolated Chrome",
+            "number": 6,
+            "startedAt": "2026-10-12T03:03:30Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:04:45Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-node@v4",
+            "number": 11,
+            "startedAt": "2026-10-12T03:04:45Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:04:46Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@v4",
+            "number": 12,
+            "startedAt": "2026-10-12T03:04:45Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T03:04:46Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 13,
+            "startedAt": "2026-10-12T03:04:46Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38198240825/job/114645626284"
+      }
+    ],
+    "status": "completed",
+    "updatedAt": "2026-10-12T03:13:33Z",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38198240825"
+  },
+  "deployment": {
+    "command": "bash deploy.sh",
+    "source": "isolated clean clone of release commit",
+    "exit_code": 0,
+    "package_files": 548,
+    "package_bytes": 2046653,
+    "package_files_match_commit": true,
+    "preflight": {
+      "nginx_config_valid": true,
+      "worker_roles_valid": true,
+      "queued_or_running_jobs": 0,
+      "persisted_active_repairs": 0
+    },
+    "backup_path": "/home/ubuntu/epub-factory/deploy-backups/20261012T031548Z-3150201",
+    "backup_directory_timestamp_utc": "2026-10-12T03:15:48Z",
+    "backup_files_present": [
+      "previous-code.zip",
+      "production.env",
+      "jobs.sqlite3",
+      "pip-freeze.txt"
+    ]
+  },
+  "server_verification": {
+    "release_files": 548,
+    "mismatches": [],
+    "manifest_sha256": "c1901172deed139341807d60218e430ca3fca3033d8953008a2cdfdc76a7bade",
+    "services": {
+      "epub-factory": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      },
+      "epub-factory-worker": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      },
+      "epub-factory-housekeeping": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      },
+      "epub-factory-beat": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "NRestarts": 0
+      }
+    },
+    "worker_pongs": 2,
+    "worker_queues": [
+      [
+        "celery"
+      ],
+      [
+        "housekeeping"
+      ]
+    ],
+    "error_entries_since_deployment": 0,
+    "error_log_level": "systemd err",
+    "error_log_since_utc": "2026-10-12T03:15:48Z"
+  },
+  "public_verification": [
+    {
+      "path": "/",
+      "http_status": 200,
+      "cache_control": "no-cache, must-revalidate",
+      "matches_commit": true
+    },
+    {
+      "path": "/lib.js?v=20261012-merged-pdf-c",
+      "http_status": 200,
+      "cache_control": "no-cache, must-revalidate",
+      "matches_commit": true
+    },
+    {
+      "path": "/pdf-conversion.js?v=20261003-pdf-c",
+      "http_status": 200,
+      "cache_control": "no-cache, must-revalidate",
+      "matches_commit": true
+    },
+    {
+      "path": "/epub-translator.html",
+      "http_status": 200,
+      "cache_control": "no-cache, must-revalidate",
+      "matches_commit": true
+    },
+    {
+      "path": "/about.html",
+      "http_status": 200,
+      "cache_control": "no-cache, must-revalidate",
+      "matches_commit": true
+    },
+    {
+      "path": "/api/healthz",
+      "http_status": 200,
+      "status": "ok"
+    },
+    {
+      "path": "/api/v2/capabilities",
+      "http_status": 200
+    },
+    {
+      "path": "/api/v2/jobs",
+      "http_status": 200,
+      "cache_control": "no-store"
+    }
+  ],
+  "scope": {
+    "fixture_type": "synthetic terminal failed test orders in production storage",
+    "is_test_order": true,
+    "test_job_ids": [
+      "d5d8b6bbabd6",
+      "941bc232543a"
+    ],
+    "qa_statuses": [
+      "failed",
+      "blocked"
+    ],
+    "dispatch_intents": 0,
+    "payment_entitlement_granted": false,
+    "payment_or_model_calls": false,
+    "customer_tasks_modified": false,
+    "browser_api_mocking": false,
+    "production_provider_failure_induced": false,
+    "local_private_credentials_deleted": true,
+    "isolated_browser_profile_deleted": true,
+    "server_test_records_retained": true
+  },
+  "browser": {
+    "release": "6a6fc1ed7571cfbe6c6908d5b578d251a2ff6f05",
+    "run": "e2e-manual-review-6a6fc1e-8b45a924",
+    "checks": [
+      {
+        "name": "public homepage equals CI-tested commit",
+        "passed": true,
+        "cacheControl": "no-cache, must-revalidate"
+      },
+      {
+        "name": "production FAQ and visible translation copy restored",
+        "passed": true,
+        "faq": "支持。开启「电子书翻译」并勾选「双语并排」，系统会结合全书语境、文体和术语信息自动生成译文，便于与原文对照阅读。专业术语和重要内容建议结合原文复核。",
+        "visibleCard": "整本翻译与双语对照\n\n结合全书语境、文体和术语信息自动翻译电子书，支持原文与译文双语对照，并尽量保留目录、插图和可重排布局。译文适合辅助阅读，专业术语和重要内容建议结合原文复核。"
+      },
+      {
+        "name": "real API returns manual-review case",
+        "passed": true,
+        "job": "d5d8b6bbabd6",
+        "qaStatus": "failed"
+      },
+      {
+        "name": "production page prioritizes manual-review guidance",
+        "passed": true,
+        "job": "d5d8b6bbabd6",
+        "qaStatus": "failed",
+        "title": "任务需要人工排查",
+        "summary": "该任务需要人工排查，请联系客服并提供订单号；无需重新付款。",
+        "checks": "Synthetic validation issue for UI acceptance",
+        "retryDisabled": true,
+        "retryLabel": "当前不可重译",
+        "visible": true
+      },
+      {
+        "name": "real API returns manual-review case",
+        "passed": true,
+        "job": "941bc232543a",
+        "qaStatus": "blocked"
+      },
+      {
+        "name": "production page prioritizes manual-review guidance",
+        "passed": true,
+        "job": "941bc232543a",
+        "qaStatus": "blocked",
+        "title": "任务需要人工排查",
+        "summary": "该任务需要人工排查，请联系客服并提供订单号；无需重新付款。",
+        "checks": "Synthetic validation issue for UI acceptance",
+        "retryDisabled": true,
+        "retryLabel": "当前不可重译",
+        "visible": true
+      },
+      {
+        "name": "production browser has no JavaScript exceptions or failed API responses",
+        "passed": true
+      }
+    ],
+    "responses": [
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d5d8b6bbabd6/notification-email",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d5d8b6bbabd6",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d5d8b6bbabd6/recover",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d5d8b6bbabd6",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/d5d8b6bbabd6/events",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/941bc232543a/notification-email",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/941bc232543a/recover",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/941bc232543a",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/941bc232543a",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/941bc232543a/events",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      }
+    ],
+    "startedAt": "2026-10-12T03:16:54.000Z",
+    "status": "passed",
+    "completedAt": "2026-10-12T03:17:02.006Z"
+  },
+  "stashes_retained": [
+    {
+      "ref": "stash@{0}",
+      "name": "codex-before-pull-20261012",
+      "sha": "1e46c562877ebe306080d42df0bab4eca5d615a8"
+    },
+    {
+      "ref": "stash@{1}",
+      "name": "codex-before-pull-20260918",
+      "sha": "73afa55dd291ad4a4fa95684f358072011261588"
+    }
+  ]
+}
