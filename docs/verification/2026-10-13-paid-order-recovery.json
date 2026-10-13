@@ -1,0 +1,228 @@
+{
+  "record_date": "2026-10-13",
+  "scope": "Completed production recovery and HTTPS verification; archival extraction, not a new production run.",
+  "privacy": "Stable CASE aliases only. Customer identifiers, titles, amounts, filenames, paths, content hashes and access credentials omitted.",
+  "cases": [
+    {
+      "case": "CASE-C",
+      "publication": {
+        "published": true,
+        "status": "success",
+        "published_at": "2026-10-13T03:53:53.359551+00:00",
+        "token_preserved": true,
+        "token_expires_at": "2026-10-20T03:53:53.359551+00:00",
+        "amount_unchanged": true,
+        "order_count_unchanged": true,
+        "new_payment_created": false,
+        "source_unchanged": true,
+        "other_orders_unchanged": true
+      },
+      "validation": {
+        "passed": true,
+        "completed_at": "2026-10-13T03:51:51.306840+00:00",
+        "spine_items": 24,
+        "spine_order_unchanged": true,
+        "binary_resources_unchanged": 9,
+        "source_unchanged": true,
+        "epubcheck": {
+          "passed": true,
+          "warnings": 0,
+          "reported_issues": 0
+        },
+        "content_completeness": {
+          "version": "content-coverage-v1",
+          "status": "passed",
+          "expected_documents": 17,
+          "expected_units": 1972,
+          "missing_documents": 0,
+          "missing_units": 0,
+          "empty_units": 0,
+          "source_placeholders_skipped": 0
+        },
+        "source_documents": 24,
+        "output_structure": {
+          "documents": 24,
+          "media_files": 9,
+          "broken_internal_references": 0,
+          "duplicate_ids": 0,
+          "vertical_css_rules": 0,
+          "navigation_labels_checked": 158,
+          "navigation_residual_labels": 0,
+          "navigation_broken_targets": 0
+        },
+        "pipeline_mode": "full",
+        "normalized_text_documents_checked": 24,
+        "normalized_text_mismatch_count": 0
+      },
+      "online_verification": {
+        "verified_at": "2026-10-13T03:55:22.342869+00:00",
+        "detail_http_status": 200,
+        "public_status": "completed",
+        "order_unchanged_during_verification": true,
+        "source_unchanged": true,
+        "original_token_download": {
+          "http_status": 200,
+          "has_attachment": true,
+          "complete_file_matches_accepted_artifact": true
+        },
+        "fresh_signed_link_download": {
+          "http_status": 200,
+          "has_attachment": true,
+          "complete_file_matches_accepted_artifact": true
+        },
+        "negative_access_checks": {
+          "no_credential_detail": 403,
+          "no_credential_download": 403,
+          "wrong_token_download": 403,
+          "tampered_signature_download": 403
+        }
+      },
+      "new_model_requests_this_recovery": 0,
+      "recovery_method": "Current converter, original settings, isolated network-disabled full pipeline."
+    },
+    {
+      "case": "CASE-D",
+      "publication": {
+        "published": true,
+        "status": "success",
+        "published_at": "2026-10-13T06:46:08.604759+00:00",
+        "token_preserved": true,
+        "token_expires_at": "2026-10-20T06:46:08.604759+00:00",
+        "amount_unchanged": true,
+        "order_count_unchanged": true,
+        "new_payment_created": false,
+        "source_unchanged": true,
+        "other_orders_and_related_records_unchanged": true,
+        "historical_records_imported": {
+          "job_chunks": 1129,
+          "job_chapters": 13,
+          "llm_usage_attempts": 3,
+          "llm_usage_requests": 804
+        }
+      },
+      "validation": {
+        "passed": true,
+        "completed_at": "2026-10-13T06:43:21.090693+00:00",
+        "spine_items": 12,
+        "spine_order_unchanged": true,
+        "binary_resources_unchanged": 2,
+        "source_unchanged": true,
+        "epubcheck": {
+          "passed": true,
+          "warnings": 0,
+          "reported_issues": 0
+        },
+        "content_completeness": {
+          "version": "content-coverage-v1",
+          "status": "passed",
+          "expected_documents": 11,
+          "expected_units": 1963,
+          "missing_documents": 0,
+          "missing_units": 0,
+          "empty_units": 0,
+          "source_placeholders_skipped": 0
+        },
+        "source_documents": 13,
+        "output_structure": {
+          "documents": 13,
+          "media_files": 2,
+          "broken_internal_references": 0,
+          "duplicate_ids": 0,
+          "vertical_css_rules": 0,
+          "navigation_labels_checked": 52,
+          "navigation_residual_labels": 0,
+          "navigation_broken_targets": 0
+        },
+        "qa": {
+          "rules_version": "20261012-temporal-chinese-title-v14",
+          "status": "warning",
+          "delivery_status": "passed",
+          "can_deliver": true,
+          "review_chunks": 238,
+          "categories_may_overlap": true
+        },
+        "artifact_audit": {
+          "rules_version": "20261012-temporal-chinese-title-v14",
+          "status": "passed",
+          "html_files": 13,
+          "non_body_files_skipped": 3,
+          "text_blocks": 1217,
+          "checked_text_blocks": 1082,
+          "reference_note_blocks_skipped": 135,
+          "residual_blocks": 0,
+          "links_checked": 1328,
+          "links_broken": 0,
+          "links_unsafe": 0,
+          "duplicate_anchors": 0,
+          "nested_links": 0,
+          "navigation_labels_checked": 52,
+          "navigation_residual_labels": 0,
+          "navigation_broken_targets": 0
+        },
+        "all_source_documents_present": true
+      },
+      "online_verification": {
+        "verified_at": "2026-10-13T06:47:08.077144+00:00",
+        "detail_http_status": 200,
+        "public_status": "completed",
+        "order_unchanged_during_verification": true,
+        "source_unchanged": true,
+        "original_token_download": {
+          "http_status": 200,
+          "has_attachment": true,
+          "complete_file_matches_accepted_artifact": true
+        },
+        "fresh_signed_link_download": {
+          "http_status": 200,
+          "has_attachment": true,
+          "complete_file_matches_accepted_artifact": true
+        },
+        "negative_access_checks": {
+          "no_credential_detail": 403,
+          "no_credential_download": 403,
+          "wrong_token_download": 403,
+          "tampered_signature_download": 403
+        },
+        "qa_report": {
+          "rules_version": "20261012-temporal-chinese-title-v14",
+          "status": "warning",
+          "delivery_status": "passed",
+          "can_deliver": true,
+          "review_chunks": 238,
+          "categories_may_overlap": true
+        },
+        "chunk_summary": {
+          "chapters_total": 13,
+          "chapters_completed": 13,
+          "chapters_failed": 0,
+          "chunks_total": 1129,
+          "chunks_translated": 21,
+          "chunks_cached": 1107,
+          "chunks_failed": 0
+        },
+        "historical_billing_requests": 804
+      },
+      "new_model_requests_this_recovery": 0,
+      "recovery_method": "Reuse verified completed translations; correct one redundant bilingual publisher URL wrapper.",
+      "targeted_fix": {
+        "changed_epub_member_count": 1,
+        "original_source_url_verified": true,
+        "saved_chunks": 1129,
+        "saved_chunks_all_have_source_and_translation": true,
+        "selected_checkpoint": {
+          "count": 1129,
+          "ids_match_current_isolated_chunks": true,
+          "matching_translations": 1129,
+          "errors": 0
+        },
+        "selected_checkpoint_final_count": 1129
+      },
+      "billing_note": "Imported usage records retain historical timestamps; none are new model requests from this recovery."
+    }
+  ],
+  "limitations": [
+    "Automated acceptance is not full human semantic review.",
+    "Successful verification downloads do not prove customer pickup.",
+    "Customer login, email notification and access after renewed expiry were not tested."
+  ]
+}

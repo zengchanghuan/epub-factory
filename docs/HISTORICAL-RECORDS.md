@@ -11,6 +11,7 @@
 - [代码架构](ARCHITECTURE-DIAGRAM.md)与 [PDF 范围说明](PDF-TRANSLATION-ARCHITECTURE.md)：新版设计及其历史演进。
 - [2026-10-12 生产端到端验证](PRODUCTION-E2E-2026-10-12.md)：`967e8b2` 的重复上传恢复及批量下载验收。
 - [2026-10-12 后续发布记录](PRODUCTION-RELEASE-2026-10-12-MANUAL-REVIEW.md)：`6a6fc1e` 的 CI、部署、人工排查提示与翻译文案线上验证。
+- [2026-10-13 已付订单恢复](PAID-ORDER-RECOVERY-2026-10-13.md)：CASE-C、CASE-D 的生产恢复、成品验收及安全下载验证；翻译复核提示与验收边界单列。
 
 旧记录里的 PDF OCR／翻译公共入口、价格和开关不能套用于当前独立文字型 PDF → 原文 EPUB 产品。旧 `job_dispatches`、每 5 分钟对账和部分精校错误码已被新版实现替代。旧文档中的“未提交”“已部署”“待处理”均指记录当时；客户订单最终处置、备案申请状态未在本次归档重新查询。
 
