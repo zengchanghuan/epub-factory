@@ -165,6 +165,12 @@ class TerminologyContracts(unittest.TestCase):
         self.assertEqual(fixed, '<p>Aster与Lyra。</p>')
         self.assertEqual(report.fixed_count, 0)
         self.assertTrue(report.unfixable_examples)
+        for other in ['New Harbor', 'NEW HARBOR', 'New  Harbor']:
+            with self.subTest(other=other):
+                target = '<p>Aster与New Harbor。</p>'
+                fixed, report = verify_and_fix('Aster and New Harbor.', target, {'Aster': 'New Harbor', other: '新港'})
+                self.assertEqual(fixed, target)
+                self.assertEqual(report.fixed_count, 0)
         simple, _ = verify_and_fix('Aster arrived.', '<p>Aster来了。</p>', {'Aster': '星河'})
         again, second = verify_and_fix('Aster arrived.', simple, {'Aster': '星河'})
         self.assertEqual(again, simple)

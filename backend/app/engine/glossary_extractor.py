@@ -473,7 +473,7 @@ def verify_and_fix(
     # A target that is another source term is ambiguous in an unaligned
     # paragraph. Do not guess which occurrence already represents which name.
     collisions = {term for src, dst in relevant.items() for other in relevant
-                  if src != other and dst.casefold() == other.casefold()
+                  if src != other and term_spans(dst, other) == [(0, len(other))]
                   for term in (src, other)}
     protected = re.compile(r"(?:https?://|www\.)[^\s<>]+|(?:doi:\s*)?10\.\d{4,9}/[^\s<>]+", re.I)
     # Decide replacements on original text once; never reserialize HTML.
