@@ -1,0 +1,192 @@
+{
+  "record_date": "2026-10-13",
+  "case": "CASE-D",
+  "scope": "Archive of completed eight-paragraph P2 revision, acceptance and HTTPS verification; no new production run during documentation.",
+  "privacy": "CASE alias and review IDs only. Customer titles, order identifiers, amounts, filenames, content excerpts, private paths, checkpoint identifiers, content hashes and access credentials omitted.",
+  "prior_review": {
+    "warning_chunks": 238,
+    "priority_counts": {
+      "none": 214,
+      "P2": 8,
+      "P3": 16
+    },
+    "scope": "Review of rule-flagged paragraphs, not a full-book human proofread."
+  },
+  "revision": {
+    "repaired_paragraphs": 8,
+    "translation_spans_changed": 6,
+    "original_text_entity_repairs": 2,
+    "all_eight_original_texts_match_uploaded_source": true,
+    "items": [
+      {
+        "review_id": "R002",
+        "severity": "P2",
+        "correction": "entity_name_consistency",
+        "verified": true,
+        "source_matches_uploaded_original": true,
+        "entity_occurrences_corrected": 1
+      },
+      {
+        "review_id": "R032",
+        "severity": "P2",
+        "correction": "source_hyphen_display",
+        "verified": true,
+        "source_matches_uploaded_original": true
+      },
+      {
+        "review_id": "R059",
+        "severity": "P2",
+        "correction": "discount_direction",
+        "verified": true,
+        "source_matches_uploaded_original": true
+      },
+      {
+        "review_id": "R076",
+        "severity": "P2",
+        "correction": "source_hyphen_display",
+        "verified": true,
+        "source_matches_uploaded_original": true
+      },
+      {
+        "review_id": "R090",
+        "severity": "P2",
+        "correction": "entity_name_consistency",
+        "verified": true,
+        "source_matches_uploaded_original": true,
+        "entity_occurrences_corrected": 2
+      },
+      {
+        "review_id": "R103",
+        "severity": "P2",
+        "correction": "entity_name_consistency",
+        "verified": true,
+        "source_matches_uploaded_original": true,
+        "entity_occurrences_corrected": 2
+      },
+      {
+        "review_id": "R105",
+        "severity": "P2",
+        "correction": "entity_name_consistency",
+        "verified": true,
+        "source_matches_uploaded_original": true,
+        "entity_occurrences_corrected": 2
+      },
+      {
+        "review_id": "R155",
+        "severity": "P2",
+        "correction": "idiom_meaning",
+        "verified": true,
+        "source_matches_uploaded_original": true
+      }
+    ],
+    "checkpoint_strategy": "Original immutable checkpoints plus a private reversible artifact overlay.",
+    "original_artifact_and_checkpoints_backed_up": true
+  },
+  "diff": {
+    "changed_epub_member_count": 3,
+    "unchanged_member_payloads": 18,
+    "changed_paragraph_counts_by_member": [
+      2,
+      5,
+      1
+    ],
+    "reverse_patch_exact": true
+  },
+  "validation": {
+    "epubcheck": {
+      "passed": true,
+      "warnings": 0,
+      "reported_issues": 0
+    },
+    "content_completeness": {
+      "version": "content-coverage-v1",
+      "status": "passed",
+      "expected_documents": 11,
+      "expected_units": 1963,
+      "missing_documents": 0,
+      "missing_units": 0,
+      "empty_units": 0,
+      "source_placeholders_skipped": 0
+    },
+    "source_documents": 13,
+    "spine_items": 12,
+    "spine_order_unchanged": true,
+    "binary_resources_unchanged": 2,
+    "artifact_audit": {
+      "rules_version": "20261012-temporal-chinese-title-v14",
+      "status": "passed",
+      "html_files": 13,
+      "non_body_files_skipped": 3,
+      "text_blocks": 1217,
+      "checked_text_blocks": 1082,
+      "reference_note_blocks_skipped": 135,
+      "residual_blocks": 0,
+      "links_checked": 1328,
+      "links_broken": 0,
+      "links_unsafe": 0,
+      "duplicate_anchors": 0,
+      "nested_links": 0,
+      "navigation_labels_checked": 52,
+      "navigation_residual_labels": 0,
+      "navigation_broken_targets": 0
+    }
+  },
+  "publication": {
+    "published_at": "2026-10-13T08:18:03.648186+00:00",
+    "live_revision_paragraphs": 8,
+    "payment_and_entitlement_unchanged": true,
+    "source_unchanged": true,
+    "new_model_requests": 0,
+    "new_customer_charge": false
+  },
+  "online_verification": {
+    "verified_at": "2026-10-13T08:19:04.557969+00:00",
+    "detail_http_status": 200,
+    "public_status": "completed",
+    "order_unchanged_during_verification": true,
+    "source_unchanged": true,
+    "original_artifact_and_backups_intact": true,
+    "original_checkpoints_unchanged": true,
+    "historical_usage_unchanged": true,
+    "historical_billing_requests": 804,
+    "original_token_download": {
+      "http_status": 200,
+      "has_attachment": true,
+      "complete_file_matches_accepted_artifact": true
+    },
+    "fresh_signed_link_download": {
+      "http_status": 200,
+      "has_attachment": true,
+      "complete_file_matches_accepted_artifact": true
+    },
+    "negative_access_checks": {
+      "no_credential_detail": 403,
+      "no_credential_download": 403,
+      "wrong_token_download": 403,
+      "tampered_signature_download": 403
+    },
+    "qa_report": {
+      "rules_version": "20261012-temporal-chinese-title-v14",
+      "status": "warning",
+      "delivery_status": "passed",
+      "can_deliver": true,
+      "review_chunks": 238,
+      "categories_may_overlap": true
+    },
+    "chunk_summary": {
+      "chapters_total": 13,
+      "chapters_completed": 13,
+      "chapters_failed": 0,
+      "chunks_total": 1129,
+      "chunks_translated": 21,
+      "chunks_cached": 1107,
+      "chunks_failed": 0
+    }
+  },
+  "limitations": [
+    "Historical 238 rule warnings are preserved; they are not 238 confirmed remaining defects.",
+    "Only the eight P2 findings were revised; the sixteen P3 findings were outside this revision.",
+    "Successful verification downloads do not prove customer pickup or reading.",
+    "Customer login, email notification, access after expiry and full-book human proofreading were not tested."
+  ]
+}
