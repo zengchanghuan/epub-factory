@@ -743,10 +743,8 @@ class SemanticsTranslator:
     def _relevant_glossary_for_html(self, html: str) -> dict[str, str]:
         if not self.glossary:
             return {}
-        plain_text = BeautifulSoup(
-            str(html or ""),
-            "html.parser",
-        ).get_text("", strip=False)
+        from app.domain.translation_terms import visible_term_text
+        plain_text = visible_term_text(str(html or ""))
         return select_relevant_glossary(self.glossary, plain_text)
 
     @property

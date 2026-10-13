@@ -1,3 +1,5 @@
+import os
+from unittest.mock import patch
 import sys
 from pathlib import Path
 
@@ -49,11 +51,12 @@ def test_build_consistent_glossary_priority():
         "London": "伦敦",
     }
     try:
-        result = glossary_service.build_consistent_glossary(
-            ["Mr. Smith met Mr. Smith in London. Jones saw Jones."],
-            user_glossary={"Smith": "用户史密斯"},
-            min_count=2,
-        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "offline-mocked-glossary"}):
+            result = glossary_service.build_consistent_glossary(
+                ["Mr. Smith met Mr. Smith in London. Jones saw Jones."],
+                user_glossary={"Smith": "用户史密斯"},
+                min_count=2,
+            )
         assert result.glossary["Smith"] == "用户史密斯"
         assert result.glossary["London"] == "伦敦"
         assert result.glossary["Jones"] == "琼斯"

@@ -130,6 +130,7 @@ D_SUITE = [
     "test_d85_translation_scope.py",
     "test_d86_big_compat.py",
     "test_d88_numeric_temporal.py",
+    "test_d89_terminology_consistency.py",
     "test_d43_delivery_reliability.py",
     "test_d47_chinese_title_qa.py",
     "test_d48_continuation_store.py",

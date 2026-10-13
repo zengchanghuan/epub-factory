@@ -24,6 +24,7 @@ from typing import Iterable, Optional
 from urllib.parse import urlsplit
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
 from app.cancellation import JobCancelled, raise_if_cancelled
+from app.domain.translation_terms import relevant_terms, term_spans, visible_term_text, replace_term_text
 from billiard.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger("epub_factory.glossary")
@@ -458,106 +459,63 @@ def verify_and_fix(
     translated_html: str,
     glossary: dict[str, str],
 ) -> tuple[str, VerifyResult]:
-    """
-    译文反向校验：
-    - 对于 glossary 中的每个术语，扫描原文是否出现该术语
-    - 如果原文出现但译文未出现对应译名，尝试修正：
-        a) 译文里包含旧译名变体（如 "斯密思" / "史密夫"）的，直接字符串替换为正确译名
-        b) 完全找不到的，记录到 unfixable_examples（仅用于观测，不阻断主流程）
+    """Replace only residual source terms in editable text, never infer aliases.
 
-    注意事项：
-    - 仅做"安全替换"：用整词边界匹配，不会把"史密斯庄园"里的"史密斯"重复改成"史密斯斯"
-    - 只对已知 glossary 中的术语生效，不会引入新的错误
-    - 性能：术语数和文本长度都是线性，整章扫描几十毫秒内完成
-
-    :param original_html: 原文 HTML
-    :param translated_html: 译文 HTML
-    :param glossary: {原文: 译名} 字典
-    :return: (修正后的译文, 校验报告)
+    Unknown Chinese variants remain review signals. Attributes, code, media,
+    comments, URLs/DOIs and preserved bilingual originals are never rewritten.
     """
     result = VerifyResult()
-    if not glossary or not translated_html:
+    relevant = select_relevant_glossary(glossary, visible_term_text(original_html))
+    if not relevant or not translated_html:
         return translated_html, result
-
-    fixed = translated_html
-    # 收集原文出现过哪些术语
-    appearing_terms: list[tuple[str, str]] = []
-    appearing_terms.extend(select_relevant_glossary(glossary, original_html).items())
-
-    if not appearing_terms:
-        return translated_html, result
-
-    # 对每个术语检查译文中是否使用了正确译名
-    for src, dst in appearing_terms:
-        if dst in fixed:
-            continue  # 译名已正确使用，跳过
-        # 译文里没有正确译名 → 可能是 LLM 用了别的音译，尝试启发式修正
-        # 简单策略：保留原文中的英文术语（如果译文中仍有英文形式），替换为正确译名
-        if _term_in_text(src, fixed):
-            fixed = _replace_term(fixed, src, dst)
+    target_text = visible_term_text(translated_html)
+    pending = {src: dst for src, dst in relevant.items() if not term_spans(dst, target_text)}
+    # A target that is another source term is ambiguous in an unaligned
+    # paragraph. Do not guess which occurrence already represents which name.
+    collisions = {term for src, dst in relevant.items() for other in relevant
+                  if src != other and dst.casefold() == other.casefold()
+                  for term in (src, other)}
+    protected = re.compile(r"(?:https?://|www\.)[^\s<>]+|(?:doi:\s*)?10\.\d{4,9}/[^\s<>]+", re.I)
+    # Decide replacements on original text once; never reserialize HTML.
+    def edits_for_text(text, is_editable):
+        excluded = [m.span() for m in protected.finditer(text)]
+        edits = []
+        for src, dst in relevant_terms(relevant, text).items():
+            if src not in pending or src in collisions:
+                continue
+            for start, end in term_spans(src, text):
+                if not is_editable(start, end):
+                    continue
+                if any(start < b and end > a for a, b in excluded):
+                    continue
+                # Recheck overlap per occurrence, including a longer phrase
+                # whose canonical translation is already present elsewhere.
+                longer = [span for term in relevant if len(term) > len(src)
+                          for span in term_spans(term, text)]
+                if any(start < b and end > a for a, b in longer):
+                    continue
+                edits.append((start, end, dst, src))
+        for _, _, _, src in edits:
             result.fixed_count += 1
             result.fixed_terms[src] = result.fixed_terms.get(src, 0) + 1
-        else:
-            # 既不是正确译名也不是英文原词，无法可靠修正
-            if len(result.unfixable_examples) < 10:
-                result.unfixable_examples.append(f"{src}→{dst}")
+        return [(start, end, dst) for start, end, dst, _ in edits]
 
+    fixed = replace_term_text(translated_html, edits_for_text)
+    final_text = visible_term_text(fixed)
+    for src, dst in pending.items():
+        if not term_spans(dst, final_text) and len(result.unfixable_examples) < 10:
+            result.unfixable_examples.append(f"{src}→{dst}")
     return fixed, result
 
 
 def _term_in_text(term: str, text: str) -> bool:
-    """判断术语是否在文本中出现（英文用单词边界，其他直接 substring）。"""
-    if not term or not text:
-        return False
-    # 英文术语：单词边界匹配（避免 "And" 命中 "Brand"）
-    if re.match(r"^[A-Za-z][\w\s'’\-\.]*$", term):
-        pattern = r"\b" + re.escape(term) + r"\b"
-        return bool(re.search(pattern, text))
-    return term in text
+    return bool(term_spans(term, text))
 
 
 def select_relevant_glossary(
-    glossary: dict[str, str],
-    text: str,
-    *,
-    max_terms: int = 32,
+    glossary: dict[str, str], text: str, *, max_terms: int = 32,
 ) -> dict[str, str]:
-    """只选择当前文本命中的术语，并用最长短语优先消除重叠短词。"""
-    matches: list[tuple[int, int, str, str]] = []
-    for src, dst in (glossary or {}).items():
-        if not src or not dst:
-            continue
-        if re.match(r"^[A-Za-z][\w\s'’\-\.]*$", src):
-            pattern = r"\b" + re.escape(src) + r"\b"
-            spans = [m.span() for m in re.finditer(pattern, text or "", flags=re.IGNORECASE)]
-        else:
-            spans = []
-            start = 0
-            while text and (index := text.find(src, start)) >= 0:
-                spans.append((index, index + len(src)))
-                start = index + max(1, len(src))
-        for start, end in spans:
-            matches.append((start, end, src, dst))
-
-    matches.sort(key=lambda item: (-(item[1] - item[0]), item[0], item[2]))
-    selected: list[tuple[int, int, str, str]] = []
-    for match in matches:
-        start, end, _src, _dst = match
-        if any(start < kept_end and end > kept_start for kept_start, kept_end, *_ in selected):
-            continue
-        selected.append(match)
-        if len(selected) >= max_terms:
-            break
-    selected.sort(key=lambda item: item[0])
-    return {src: dst for _start, _end, src, dst in selected}
-
-
-def _replace_term(text: str, src: str, dst: str) -> str:
-    """整词替换 src 为 dst。"""
-    if re.match(r"^[A-Za-z][\w\s'’\-\.]*$", src):
-        pattern = r"\b" + re.escape(src) + r"\b"
-        return re.sub(pattern, dst, text)
-    return text.replace(src, dst)
+    return relevant_terms(glossary, text, limit=max_terms)
 
 
 # ─── 统一入口（同步包装，方便 compiler 调用）────────────────────────────

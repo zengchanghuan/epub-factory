@@ -38,7 +38,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20261012-temporal-chinese-title-v14"
+QA_RULES_VERSION = "20261013-terminology-consistency-v15"
 
 
 def max_free_retries() -> int:
@@ -271,6 +271,7 @@ def build_translation_qa_report(
     audit_failed = int(stats.get("audit_failed_chunks") or 0)
     audit_warn = int(stats.get("audit_warn_chunks") or 0)
     flags_count = stats.get("audit_flags_count") or {}
+    consistency_violations = max(0, int(stats.get("consistency_violations") or 0))
     title_original = (stats.get("book_title_original") or "").strip()
     title_translated = (stats.get("book_title_translated") or "").strip()
     artifact_audit = stats.get("artifact_audit") if isinstance(stats.get("artifact_audit"), dict) else {}
@@ -287,6 +288,9 @@ def build_translation_qa_report(
         "can_deliver": False,
         "review_chunks": audit_warn,
         "categories_may_overlap": True,
+        "consistency_status": stats.get("consistency_status", "review" if consistency_violations else "not_checked"),
+        "consistency_violations": consistency_violations,
+        "consistency_review_chunks": max(0, int(stats.get("consistency_review_chunks") or 0)),
         "summary": "翻译质检通过",
         "flags": [],
         "checks": [],
@@ -396,6 +400,13 @@ def build_translation_qa_report(
     elif audit_warn:
         report["status"] = "warning"
         report["summary"] = f"{audit_warn} 个段落建议复核"
+
+    if consistency_violations and report["status"] not in {"failed", "blocked"}:
+        report["status"] = "warning"
+        message = f"{consistency_violations} 处术语用法与约定译名不一致，建议复核"
+        report["summary"] = (report["summary"] + "；" + message) if audit_warn else message
+        # Informational only: review signals must not trigger paid retries or
+        # turn a complete, validated artifact into an undeliverable order.
 
     if source_warnings and report["status"] not in {"failed", "blocked"}:
         report["status"] = "warning"

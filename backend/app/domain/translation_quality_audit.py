@@ -19,6 +19,7 @@ from typing import Callable
 from bs4 import BeautifulSoup, Tag
 from app.domain.translation_residual_policy import residual_category, normalize_text, without_reference_text_nodes
 from app.domain.translation_numeric_audit import missing_numeric_facts
+from app.domain.translation_terms import term_spans as _term_spans, relevant_terms, visible_term_text
 from app.engine.chunk_extractor import NON_TEXT_TAGS, media_subtrees
 from app.domain.html_link_contract import preserves_link_contract
 
@@ -149,7 +150,10 @@ def _missing_critical_markers(source_text: str, translated_text: str) -> list[st
     missing: list[str] = []
     # Fixed phrases are not causal/adversative relations. Keep genuinely
     # adversative "yet/but" elsewhere instead of whitelisting whole paragraphs.
-    relation_text = source_text.replace('’', "'")
+    # Only the abbreviation followed by an issue/article number is exempt.
+    # Do not discard the citation paragraph: a title can contain real negation.
+    relation_text = re.sub(r"(\b\d+\s*,\s*)no\.\s*(?=(?:\d|[A-Za-z]\d))", r"\1", source_text, flags=re.I)
+    relation_text = relation_text.replace('’', "'")
     relation_text = re.sub(r'\b(?:better yet|yet again|thus far|all but)\b', '', relation_text, flags=re.I)
     relation_text = re.sub(r'\b(not\s+only\b[^.!?;]{0,120})\bbut\b', r'\1', relation_text, flags=re.I)
     relation_text = re.sub(r'\bbut\s+also\b', '', relation_text, flags=re.I)
@@ -159,23 +163,6 @@ def _missing_critical_markers(source_text: str, translated_text: str) -> list[st
         if source_pattern.search(relation_text) and not translated_pattern.search(translated_text):
             missing.append(label)
     return missing
-
-
-def _term_spans(term: str, text: str) -> list[tuple[int, int]]:
-    if not term or not text:
-        return []
-    if re.fullmatch(r"[A-Za-z][A-Za-z0-9\s'’.\-]*", term):
-        pattern = r"\b" + re.escape(term) + r"\b"
-        return [m.span() for m in re.finditer(pattern, text, flags=re.IGNORECASE)]
-    spans: list[tuple[int, int]] = []
-    start = 0
-    while True:
-        index = text.find(term, start)
-        if index < 0:
-            break
-        spans.append((index, index + len(term)))
-        start = index + max(1, len(term))
-    return spans
 
 
 def _sentence_count(text: str) -> int:
@@ -195,23 +182,8 @@ def _relevant_glossary_terms(
     glossary: dict[str, str],
     source_text: str,
 ) -> list[tuple[str, str]]:
-    """最长短语优先，避免 French 与 French Revolution 同时制造告警。"""
-    candidates: list[tuple[int, int, str, str]] = []
-    for src, dst in glossary.items():
-        if not src or not dst:
-            continue
-        for start, end in _term_spans(src, source_text):
-            candidates.append((start, end, src, dst))
-    candidates.sort(key=lambda item: (-(item[1] - item[0]), item[0], item[2]))
-
-    selected: list[tuple[int, int, str, str]] = []
-    for candidate in candidates:
-        start, end, _src, _dst = candidate
-        if any(start < kept_end and end > kept_start for kept_start, kept_end, *_ in selected):
-            continue
-        selected.append(candidate)
-    selected.sort(key=lambda item: item[0])
-    return [(src, dst) for _start, _end, src, dst in selected]
+    """Use the same source selection as prompts, repair and book QA."""
+    return list(relevant_terms(glossary, source_text).items())
 
 
 def audit_translation_chunk(
@@ -299,11 +271,10 @@ def audit_translation_chunk(
 
     glossary = glossary or {}
     missing_terms: list[str] = []
-    for src, dst in _relevant_glossary_terms(glossary, source_text):
-        # A confirmed English name can retain title-case/body-case spelling.
-        # Still require the complete name, not a surname substring.
-        retained = (normalize_text(src) == normalize_text(dst) and bool(_term_spans(dst, translated_text)))
-        if not retained and dst not in translated_text:
+    term_source = visible_term_text(original_html) if glossary else ""
+    term_target = visible_term_text(translated_html) if glossary else ""
+    for src, dst in _relevant_glossary_terms(glossary, term_source):
+        if not _term_spans(dst, term_target):
             missing_terms.append(src)
     if missing_terms:
         audit.latin_terms_missing = missing_terms
