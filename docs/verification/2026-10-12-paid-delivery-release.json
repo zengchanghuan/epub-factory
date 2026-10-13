@@ -1,0 +1,577 @@
+{
+  "release": "ab20863dabf99fd98389365e195b80199d61ef90",
+  "site": "https://fixepub.com",
+  "finished_at": "2026-10-12T10:26:47.407290+00:00",
+  "ci": {
+    "conclusion": "success",
+    "headSha": "ab20863dabf99fd98389365e195b80199d61ef90",
+    "jobs": [
+      {
+        "completedAt": "2026-10-12T10:11:36Z",
+        "conclusion": "success",
+        "databaseId": 114762153358,
+        "name": "frontend",
+        "startedAt": "2026-10-12T10:10:20Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-12T10:10:22Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-12T10:10:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:10:23Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@v4",
+            "number": 2,
+            "startedAt": "2026-10-12T10:10:22Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:10:24Z",
+            "conclusion": "success",
+            "name": "Run actions/setup-node@v4",
+            "number": 3,
+            "startedAt": "2026-10-12T10:10:23Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:10:25Z",
+            "conclusion": "success",
+            "name": "Run frontend regression",
+            "number": 4,
+            "startedAt": "2026-10-12T10:10:24Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:10:25Z",
+            "conclusion": "success",
+            "name": "Check static tool pages cannot regenerate checkout copies",
+            "number": 5,
+            "startedAt": "2026-10-12T10:10:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:11:33Z",
+            "conclusion": "success",
+            "name": "Exercise unified tool entries in isolated Chrome",
+            "number": 6,
+            "startedAt": "2026-10-12T10:10:25Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:11:34Z",
+            "conclusion": "success",
+            "name": "Post Run actions/setup-node@v4",
+            "number": 11,
+            "startedAt": "2026-10-12T10:11:33Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:11:34Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@v4",
+            "number": 12,
+            "startedAt": "2026-10-12T10:11:34Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:11:34Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 13,
+            "startedAt": "2026-10-12T10:11:34Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38234627191/job/114762153358"
+      },
+      {
+        "completedAt": "2026-10-12T10:20:13Z",
+        "conclusion": "success",
+        "databaseId": 114762153686,
+        "name": "regression",
+        "startedAt": "2026-10-12T10:10:20Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completedAt": "2026-10-12T10:10:22Z",
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "startedAt": "2026-10-12T10:10:21Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:10:23Z",
+            "conclusion": "success",
+            "name": "Run actions/checkout@v4",
+            "number": 2,
+            "startedAt": "2026-10-12T10:10:22Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:11:41Z",
+            "conclusion": "success",
+            "name": "Build image (与生产同 Python/依赖/epubcheck)",
+            "number": 3,
+            "startedAt": "2026-10-12T10:10:23Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:19:58Z",
+            "conclusion": "success",
+            "name": "Run offline regression in container",
+            "number": 4,
+            "startedAt": "2026-10-12T10:11:41Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:20:10Z",
+            "conclusion": "success",
+            "name": "Verify quota Lua against actual Redis 6 and 7",
+            "number": 5,
+            "startedAt": "2026-10-12T10:19:58Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:20:11Z",
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@v4",
+            "number": 10,
+            "startedAt": "2026-10-12T10:20:10Z",
+            "status": "completed"
+          },
+          {
+            "completedAt": "2026-10-12T10:20:11Z",
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 11,
+            "startedAt": "2026-10-12T10:20:11Z",
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38234627191/job/114762153686"
+      }
+    ],
+    "status": "completed",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38234627191",
+    "databaseId": 38234627191
+  },
+  "deployment": {
+    "exit_code": 0,
+    "source_files": 566,
+    "backup": "/home/ubuntu/epub-factory/deploy-backups/20261012T102225Z-3247418",
+    "health": [
+      {
+        "release_files": 566,
+        "mismatches": [],
+        "manifest_sha256": "ca7388335ee0f809ab0d39e97661c2b88f9a7980b693cda20392842e2d12a072",
+        "backup_present": {
+          "previous-code.zip": true,
+          "production.env": true,
+          "jobs.sqlite3": true,
+          "pip-freeze.txt": true
+        }
+      },
+      {
+        "service": "epub-factory",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      {
+        "service": "epub-factory-worker",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      {
+        "service": "epub-factory-housekeeping",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      {
+        "service": "epub-factory-beat",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      {
+        "worker_pongs": 2,
+        "worker_queues": {
+          "fixepub-book-3247491@VM-0-5-ubuntu": [
+            "celery"
+          ],
+          "fixepub-housekeeping-3247493@VM-0-5-ubuntu": [
+            "housekeeping"
+          ]
+        }
+      },
+      {
+        "error_entries_since_deployment": 0
+      }
+    ],
+    "package_bytes": 2123095,
+    "preflight": {
+      "nginx_config_valid": true,
+      "worker_roles_valid": true,
+      "no_queued_or_running_jobs": true,
+      "no_persisted_active_repairs": true
+    }
+  },
+  "online_api": {
+    "checks": [
+      {
+        "check": "real HTTPS batch upload",
+        "ok": true,
+        "http": 200
+      },
+      {
+        "check": "three isolated test orders",
+        "ok": true
+      },
+      {
+        "check": "test scope before queue",
+        "ok": true,
+        "job": "e514efa30c90"
+      },
+      {
+        "check": "explicit test authorization",
+        "ok": true,
+        "job": "e514efa30c90"
+      },
+      {
+        "check": "test scope before queue",
+        "ok": true,
+        "job": "0d205ff6f740"
+      },
+      {
+        "check": "explicit test authorization",
+        "ok": true,
+        "job": "0d205ff6f740"
+      },
+      {
+        "check": "test scope before queue",
+        "ok": true,
+        "job": "a250e890eb0e"
+      },
+      {
+        "check": "explicit test authorization",
+        "ok": true,
+        "job": "a250e890eb0e"
+      },
+      {
+        "check": "real workers completed conversion",
+        "ok": true,
+        "states": [
+          "success",
+          "success",
+          "success"
+        ]
+      },
+      {
+        "check": "valid converted EPUB",
+        "ok": true,
+        "job": "e514efa30c90"
+      },
+      {
+        "check": "valid converted EPUB",
+        "ok": true,
+        "job": "0d205ff6f740"
+      },
+      {
+        "check": "valid converted EPUB",
+        "ok": true,
+        "job": "a250e890eb0e"
+      },
+      {
+        "check": "new browser account lists only its three jobs",
+        "ok": true
+      },
+      {
+        "check": "owner detail without original capability",
+        "ok": true,
+        "job": "e514efa30c90",
+        "http": 200
+      },
+      {
+        "check": "signed single download without account header",
+        "ok": true,
+        "job": "e514efa30c90",
+        "http": 200
+      },
+      {
+        "check": "expired anonymous capability rejected",
+        "ok": true,
+        "job": "e514efa30c90"
+      },
+      {
+        "check": "other account denied",
+        "ok": true,
+        "job": "e514efa30c90"
+      },
+      {
+        "check": "owner detail without original capability",
+        "ok": true,
+        "job": "0d205ff6f740",
+        "http": 200
+      },
+      {
+        "check": "signed single download without account header",
+        "ok": true,
+        "job": "0d205ff6f740",
+        "http": 200
+      },
+      {
+        "check": "expired anonymous capability rejected",
+        "ok": true,
+        "job": "0d205ff6f740"
+      },
+      {
+        "check": "other account denied",
+        "ok": true,
+        "job": "0d205ff6f740"
+      },
+      {
+        "check": "owner detail without original capability",
+        "ok": true,
+        "job": "a250e890eb0e",
+        "http": 200
+      },
+      {
+        "check": "signed single download without account header",
+        "ok": true,
+        "job": "a250e890eb0e",
+        "http": 200
+      },
+      {
+        "check": "expired anonymous capability rejected",
+        "ok": true,
+        "job": "a250e890eb0e"
+      },
+      {
+        "check": "other account denied",
+        "ok": true,
+        "job": "a250e890eb0e"
+      },
+      {
+        "check": "owner batch detail",
+        "ok": true
+      },
+      {
+        "check": "collision ZIP HTTP",
+        "ok": true,
+        "http": 200
+      },
+      {
+        "check": "collision ZIP complete distinct members",
+        "ok": true,
+        "members": [
+          "03-e2e-delivery-ab20863-d0174e4d_简体.epub",
+          "e2e-delivery-ab20863-d0174e4d_简体.epub",
+          "04-e2e-delivery-ab20863-d0174e4d_简体.epub"
+        ]
+      },
+      {
+        "check": "collision ZIP extracted content intact",
+        "ok": true
+      },
+      {
+        "check": "unsigned batch denied",
+        "ok": true
+      },
+      {
+        "check": "foreign account batch denied",
+        "ok": true
+      },
+      {
+        "check": "tampered batch signature denied",
+        "ok": true
+      },
+      {
+        "check": "missing completed artifact refuses partial ZIP",
+        "ok": true,
+        "http": 410
+      },
+      {
+        "check": "same-length corrupted artifact refused",
+        "ok": true,
+        "http": 410
+      },
+      {
+        "check": "restored ZIP HTTP",
+        "ok": true,
+        "http": 200
+      },
+      {
+        "check": "restored ZIP complete distinct members",
+        "ok": true,
+        "members": [
+          "03-e2e-delivery-ab20863-d0174e4d_简体.epub",
+          "e2e-delivery-ab20863-d0174e4d_简体.epub",
+          "04-e2e-delivery-ab20863-d0174e4d_简体.epub"
+        ]
+      },
+      {
+        "check": "restored ZIP extracted content intact",
+        "ok": true
+      },
+      {
+        "check": "no temporary ZIP leaks",
+        "ok": true
+      },
+      {
+        "check": "health remains normal",
+        "ok": true
+      },
+      {
+        "check": "test records retain test-only entitlement",
+        "ok": true
+      }
+    ],
+    "result": {
+      "result": "passed",
+      "report": "/home/ubuntu/epub-factory/deploy-backups/e2e-delivery-ab20863-d0174e4d/report.json"
+    }
+  },
+  "browser": {
+    "release": "ab20863dabf99fd98389365e195b80199d61ef90",
+    "run": "e2e-delivery-ab20863-d0174e4d",
+    "checks": [
+      {
+        "name": "public homepage matches approved release",
+        "passed": true
+      },
+      {
+        "name": "fresh browser task center lists three owned orders without job tokens",
+        "passed": true
+      },
+      {
+        "name": "browser saved single.epub",
+        "passed": true,
+        "bytes": 2213,
+        "sha256": "688dfd5968415df3e1512ae8f54a445e8edfd392694f9ebcf8fa97bc81c93815",
+        "artifact_name": "fixepub-ab20863-browser-single.epub"
+      },
+      {
+        "name": "task center download matches accepted artifact",
+        "passed": true
+      },
+      {
+        "name": "fresh browser batch detail offers signed download without original capability",
+        "passed": true
+      },
+      {
+        "name": "browser saved batch.zip",
+        "passed": true,
+        "bytes": 6187,
+        "sha256": "5bedc2ed94323629a924228981691d9b2d09b2718527ef02744fe6d336335e1b",
+        "artifact_name": "fixepub-ab20863-browser-batch.zip"
+      },
+      {
+        "name": "browser API requests succeed without JavaScript errors",
+        "passed": true
+      }
+    ],
+    "responses": [
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/e514efa30c90",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs/e514efa30c90/download",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/email-capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/track/pv",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/capabilities",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/6a202edba065/notification-email",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/6a202edba065",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/6a202edba065/recover",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/6a202edba065",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/jobs",
+        "status": 200
+      },
+      {
+        "path": "/api/v2/batches/6a202edba065/download",
+        "status": 200
+      }
+    ],
+    "startedAt": "2026-10-12T10:24:50.404Z",
+    "status": "passed",
+    "finishedAt": "2026-10-12T10:24:56.729Z"
+  },
+  "download_extraction": {
+    "check": "browser ZIP extraction preserves all three accepted artifacts",
+    "passed": true,
+    "member_count": 3,
+    "distinct_contents": 3
+  },
+  "cleanup": [
+    {
+      "test_accounts_disabled": 2,
+      "successful_test_jobs_retained": 3,
+      "customer_records_modified": false,
+      "local_test_credentials_removed": true,
+      "isolated_chrome_profile_removed": true
+    }
+  ],
+  "scope": "Independent synthetic accounts and three generated EPUBs; real HTTPS, queue workers and browser. Test authorization only, no real payment, AI calls or customer order edits.",
+  "archived_on": "2026-10-13",
+  "display_timezone": "Asia/Shanghai",
+  "evidence_sources": {
+    "ci": "Saved gh run view 38234627191 JSON from the deployment session; headSha matches release.",
+    "deployment_and_health": "Deployment log and final server verification captured in the same release session; no new deployment or live health check during documentation archival.",
+    "online_api": "Original sanitized HTTPS verification assertions using synthetic test accounts and generated EPUBs.",
+    "browser": "Original isolated Chrome production report and separate validation of its downloaded ZIP.",
+    "source_report": "fixepub-ab20863-production-verification.json"
+  },
+  "summary": {
+    "api_checks_passed": 40,
+    "browser_checks_passed": 7,
+    "separate_zip_extraction_check_passed": true
+  }
+}
