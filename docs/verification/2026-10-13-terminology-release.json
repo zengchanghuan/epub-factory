@@ -1,0 +1,190 @@
+{
+  "archived_on": "2026-10-14",
+  "release_date": "2026-10-13",
+  "release": "5b082429bdde5a5b1e8795dd56df5723c238cc41",
+  "site": "https://fixepub.com",
+  "scope": "Saved evidence from the 2026-10-13 release; documentation archival does not redeploy or rerun production tests.",
+  "ci": {
+    "headSha": "5b082429bdde5a5b1e8795dd56df5723c238cc41",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377194432",
+    "createdAt": "2026-10-13T09:33:41Z",
+    "updatedAt": "2026-10-13T09:43:34Z",
+    "jobs": [
+      {
+        "name": "frontend",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-10-13T09:33:44Z",
+        "completedAt": "2026-10-13T09:35:00Z",
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377194432/job/115228439564"
+      },
+      {
+        "name": "regression",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-10-13T09:33:45Z",
+        "completedAt": "2026-10-13T09:43:33Z",
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377194432/job/115228439678"
+      }
+    ]
+  },
+  "related_runs": [
+    {
+      "databaseId": 38377194432,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377194432"
+    },
+    {
+      "databaseId": 38377192177,
+      "name": "pages build and deployment",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377192177"
+    },
+    {
+      "databaseId": 38377191170,
+      "name": "pages build and deployment",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377191170"
+    },
+    {
+      "databaseId": 38377191732,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38377191732"
+    }
+  ],
+  "deployment": {
+    "source": "isolated checkout at the exact release commit",
+    "package_files": 574,
+    "package_bytes": 2150312,
+    "preflight": {
+      "nginx_config": "passed",
+      "worker_roles": "passed",
+      "active_books": 0,
+      "persisted_active_repairs": 0
+    },
+    "backup_id": "20261013T101324Z-3574367",
+    "backup_created_at": "2026-10-13T10:13:24Z",
+    "backup_presence_verified": [
+      "previous-code.zip",
+      "production.env",
+      "jobs.sqlite3",
+      "translation-cache.sqlite3",
+      "pip-freeze.txt"
+    ],
+    "manifest_sha256": "da57341b281ab18b146c2b1661c85695bb897f0e2cd6dc9aaa7bcde9ad39adf5",
+    "matched_files": 574,
+    "mismatched_files": 0,
+    "deploy_exit_code": 0,
+    "local_health_status": "ok",
+    "public_health": {
+      "url": "https://fixepub.com/api/healthz",
+      "status": "ok"
+    },
+    "environment_values_unchanged": true,
+    "dependency_versions_unchanged": true,
+    "services": {
+      "epub-factory": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-13T10:13:32Z",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-beat": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-13T10:13:32Z",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-housekeeping": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-13T10:13:32Z",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-worker": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-13T10:13:32Z",
+        "error_log_entries_since_deploy": 0
+      }
+    }
+  },
+  "production_code_verification": {
+    "rules_version": "20261013-terminology-consistency-v15",
+    "regression_tests_passed": 22,
+    "live_source_modules_verified": 6,
+    "prompt_selection_probe": "passed",
+    "isolation": {
+      "blocked_network_calls": 0,
+      "blocked_production_writes": 0
+    },
+    "paid_model_calls": 0,
+    "submitted_jobs": 0
+  },
+  "data_preservation": {
+    "method": "Read-only SQLite row and table digests, plus repair order metadata digests; raw rows and digests excluded.",
+    "before_row_counts": {
+      "jobs_database": {
+        "epub_jobs": 150,
+        "job_chapters": 1477,
+        "job_chunks": 23593,
+        "job_dispatch_outbox": 6,
+        "job_executions": 6,
+        "job_stages": 23692,
+        "llm_usage_attempts": 18,
+        "llm_usage_requests": 2325,
+        "order_funnel_events": 25,
+        "payment_email_outbox": 2
+      },
+      "repair_orders": 10,
+      "translation_cache": {
+        "book_translation_checkpoints": 11111,
+        "translations": 60170
+      }
+    },
+    "after_active_books": 0,
+    "unchanged": {
+      "jobs_database": true,
+      "repair_orders": true,
+      "translation_cache": true
+    }
+  },
+  "local_validation": {
+    "related_test_scripts_passed": 12,
+    "d89_test_methods_passed": 22,
+    "historical_readonly_replay": {
+      "paragraphs": 230,
+      "citation_negation_false_positives_removed": 112,
+      "new_flag_paragraphs": 0,
+      "historical_glossary_available": false
+    }
+  },
+  "verification_limits": [
+    "Production-host synthetic tests use deployed modules in a separate isolated process, not a paid translation submitted through the public API.",
+    "No new paid model calls, historical order reruns, customer artifact replacement, or customer-book EPUBCheck/semantic acceptance.",
+    "Preservation results cover only the before/after release observation window, not an external payment-provider billing audit."
+  ],
+  "redaction": {
+    "excluded": [
+      "customer identities and order identifiers",
+      "book titles, source text and artifacts",
+      "runtime row and content digests",
+      "credentials and signed download URLs",
+      "configuration values",
+      "private paths and process IDs",
+      "full operational logs"
+    ]
+  }
+}
