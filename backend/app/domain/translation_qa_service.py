@@ -38,7 +38,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20261013-terminology-consistency-v15"
+QA_RULES_VERSION = "20261014-terminology-provenance-v16"
 
 
 def max_free_retries() -> int:
@@ -290,6 +290,8 @@ def build_translation_qa_report(
         "categories_may_overlap": True,
         "consistency_status": stats.get("consistency_status", "review" if consistency_violations else "not_checked"),
         "consistency_violations": consistency_violations,
+        "consistency_categories": stats.get("consistency_categories") or {},
+        "consistency_mixed_entity_count": max(0, int(stats.get("consistency_mixed_entity_count") or 0)),
         "consistency_review_chunks": max(0, int(stats.get("consistency_review_chunks") or 0)),
         "summary": "翻译质检通过",
         "flags": [],
@@ -403,7 +405,18 @@ def build_translation_qa_report(
 
     if consistency_violations and report["status"] not in {"failed", "blocked"}:
         report["status"] = "warning"
-        message = f"{consistency_violations} 处术语用法与约定译名不一致，建议复核"
+        categories = stats.get("consistency_categories") or {}
+        if categories:
+            labels = {"glossary_terms_missing": "处术语映射未体现",
+                      "glossary_candidate_difference": "处自动候选译名差异",
+                      "glossary_mapping_ambiguous": "处术语映射证据不足"}
+            message = "、".join(f"{int(categories[key])} {label}" for key, label in labels.items()
+                                if categories.get(key)) + "，建议复核"
+        else:
+            message = f"{consistency_violations} 处术语用法与约定译名不一致，建议复核"
+        mixed_entities = report["consistency_mixed_entity_count"]
+        if mixed_entities:
+            message += f"；{mixed_entities} 个术语在书中同时存在匹配和不同用法"
         report["summary"] = (report["summary"] + "；" + message) if audit_warn else message
         # Informational only: review signals must not trigger paid retries or
         # turn a complete, validated artifact into an undeliverable order.

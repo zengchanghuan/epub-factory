@@ -1,0 +1,204 @@
+{
+  "verified_on": "2026-10-14",
+  "baseline_commit": "1052bda3475e7d3fdfe9b0d828bf4335d2347c9c",
+  "rules_version": "20261014-terminology-provenance-v16",
+  "scope": "Two general terminology fixes and offline replay of the 16 previously reviewed Getting Gamers P3 items. No production deployment or translation.",
+  "changes": [
+    "Preserve lowercase name particles; single-character generated name mappings require isolated evidence and cannot trigger guessed repairs.",
+    "Carry glossary origin/status into chunk, checkpoint and book audits. Generated suggestions, ambiguous mappings and legacy/confirmed contract differences remain distinct non-blocking review signals.",
+    "Only explicitly confirmed target aliases may satisfy a mapping; conflicting catalog metadata cannot relax a contract. Shared source surnames remain ambiguous.",
+    "Report mixed matching/different usages by source identity or explicit entity ID; do not infer Chinese aliases, choose a majority spelling or rewrite existing translations."
+  ],
+  "local_validation": {
+    "d89_tests": 35,
+    "d89_new_tests": 13,
+    "d89_failures": 0,
+    "related_scripts_passed": 13,
+    "network": "Python socket audit guard; dotenv disabled; dummy provider key; temporary databases and caches",
+    "scripts": [
+      "test_d89_terminology_consistency.py",
+      "test_glossary_extractor.py",
+      "test_glossary_service.py",
+      "test_d15_translation_quality_audit.py",
+      "test_d16_translation_qa_service.py",
+      "test_d20_translation_confirmation.py",
+      "test_d25_navigation_numeric.py",
+      "test_d88_numeric_temporal.py",
+      "test_d14_fast_translation_runner.py",
+      "test_d18_book_profile_strategy.py",
+      "test_c6_glossary_rag.py",
+      "scripts/test_regression_catalog.py",
+      "test_d45_execution_resume.py"
+    ]
+  },
+  "private_replay": {
+    "input": "Historical merged glossary catalog (82 mappings) and accepted source/checkpoint pairs; verified against unchanged current production artifact. Customer texts remain outside the repository.",
+    "reviewed_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "before_flags": {
+      "glossary_terms_missing": 14,
+      "numbers_missing": 2
+    },
+    "after_flags": {
+      "glossary_candidate_difference": 13,
+      "numbers_missing": 2,
+      "glossary_mapping_ambiguous": 1
+    },
+    "non_terminology_flags_unchanged": true,
+    "previously_resolved_citation_negation_false_positives_still_absent": 7,
+    "manual_recommendations": {
+      "targeted_content_fixes": 4,
+      "retain": 12
+    },
+    "items": [
+      {
+        "review_id": "R018",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "recommend_targeted_fix",
+        "content_changed": false
+      },
+      {
+        "review_id": "R030",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "recommend_targeted_fix",
+        "content_changed": false
+      },
+      {
+        "review_id": "R046",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R051",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R058",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "recommend_targeted_fix",
+        "content_changed": false
+      },
+      {
+        "review_id": "R062",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R068",
+        "new_flags": [
+          "numbers_missing"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R079",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R088",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R115",
+        "new_flags": [
+          "glossary_mapping_ambiguous"
+        ],
+        "manual_action": "recommend_targeted_fix",
+        "content_changed": false
+      },
+      {
+        "review_id": "R139",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R165",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R173",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R174",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R180",
+        "new_flags": [
+          "glossary_candidate_difference"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      },
+      {
+        "review_id": "R232",
+        "new_flags": [
+          "numbers_missing"
+        ],
+        "manual_action": "retain",
+        "content_changed": false
+      }
+    ],
+    "context_note": "The 37-paragraph context audit reports 4 terms with mixed matching/different usages. Six Ven mappings remain ambiguous, including valid embedded surnames: these are insufficient-mapping signals, not six newly proven translation defects.",
+    "limitations": [
+      "No new glossary was generated for this historical order. Better candidate extraction therefore does not silently replace its stored Ven mapping.",
+      "Alternative transliterations are not automatically approved; the previous four P3 content recommendations remain unapplied.",
+      "Time precision rules are outside these two P2 fixes; both previous time precision warnings remain."
+    ]
+  },
+  "production_read_only_check": {
+    "checked_at": "2026-10-14T02:09:31.685894+00:00",
+    "production_artifact_matches_accepted_p2_revision": true,
+    "reviewed_P3_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "all_source_and_translation_pairs_match_live_artifact": true,
+    "source_and_published_artifact_unchanged": true,
+    "production_order_unchanged": true,
+    "original_backups_intact": true,
+    "historical_model_requests": 804,
+    "new_model_requests": 0,
+    "production_writes": 0
+  },
+  "ci_and_deployment": "CI is checked after pushing the containing commit. This evidence does not claim CI success or production deployment."
+}

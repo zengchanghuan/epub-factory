@@ -64,15 +64,14 @@ _HONORIFIC_BLACKLIST: frozenset[str] = frozenset(
     h.rstrip(".") for h in _HONORIFICS
 )
 
-# 正则：连续 1-3 个首字母大写的英文词（人名/地名/机构名典型形式）
-_CAPITALIZED_RUN_RE = re.compile(
-    r"\b([A-Z][a-z'’\-]{1,}(?:\s+[A-Z][a-z'’\-]{1,}){0,2})\b"
-)
-
-# 正则：称谓 + 大写词（高置信度专有名词）
+# Preserve lowercase name particles inside a capitalized phrase. Do not join
+# arbitrary lowercase prose ("Alice met Bob") or cross sentence punctuation.
+_NAME_WORD = r"[A-ZÀ-ÖØ-Þ][a-zà-öø-ÿ'’\-]{1,}"
+_NAME_PARTICLE = r"(?:van|von|de|del|della|di|da|dos|du|la|le|den|der|ten|ter)"
+_NAME_PHRASE = _NAME_WORD + r"(?:\s+(?:" + _NAME_PARTICLE + r"\s+){0,3}" + _NAME_WORD + r"){0,5}"
+_CAPITALIZED_RUN_RE = re.compile(r"\b(" + _NAME_PHRASE + r")\b")
 _HONORIFIC_NAME_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(h) for h in _HONORIFICS) + r")\s+"
-    r"([A-Z][a-z'’\-]{1,}(?:\s+[A-Z][a-z'’\-]{1,}){0,2})\b"
+    r"\b(?:" + "|".join(re.escape(h) for h in _HONORIFICS) + r")\s+(" + _NAME_PHRASE + r")\b"
 )
 
 # 正则：全大写词（缩写/机构名）
@@ -458,6 +457,8 @@ def verify_and_fix(
     original_html: str,
     translated_html: str,
     glossary: dict[str, str],
+    *,
+    glossary_catalog: list[dict] | None = None,
 ) -> tuple[str, VerifyResult]:
     """Replace only residual source terms in editable text, never infer aliases.
 
@@ -469,7 +470,10 @@ def verify_and_fix(
     if not relevant or not translated_html:
         return translated_html, result
     target_text = visible_term_text(translated_html)
-    pending = {src: dst for src, dst in relevant.items() if not term_spans(dst, target_text)}
+    from app.domain.translation_terminology_policy import terminology_evidence
+    evidence = terminology_evidence(visible_term_text(original_html), target_text, relevant, glossary_catalog)
+    pending = {row["source_term"]: row["expected_translation"] for row in evidence if row["category"] != "matched"}
+    ambiguous = {row["source_term"] for row in evidence if row["category"] == "glossary_mapping_ambiguous"}
     # A target that is another source term is ambiguous in an unaligned
     # paragraph. Do not guess which occurrence already represents which name.
     collisions = {term for src, dst in relevant.items() for other in relevant
@@ -481,7 +485,7 @@ def verify_and_fix(
         excluded = [m.span() for m in protected.finditer(text)]
         edits = []
         for src, dst in relevant_terms(relevant, text).items():
-            if src not in pending or src in collisions:
+            if src not in pending or src in collisions or src in ambiguous:
                 continue
             for start, end in term_spans(src, text):
                 if not is_editable(start, end):
@@ -502,9 +506,9 @@ def verify_and_fix(
 
     fixed = replace_term_text(translated_html, edits_for_text)
     final_text = visible_term_text(fixed)
-    for src, dst in pending.items():
-        if not term_spans(dst, final_text) and len(result.unfixable_examples) < 10:
-            result.unfixable_examples.append(f"{src}→{dst}")
+    for finding in terminology_evidence(visible_term_text(original_html), final_text, pending, glossary_catalog):
+        if finding["category"] != "matched" and len(result.unfixable_examples) < 10:
+            result.unfixable_examples.append(f"{finding['source_term']}→{finding['expected_translation']}")
     return fixed, result
 
 

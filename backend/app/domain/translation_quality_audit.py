@@ -19,9 +19,10 @@ from typing import Callable
 from bs4 import BeautifulSoup, Tag
 from app.domain.translation_residual_policy import residual_category, normalize_text, without_reference_text_nodes
 from app.domain.translation_numeric_audit import missing_numeric_facts
-from app.domain.translation_terms import term_spans as _term_spans, relevant_terms, visible_term_text
+from app.domain.translation_terms import relevant_terms, visible_term_text
 from app.engine.chunk_extractor import NON_TEXT_TAGS, media_subtrees
 from app.domain.html_link_contract import preserves_link_contract
+from app.domain.translation_terminology_policy import terminology_evidence
 
 
 BLOCK_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
@@ -36,6 +37,7 @@ class TranslationQualityAudit:
     flags: list[str] = field(default_factory=list)
     numbers_missing: list[str] = field(default_factory=list)
     latin_terms_missing: list[str] = field(default_factory=list)
+    terminology_findings: list[dict] = field(default_factory=list)
     html_tag_mismatch: bool = False
     error_like_response: bool = False
     likely_untranslated: bool = False
@@ -53,6 +55,7 @@ class TranslationQualityAudit:
             "flags": self.flags,
             "numbers_missing": self.numbers_missing,
             "latin_terms_missing": self.latin_terms_missing,
+            "terminology_findings": self.terminology_findings,
             "html_tag_mismatch": self.html_tag_mismatch,
             "error_like_response": self.error_like_response,
             "likely_untranslated": self.likely_untranslated,
@@ -193,6 +196,7 @@ def audit_translation_chunk(
     glossary: dict[str, str] | None = None,
     error_like_checker: Callable[[str], bool] | None = None,
     preserved_terms=(),
+    glossary_catalog: list[dict] | None = None,
 ) -> TranslationQualityAudit:
     """对单个 chunk 做规则型可信度审计。"""
     source_text = _text(original_html)
@@ -270,16 +274,15 @@ def audit_translation_chunk(
         audit.risk_level = _set_risk(audit.risk_level, 'warn')
 
     glossary = glossary or {}
-    missing_terms: list[str] = []
-    term_source = visible_term_text(original_html) if glossary else ""
-    term_target = visible_term_text(translated_html) if glossary else ""
-    for src, dst in _relevant_glossary_terms(glossary, term_source):
-        if not _term_spans(dst, term_target):
-            missing_terms.append(src)
-    if missing_terms:
-        audit.latin_terms_missing = missing_terms
-        audit.flags.append("glossary_terms_missing")
-        audit.risk_level = _set_risk(audit.risk_level, "warn")
+    if glossary:
+        evidence = terminology_evidence(visible_term_text(original_html),
+                                        visible_term_text(translated_html), glossary, glossary_catalog)
+        audit.terminology_findings = [row for row in evidence if row["category"] != "matched"]
+        audit.latin_terms_missing = [row["source_term"] for row in audit.terminology_findings]
+        for row in audit.terminology_findings:
+            if row["category"] not in audit.flags:
+                audit.flags.append(row["category"])
+            audit.risk_level = _set_risk(audit.risk_level, "warn")
 
     if not preserves_link_contract(original_html, translated_html):
         audit.flags.append("html_link_attribute_mismatch")

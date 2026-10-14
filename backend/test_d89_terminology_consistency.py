@@ -14,7 +14,7 @@ from app.domain.translation_consistency_audit import audit_book_consistency
 from app.domain.translation_quality_audit import audit_translation_chunk
 from app.domain.translation_qa_service import build_translation_qa_report
 from app.domain.translation_terms import term_spans
-from app.engine.glossary_extractor import select_relevant_glossary, verify_and_fix
+from app.engine.glossary_extractor import extract_candidates, select_relevant_glossary, verify_and_fix
 
 
 def chunk(source, target, identifier='sample'):
@@ -22,6 +22,142 @@ def chunk(source, target, identifier='sample'):
 
 
 class TerminologyContracts(unittest.TestCase):
+    def test_name_particles_are_not_split_and_prose_is_not_joined(self):
+        names = ['Nora van de Veen', 'Luca della Torre', 'Émile de La Roche', 'Anna von Berg']
+        for name in names:
+            with self.subTest(name=name):
+                found, _ = extract_candidates([f'We discussed {name}.', f'Dr. {name} arrived.'], min_count=1)
+                terms = {c.term for c in found}
+                self.assertIn(name, terms)
+                self.assertNotIn(name.split()[-1], terms)
+        found, _ = extract_candidates(['We saw Alice meet Bob. Alice saw Bob.'], min_count=1)
+        self.assertFalse(any('meet' in c.term or 'saw' in c.term for c in found))
+
+    def test_unrelated_single_cjk_character_cannot_satisfy_a_name(self):
+        for catalog in [None, [{'source': 'Veen', 'translation': '文', 'origin': 'auto', 'status': 'generated'}]]:
+            for target in ['诺拉·范德芬的文献。', '诺拉·范德芬。']:
+                report = audit_translation_chunk(original_html='Nora van de Veen wrote a paper.',
+                    translated_html=target, glossary={'Veen': '文'}, glossary_catalog=catalog)
+                self.assertEqual(report.latin_terms_missing, ['Veen'])
+                self.assertIn('glossary_mapping_ambiguous' if catalog else 'glossary_terms_missing', report.flags)
+        self.assertNotIn('glossary_terms_missing', audit_translation_chunk(
+            original_html='The name is Veen.', translated_html='名字是“文”。', glossary={'Veen': '文'}).flags)
+
+    def test_origin_and_status_distinguish_suggestion_from_contract(self):
+        for origin, status, flag in [('auto', 'generated', 'glossary_candidate_difference'),
+                ('book_profiler', 'generated', 'glossary_candidate_difference'),
+                ('user', 'confirmed', 'glossary_terms_missing'),
+                ('global', 'curated', 'glossary_terms_missing'),
+                ('unknown', 'generated', 'glossary_terms_missing')]:
+            with self.subTest(origin=origin):
+                row = dict(source='Mara Rowan', translation='玛拉·罗恩', origin=origin, status=status)
+                audit = audit_translation_chunk(original_html='Mara Rowan arrived.', translated_html='马拉·罗温来了。',
+                    glossary={'Mara Rowan': '玛拉·罗恩'}, glossary_catalog=[row])
+                self.assertEqual(audit.latin_terms_missing, ['Mara Rowan'])
+                self.assertIn(flag, audit.flags)
+                self.assertEqual(audit.risk_level, 'warn')
+                self.assertEqual(audit.terminology_findings[0]['origin'], origin)
+
+    def test_stale_or_conflicting_catalog_cannot_downgrade_user_mapping(self):
+        auto = dict(source='Mara', translation='马拉', origin='auto', status='generated')
+        for catalog in [[auto], [auto, dict(auto, origin='user', status='confirmed')]]:
+            expected = '玛拉' if len(catalog) == 1 else '马拉'
+            audit = audit_translation_chunk(original_html='Mara arrived.', translated_html='她来了。',
+                glossary={'Mara': expected}, glossary_catalog=catalog)
+            self.assertIn('glossary_terms_missing', audit.flags)
+
+    def test_only_explicitly_confirmed_target_aliases_are_accepted(self):
+        row = dict(source='Mara Rowan', translation='玛拉·罗恩', origin='auto', status='generated')
+        for status, accepted in [('generated', False), ('confirmed', True)]:
+            catalog = [dict(row, target_aliases=[{'translation': '马拉·罗温', 'status': status}])]
+            audit = audit_translation_chunk(original_html='Mara Rowan arrived.', translated_html='马拉·罗温来了。',
+                glossary={'Mara Rowan': '玛拉·罗恩'}, glossary_catalog=catalog)
+            self.assertEqual(not audit.latin_terms_missing, accepted)
+        # A category word is never inferred as a brand alias.
+        audit = audit_translation_chunk(original_html='Drink FizzBrand.', translated_html='喝汽水。',
+            glossary={'FizzBrand': '菲兹牌'}, glossary_catalog=[dict(row, source='FizzBrand', translation='菲兹牌')])
+        self.assertIn('glossary_candidate_difference', audit.flags)
+
+    def test_book_mixed_evidence_is_separate_from_candidate_difference(self):
+        row = dict(source='Mara Rowan', translation='玛拉·罗恩', origin='auto', status='generated', entity_id='person-1')
+        chapters = {'one': [chunk('Mara Rowan arrived.', '马拉·罗温来了。')],
+                    'two': [chunk('Mara Rowan left.', '玛拉·罗恩走了。')]}
+        report = audit_book_consistency(chapter_results=chapters, glossary={'Mara Rowan': '玛拉·罗恩'}, glossary_catalog=[row])
+        self.assertEqual(report['consistency_categories'], {'glossary_candidate_difference': 1})
+        self.assertEqual(report['consistency_mixed_entity_count'], 1)
+        self.assertEqual(report['consistency_mixed_entities'][0]['source_terms'], ['Mara Rowan'])
+        self.assertFalse(report['delivery_gate'])
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)/'sample.epub'; output.write_bytes(b'fixture')
+            report.update(artifact_audit={'status': 'passed'}, failed_chunks=0)
+            qa = build_translation_qa_report(translation_stats=report, output_path=output)
+            self.assertIn('自动候选译名差异', qa['summary'])
+            self.assertNotIn('约定译名', qa['summary'])
+            self.assertTrue(qa['can_deliver'])
+            self.assertFalse(qa['retryable'])
+
+    def test_same_surname_does_not_merge_different_full_names(self):
+        glossary = {'Mara Rowan': '玛拉·罗恩', 'Lena Rowan': '莉娜·罗恩'}
+        rows = [dict(source=s, translation=t, origin='auto', status='generated') for s, t in glossary.items()]
+        report = audit_book_consistency(chapter_results={'one': [
+            chunk('Mara Rowan arrived.', '玛拉·罗恩来了。'),
+            chunk('Lena Rowan left.', '莱娜·罗温走了。')]}, glossary=glossary, glossary_catalog=rows)
+        self.assertEqual(report['consistency_mixed_entity_count'], 0)
+        self.assertEqual(report['consistency_violations'], 1)
+
+    def test_short_ordinary_word_and_pronoun_remain_valid(self):
+        for source, target, glossary in [('I arrived.', '我来了。', {'I': '我'}),
+                ('The quantity increased.', '数量增加了。', {'quantity': '量'})]:
+            self.assertFalse(audit_translation_chunk(original_html=source, translated_html=target,
+                glossary=glossary).latin_terms_missing)
+
+    def test_profile_aliases_keep_provenance_and_shared_surnames_need_review(self):
+        characters = [{'source_name': 'Mara Rowan', 'translated_name': '玛拉·罗恩', 'aliases': ['Rowan']},
+                      {'source_name': 'Lena Rowan', 'translated_name': '莉娜·罗恩', 'aliases': ['Rowan']}]
+        report = audit_book_consistency(chapter_results={'one': [
+            chunk('Mara Rowan arrived.', '马拉·罗温来了。'), chunk('Rowan left.', '罗恩走了。')]},
+            glossary={}, characters=characters)
+        self.assertEqual(report['consistency_categories'],
+                         {'glossary_candidate_difference': 1, 'glossary_mapping_ambiguous': 1})
+        self.assertEqual(report['consistency_ambiguous_source_aliases'], ['Rowan'])
+        self.assertEqual(report['consistency_mixed_entity_count'], 0)
+        self.assertEqual(report['consistency_checks'], 2)
+
+    def test_runner_passes_catalog_to_chunk_and_book_audits(self):
+        from unittest.mock import patch
+        from test_d14_fast_translation_runner import test_fast_translation_runner_glossary_audit
+        with patch('app.domain.fast_translation_runner.audit_translation_chunk', wraps=audit_translation_chunk) as chunks, \
+             patch('app.domain.fast_translation_runner.audit_book_consistency', wraps=audit_book_consistency) as book:
+            test_fast_translation_runner_glossary_audit()
+        self.assertTrue(chunks.called)
+        self.assertTrue(book.called)
+        catalog = book.call_args.kwargs['glossary_catalog']
+        self.assertTrue(any(row['origin'] == 'user' and row['status'] == 'confirmed' for row in catalog))
+        for call in chunks.call_args_list:
+            self.assertEqual(call.kwargs['glossary_catalog'], catalog)
+
+    def test_generated_lowercase_name_key_cannot_bypass_short_mapping_guard(self):
+        report = audit_translation_chunk(original_html='Nora van de Veen wrote a paper.',
+            translated_html='诺拉·范德芬的文献。', glossary={'veen': '文'}, glossary_catalog=[
+                dict(source='veen', translation='文', origin='auto', status='generated')])
+        self.assertIn('glossary_mapping_ambiguous', report.flags)
+        self.assertEqual(report.latin_terms_missing, ['veen'])
+
+    def test_short_ambiguous_mapping_is_reviewed_without_guessing_a_repair(self):
+        target = '<p>Veen的文献。</p>'
+        fixed, report = verify_and_fix('Veen wrote a paper.', target, {'Veen': '文'}, glossary_catalog=[
+            dict(source='Veen', translation='文', origin='auto', status='generated')])
+        self.assertEqual(fixed, target)
+        self.assertEqual(report.fixed_count, 0)
+        self.assertEqual(report.unfixable_examples, ['Veen→文'])
+
+    def test_confirmed_alias_of_another_entity_does_not_satisfy_mapping(self):
+        row = dict(source='Mara Rowan', translation='玛拉·罗恩', origin='user', status='confirmed',
+                   entity_id='person-1', target_aliases=[dict(translation='莉娜·罗恩', status='confirmed', entity_id='person-2')])
+        report = audit_translation_chunk(original_html='Mara Rowan arrived.', translated_html='莉娜·罗恩来了。',
+            glossary={'Mara Rowan': '玛拉·罗恩'}, glossary_catalog=[row])
+        self.assertIn('glossary_terms_missing', report.flags)
+
     def test_blank_term_never_matches(self):
         self.assertEqual(term_spans(' \n\t', 'Aster'), [])
 

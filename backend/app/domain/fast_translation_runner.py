@@ -437,6 +437,7 @@ async def _translate_manifest_async(
     manifest: dict,
     content_by_file: dict[str, bytes],
     glossary: dict[str, str],
+    glossary_catalog: list[dict] | None = None,
     original_book_title: str = "",
     book_profile: dict[str, Any] | None = None,
     translation_strategy: str = "neutral_faithful",
@@ -667,7 +668,7 @@ async def _translate_manifest_async(
 
         translated_html = res.translated_html
         if glossary and not res.error and status != ChunkStatus.skipped:
-            fixed_html, verify = verify_and_fix(spec["html"], translated_html, glossary)
+            fixed_html, verify = verify_and_fix(spec["html"], translated_html, glossary, glossary_catalog=glossary_catalog)
             translated_html = fixed_html
             if verify.fixed_count:
                 audit["glossary_fixed_count"] += verify.fixed_count
@@ -681,6 +682,7 @@ async def _translate_manifest_async(
             original_html=spec["html"],
             translated_html=translated_html,
             glossary=glossary if status != ChunkStatus.skipped else {},
+            glossary_catalog=glossary_catalog,
             error_like_checker=translator._looks_like_error_response,
             preserved_terms=translator.preserved_terms,
         ).to_dict()
@@ -962,7 +964,7 @@ async def _translate_manifest_async(
                     if candidate.error:
                         continue
                     quality = audit_translation_chunk(original_html=spec["html"],
-                        translated_html=candidate.translated_html, glossary=glossary,
+                        translated_html=candidate.translated_html, glossary=glossary, glossary_catalog=glossary_catalog,
                         error_like_checker=translator._looks_like_error_response,
                         preserved_terms=translator.preserved_terms)
                     if (translator._invalid_translation_reason(spec["html"], candidate.translated_html)
@@ -1267,6 +1269,7 @@ async def _translate_manifest_async(
         chapter_results=chapter_results_by_id,
         glossary=glossary,
         characters=(book_profile or {}).get("characters") or [],
+        glossary_catalog=glossary_catalog,
     ))
     flat_results = [cr for chapter in chapter_results for cr in chapter]
     stats = _build_translation_stats(live=False, flat_results=flat_results)
@@ -1555,6 +1558,7 @@ def run_fast_translation_job(
             manifest=manifest,
             content_by_file=content_by_file,
             glossary=glossary,
+            glossary_catalog=glossary_catalog,
             original_book_title=original_book_title,
             book_profile=book_profile,
             translation_strategy=resolved_strategy,

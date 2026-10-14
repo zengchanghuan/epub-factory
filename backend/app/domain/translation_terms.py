@@ -52,6 +52,28 @@ def term_spans(term: str, text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def ambiguous_short_name(source: str, target: str) -> bool:
+    """A capitalized Latin name mapped to one CJK character needs context."""
+    return (len(target.strip()) == 1 and "CJK" in unicodedata.name(target.strip(), "")
+            and len(source.strip()) > 1 and source.strip()[0].isupper()
+            and "LATIN" in unicodedata.name(source.strip()[0], ""))
+
+
+def target_term_present(term: str, text: str, *, source_term: str = "",
+                        require_isolated_short: bool = False) -> bool:
+    """A one-character CJK translation needs isolated evidence, not 文 in 文献.
+
+    This is deliberately conservative: an embedded single-character surname
+    needs a full-name mapping to be verified. Source matching stays unchanged.
+    """
+    spans = term_spans(term, text)
+    if ambiguous_short_name(source_term, term) or (require_isolated_short
+            and len(term.strip()) == 1 and "CJK" in unicodedata.name(term.strip(), "")):
+        return any((a == 0 or not text[a - 1].isalnum())
+                   and (b == len(text) or not text[b].isalnum()) for a, b in spans)
+    return bool(spans)
+
+
 def relevant_terms(glossary: dict[str, str], text: str, *, limit: int | None = None) -> dict[str, str]:
     """Longest non-overlapping source phrases; limits count distinct terms."""
     if limit is not None and limit <= 0:
