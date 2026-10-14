@@ -18,13 +18,14 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 from urllib.parse import urlsplit
 from app.infra.llm_errors import ProviderAccountUnavailable, is_balance_error
 from app.cancellation import JobCancelled, raise_if_cancelled
-from app.domain.translation_terms import relevant_terms, term_spans, visible_term_text, replace_term_text
+from app.domain.translation_terms import relevant_terms, term_spans, visible_term_text, replace_term_text, parenthetical_spans
 from billiard.exceptions import SoftTimeLimitExceeded
 
 logger = logging.getLogger("epub_factory.glossary")
@@ -473,7 +474,8 @@ def verify_and_fix(
     from app.domain.translation_terminology_policy import terminology_evidence
     evidence = terminology_evidence(visible_term_text(original_html), target_text, relevant, glossary_catalog)
     pending = {row["source_term"]: row["expected_translation"] for row in evidence if row["category"] != "matched"}
-    ambiguous = {row["source_term"] for row in evidence if row["category"] == "glossary_mapping_ambiguous"}
+    ambiguous = {row["source_term"] for row in evidence if row["category"] in {
+        "glossary_mapping_ambiguous", "glossary_occurrence_unresolved"}}
     # A target that is another source term is ambiguous in an unaligned
     # paragraph. Do not guess which occurrence already represents which name.
     collisions = {term for src, dst in relevant.items() for other in relevant
@@ -483,6 +485,7 @@ def verify_and_fix(
     # Decide replacements on original text once; never reserialize HTML.
     def edits_for_text(text, is_editable):
         excluded = [m.span() for m in protected.finditer(text)]
+        parentheses = parenthetical_spans(text)
         edits = []
         for src, dst in relevant_terms(relevant, text).items():
             if src not in pending or src in collisions or src in ambiguous:
@@ -491,6 +494,11 @@ def verify_and_fix(
                 if not is_editable(start, end):
                     continue
                 if any(start < b and end > a for a, b in excluded):
+                    continue
+                # Retained original names in annotations are not untranslated
+                # prose. Never replace them with a second Chinese spelling.
+                if any("LATIN" in unicodedata.name(c, "") for c in src) and any(
+                        start >= a and end <= b for a, b in parentheses):
                     continue
                 # Recheck overlap per occurrence, including a longer phrase
                 # whose canonical translation is already present elsewhere.

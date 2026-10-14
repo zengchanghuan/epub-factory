@@ -59,8 +59,8 @@ def ambiguous_short_name(source: str, target: str) -> bool:
             and "LATIN" in unicodedata.name(source.strip()[0], ""))
 
 
-def target_term_present(term: str, text: str, *, source_term: str = "",
-                        require_isolated_short: bool = False) -> bool:
+def target_term_spans(term: str, text: str, *, source_term: str = "",
+                      require_isolated_short: bool = False) -> list[tuple[int, int]]:
     """A one-character CJK translation needs isolated evidence, not 文 in 文献.
 
     This is deliberately conservative: an embedded single-character surname
@@ -69,15 +69,33 @@ def target_term_present(term: str, text: str, *, source_term: str = "",
     spans = term_spans(term, text)
     if ambiguous_short_name(source_term, term) or (require_isolated_short
             and len(term.strip()) == 1 and "CJK" in unicodedata.name(term.strip(), "")):
-        return any((a == 0 or not text[a - 1].isalnum())
-                   and (b == len(text) or not text[b].isalnum()) for a, b in spans)
-    return bool(spans)
+        return [(a, b) for a, b in spans if (a == 0 or not text[a - 1].isalnum())
+                and (b == len(text) or not text[b].isalnum())]
+    return spans
 
 
-def relevant_terms(glossary: dict[str, str], text: str, *, limit: int | None = None) -> dict[str, str]:
+def target_term_present(term: str, text: str, *, source_term: str = "",
+                        require_isolated_short: bool = False) -> bool:
+    return bool(target_term_spans(term, text, source_term=source_term,
+                                 require_isolated_short=require_isolated_short))
+
+
+def parenthetical_spans(text: str) -> list[tuple[int, int]]:
+    """Balanced ASCII/CJK parentheses, including nested annotations."""
+    stack, spans = [], []
+    for index, char in enumerate(text):
+        if char in "(（":
+            stack.append((char, index))
+        elif char in ")）" and stack and stack[-1][0] == {")": "(", "）": "（"}[char]:
+            _, start = stack.pop()
+            spans.append((start, index + 1))
+    return sorted(spans)
+
+
+def relevant_term_occurrences(glossary: dict[str, str], text: str, *, limit: int | None = None) -> list[tuple[int, int, str, str]]:
     """Longest non-overlapping source phrases; limits count distinct terms."""
     if limit is not None and limit <= 0:
-        return {}
+        return []
     matches = [(a, b, src, dst) for src, dst in (glossary or {}).items()
                if isinstance(src, str) and isinstance(dst, str) and src.strip() and dst.strip()
                for a, b in term_spans(src, text)]
@@ -92,7 +110,11 @@ def relevant_terms(glossary: dict[str, str], text: str, *, limit: int | None = N
         selected.append((a, b, src, dst))
         names.add(src)
     selected.sort(key=lambda m: m[0])
-    return {src: dst for _, _, src, dst in selected}
+    return selected
+
+
+def relevant_terms(glossary: dict[str, str], text: str, *, limit: int | None = None) -> dict[str, str]:
+    return {src: dst for _, _, src, dst in relevant_term_occurrences(glossary, text, limit=limit)}
 
 
 def replace_term_text(html: str, edits_for_text) -> str:

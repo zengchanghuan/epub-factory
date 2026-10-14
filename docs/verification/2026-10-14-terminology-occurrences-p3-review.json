@@ -1,0 +1,44 @@
+{
+  "verified_on": "2026-10-14",
+  "baseline_commit": "eaedff1edb09a09511ec82e9f98c08b21ffb6d49",
+  "rules_version": "20261014-terminology-occurrences-v17",
+  "scope": "Offline replay of previously accepted historical materials; no live production operation or new translation.",
+  "validation": {
+    "d89_tests_passed": 44,
+    "d89_new_tests": 9,
+    "related_backend_scripts_passed": 13,
+    "regression_catalog_tests_passed": 20,
+    "optional_real_book_tests_skipped": 2,
+    "skip_reason": "D29 real source/translated book fixtures were not supplied.",
+    "isolation": "Python network audit guard, disabled real dotenv discovery, temporary databases and caches; historical replay also forbids database access and file writes.",
+    "checkpoint_regression": "A synthetic paragraph carrying occurrence uncertainty is reused on the second run with no additional model transport calls. All model responses are fixtures."
+  },
+  "private_replay": {
+    "catalog_mappings": 82,
+    "reviewed_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "flags_before_and_after": {
+      "glossary_candidate_difference": 13,
+      "glossary_mapping_ambiguous": 1,
+      "numbers_missing": 2
+    },
+    "changed_reviewed_items": 0,
+    "non_terminology_flags_unchanged": true,
+    "context_categories_after": {
+      "glossary_candidate_difference": 13,
+      "glossary_mapping_ambiguous": 6,
+      "glossary_occurrence_unresolved": 1
+    },
+    "new_context_signal": "One previously manually identified parenthetical duplicate transliteration is now flagged for review, without changing its text.",
+    "manual_recommendations": {"targeted_content_fixes": 4, "retain": 12},
+    "historical_inputs_written": false,
+    "production_accessed": false,
+    "model_requests": 0,
+    "payment_operations": 0
+  },
+  "limitations": [
+    "Occurrence counts are evidence gaps, not proof of omission: pronouns and legitimate compression remain non-blocking review cases.",
+    "Unknown translations cannot be semantically aligned without additional evidence. Parenthetical variant detection is restricted to explicit dotted CJK names.",
+    "This record does not claim production deployment, a fresh online artifact check or a paid end-to-end translation. CI is checked after pushing the containing commit."
+  ]
+}

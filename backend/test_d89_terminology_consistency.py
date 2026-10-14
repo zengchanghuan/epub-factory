@@ -22,6 +22,141 @@ def chunk(source, target, identifier='sample'):
 
 
 class TerminologyContracts(unittest.TestCase):
+    def test_parenthetical_original_names_are_never_rewritten(self):
+        row = dict(source='Mara Rowan', translation='玛拉·罗恩', origin='auto', status='generated')
+        for origin, status in [('auto', 'generated'), ('user', 'confirmed')]:
+            for annotation in ['（Mara Rowan，心理学家）', '(Mara Rowan, psychologist)',
+                               '（<i>Mara</i> Rowan，心理学家）',
+                               '（Mara&#32;Rowan）', '(notes （Mara Rowan）)']:
+                with self.subTest(origin=origin, annotation=annotation):
+                    target = '<p>马拉·罗温' + annotation + '发言。</p>'
+                    fixed, result = verify_and_fix('Mara Rowan spoke.', target,
+                        {'Mara Rowan': '玛拉·罗恩'}, glossary_catalog=[dict(row, origin=origin, status=status)])
+                    self.assertEqual(fixed, target)
+                    self.assertEqual(result.fixed_count, 0)
+                    self.assertTrue(result.unfixable_examples)
+
+    def test_parentheses_do_not_disable_plain_prose_repair(self):
+        target = '<p>Mara Rowan发言（Mara Rowan，心理学家）。</p>'
+        fixed, report = verify_and_fix('Mara Rowan spoke.', target, {'Mara Rowan': '玛拉·罗恩'})
+        self.assertEqual(fixed, '<p>玛拉·罗恩发言（Mara Rowan，心理学家）。</p>')
+        self.assertEqual(report.fixed_count, 1)
+        self.assertEqual(verify_and_fix('Mara Rowan spoke.', fixed, {'Mara Rowan': '玛拉·罗恩'})[0], fixed)
+
+    def test_repeated_source_with_one_target_is_uncertain_not_verified(self):
+        for target in ['玛拉·罗恩来了。马拉·罗温离开了。', '玛拉·罗恩来了。她离开了。']:
+            audit = audit_translation_chunk(original_html='Mara Rowan arrived. Mara Rowan left.',
+                translated_html=target, glossary={'Mara Rowan': '玛拉·罗恩'})
+            self.assertIn('glossary_occurrence_unresolved', audit.flags)
+            self.assertEqual(audit.risk_level, 'warn')
+            finding = audit.terminology_findings[0]
+            self.assertEqual(finding['review_reasons'], ['source_occurrence_gap'])
+            self.assertEqual((finding['source_occurrences'], finding['target_occurrences']), (2, 1))
+            self.assertEqual(len(finding['source_spans']), 2)
+        audit = audit_translation_chunk(original_html='Mara Rowan arrived. Mara Rowan left.',
+            translated_html='玛拉·罗恩来了。玛拉·罗恩离开了。', glossary={'Mara Rowan': '玛拉·罗恩'})
+        self.assertFalse(audit.terminology_findings)
+
+    def test_distinct_entities_cannot_share_overlapping_target_evidence(self):
+        for glossary, target, count in [({'Mara Rowan': '玛拉·罗恩', 'Lena Rowan': '罗恩'}, '玛拉·罗恩来了。', 1),
+                                 ({'Mara Rowan': '罗恩', 'Lena Rowan': '罗恩'}, '罗恩来了。', 2)]:
+            audit = audit_translation_chunk(original_html='Mara Rowan and Lena Rowan arrived.',
+                translated_html=target, glossary=glossary)
+            self.assertEqual(len(audit.terminology_findings), count)
+            self.assertTrue(all('shared_target_span' in r['review_reasons'] for r in audit.terminology_findings))
+            self.assertTrue(all(r['category'] == 'glossary_occurrence_unresolved' for r in audit.terminology_findings))
+        audit = audit_translation_chunk(original_html='Mara Rowan and Lena Rowan arrived.',
+            translated_html='玛拉·罗恩和莉娜·罗恩来了。',
+            glossary={'Mara Rowan': '玛拉·罗恩', 'Lena Rowan': '莉娜·罗恩'})
+        self.assertFalse(audit.terminology_findings)
+        audit = audit_translation_chunk(original_html='Mara Rowan and Lena Rowan arrived.',
+            translated_html='玛拉·罗恩和罗恩来了。',
+            glossary={'Mara Rowan': '玛拉·罗恩', 'Lena Rowan': '罗恩'})
+        self.assertFalse(audit.terminology_findings)
+
+    def test_nested_aliases_and_source_phrases_do_not_inflate_evidence(self):
+        from app.domain.translation_terminology_policy import terminology_evidence
+        rows = [dict(source='Mara Rowan', translation='玛拉·罗恩', origin='user', status='confirmed',
+                     target_aliases=[{'translation': '罗恩', 'status': 'confirmed'}])]
+        evidence = terminology_evidence('Mara Rowan arrived. Mara Rowan left.', '玛拉·罗恩来了。',
+                                        {'Mara Rowan': '玛拉·罗恩'}, rows)
+        self.assertEqual(evidence[0]['target_occurrences'], 1)
+        self.assertEqual(evidence[0]['category'], 'glossary_occurrence_unresolved')
+        evidence = terminology_evidence('New Harbor and Harbor.', '新港和港口。',
+                                        {'New Harbor': '新港', 'Harbor': '港口'})
+        self.assertEqual([r['source_occurrences'] for r in evidence], [1, 1])
+        self.assertTrue(all(r['category'] == 'matched' for r in evidence))
+
+    def test_explicit_same_entity_and_confirmed_aliases_share_evidence(self):
+        glossary = {'Mara Rowan': '玛拉·罗恩', 'Rowan': '罗恩'}
+        catalog = [dict(source=s, translation=t, origin='user', status='confirmed', entity_id='person-1')
+                   for s, t in glossary.items()]
+        audit = audit_translation_chunk(original_html='Mara Rowan arrived. Rowan left.',
+            translated_html='玛拉·罗恩来了。罗恩离开了。', glossary=glossary, glossary_catalog=catalog)
+        self.assertFalse(audit.terminology_findings)
+        catalog[0]['target_aliases'] = [{'translation': '马拉·罗温', 'status': 'confirmed'}]
+        audit = audit_translation_chunk(original_html='Mara Rowan arrived. Mara Rowan left.',
+            translated_html='玛拉·罗恩来了。马拉·罗温离开了。', glossary=glossary, glossary_catalog=catalog)
+        self.assertFalse(audit.terminology_findings)
+
+    def test_parenthetical_chinese_variants_are_reviewed_without_guessing(self):
+        for target in ['马拉·罗温（玛拉·罗恩，心理学家）发言。',
+                       '玛拉·罗恩（马拉·罗温，心理学家）发言。']:
+            audit = audit_translation_chunk(original_html='Mara Rowan spoke.', translated_html=target,
+                glossary={'Mara Rowan': '玛拉·罗恩'})
+            self.assertIn('parenthetical_name_variants', audit.terminology_findings[0]['review_reasons'])
+            self.assertEqual(verify_and_fix('Mara Rowan spoke.', target, {'Mara Rowan': '玛拉·罗恩'})[0], target)
+        for target in ['玛拉·罗恩（心理学家）发言。', '玛拉·罗恩（Mara Rowan）发言。',
+                       '玛拉·罗恩（玛拉·罗恩，心理学家）发言。']:
+            self.assertFalse(audit_translation_chunk(original_html='Mara Rowan spoke.', translated_html=target,
+                glossary={'Mara Rowan': '玛拉·罗恩'}).terminology_findings)
+
+    def test_occurrence_uncertainty_is_nonblocking_and_visible_in_book_qa(self):
+        report = audit_book_consistency(chapter_results={'one': [chunk(
+            'Mara Rowan arrived. Mara Rowan left.', '玛拉·罗恩来了。马拉·罗温离开了。')]},
+            glossary={'Mara Rowan': '玛拉·罗恩'})
+        self.assertEqual(report['consistency_categories'], {'glossary_occurrence_unresolved': 1})
+        self.assertEqual(report['consistency_mixed_entity_count'], 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)/'sample.epub'; output.write_bytes(b'fixture')
+            report.update(artifact_audit={'status': 'passed'}, failed_chunks=0)
+            qa = build_translation_qa_report(translation_stats=report, output_path=output)
+            self.assertIn('出现位置待核对', qa['summary'])
+            self.assertTrue(qa['can_deliver'])
+            self.assertFalse(qa['retryable'])
+
+    def test_occurrence_warning_reuses_checkpoint_without_another_model_request(self):
+        import asyncio
+        from unittest.mock import patch
+        import test_d29_translation_performance as fixture
+        fixture.PerformanceTests.setUp(self)
+        source = 'Mara Rowan arrived. Mara Rowan left.'
+        target = '玛拉·罗恩来了。马拉·罗温（Mara Rowan）离开了。'
+        manifest = fixture.manifest_for(source)
+        glossary = {'Mara Rowan': '玛拉·罗恩'}
+        self.job.glossary = glossary
+        calls = []
+
+        async def request(translator, payload):
+            calls.append(payload)
+            return fixture.reply({item['id']: target for item in payload})
+
+        def run():
+            return asyncio.run(fixture._translate_manifest_async(
+                job=self.job, manifest=manifest, glossary=glossary,
+                content_by_file={'c0.xhtml': ('<html><body><p>' + source + '</p></body></html>').encode()},
+                progress_callback=lambda _: None))
+
+        with patch.object(fixture.SemanticsTranslator, '_call_llm_json_batch', new=request):
+            first, _ = run()
+            second, _ = run()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first['failed_chunks'], 0)
+        self.assertEqual(first['audit_flags_count']['glossary_occurrence_unresolved'], 1)
+        self.assertEqual(second['checkpoint_resumed_chunks'], 1)
+        self.assertEqual(second['checkpoint_rejected_chunks'], 0)
+        self.assertEqual(second['glossary_fixed_count'], 0)
+
     def test_name_particles_are_not_split_and_prose_is_not_joined(self):
         names = ['Nora van de Veen', 'Luca della Torre', 'Émile de La Roche', 'Anna von Berg']
         for name in names:

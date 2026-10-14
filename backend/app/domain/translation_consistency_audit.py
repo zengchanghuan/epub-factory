@@ -84,6 +84,8 @@ def audit_book_consistency(
                 if finding["category"] == "matched":
                     usage["matched"] += 1
                     continue
+                if finding.get("target_occurrences", 0):
+                    usage["matched"] += 1
                 usage["different"] += 1
                 categories[finding["category"]] += 1
                 term_counts[source_term] += 1

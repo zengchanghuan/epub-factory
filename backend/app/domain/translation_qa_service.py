@@ -38,7 +38,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20261014-terminology-provenance-v16"
+QA_RULES_VERSION = "20261014-terminology-occurrences-v17"
 
 
 def max_free_retries() -> int:
@@ -409,7 +409,8 @@ def build_translation_qa_report(
         if categories:
             labels = {"glossary_terms_missing": "处术语映射未体现",
                       "glossary_candidate_difference": "处自动候选译名差异",
-                      "glossary_mapping_ambiguous": "处术语映射证据不足"}
+                      "glossary_mapping_ambiguous": "处术语映射证据不足",
+                      "glossary_occurrence_unresolved": "处术语出现位置待核对"}
             message = "、".join(f"{int(categories[key])} {label}" for key, label in labels.items()
                                 if categories.get(key)) + "，建议复核"
         else:
