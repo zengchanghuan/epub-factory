@@ -1,0 +1,188 @@
+{
+  "archived_on": "2026-10-14",
+  "release_date": "2026-10-14",
+  "release": "d219fb4ae934c3cdcc63e8272212a60584c4fde3",
+  "site": "https://fixepub.com",
+  "scope": "Archival of saved CI, deployment and verification evidence. This documentation change performs no deployment or production test.",
+  "verified_at": "2026-10-14T05:37:55.209155+00:00",
+  "ci": {
+    "conclusion": "success",
+    "createdAt": "2026-10-14T03:57:10Z",
+    "headSha": "d219fb4ae934c3cdcc63e8272212a60584c4fde3",
+    "jobs": [
+      {
+        "name": "frontend",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-10-14T03:57:13Z",
+        "completedAt": "2026-10-14T03:58:27Z",
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38508893066/job/115672598913"
+      },
+      {
+        "name": "regression",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-10-14T03:57:13Z",
+        "completedAt": "2026-10-14T04:06:06Z",
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38508893066/job/115672599092"
+      }
+    ],
+    "status": "completed",
+    "updatedAt": "2026-10-14T04:06:07Z",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38508893066"
+  },
+  "related_pages_run": {
+    "conclusion": "success",
+    "headSha": "d219fb4ae934c3cdcc63e8272212a60584c4fde3",
+    "name": "pages build and deployment",
+    "status": "completed",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38508892201"
+  },
+  "deployment": {
+    "source": "isolated checkout at the exact release commit",
+    "package_files": 581,
+    "package_bytes": 2177189,
+    "preflight": {
+      "nginx_config": "passed",
+      "worker_roles": "passed",
+      "active_books": 0,
+      "persisted_active_repairs": 0
+    },
+    "backup_created_at": "2026-10-14T05:35:35Z",
+    "backup_presence_verified": [
+      "previous-code.zip",
+      "production.env",
+      "jobs.sqlite3",
+      "translation-cache.sqlite3",
+      "pip-freeze.txt"
+    ],
+    "manifest_sha256": "734e12465e2e62a5bbaef45d9e64b4ca14a60d408b7edcd0938d74c1de1b98a1",
+    "matched_files": 581,
+    "mismatched_files": 0,
+    "deploy_exit_code": 0,
+    "local_health_status": "ok",
+    "public_health": {
+      "url": "https://fixepub.com/api/healthz",
+      "status": "ok"
+    },
+    "environment_values_unchanged": true,
+    "dependency_versions_unchanged": true,
+    "services": {
+      "epub-factory": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-14T05:35:43Z",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-beat": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-14T05:35:43Z",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-housekeeping": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-14T05:35:43Z",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-worker": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-14T05:35:43Z",
+        "error_log_entries_since_deploy": 0
+      }
+    }
+  },
+  "production_code_verification": {
+    "rules_version": "20261014-terminology-occurrences-v17",
+    "regression_tests_passed": 44,
+    "live_source_modules_verified": 8,
+    "prompt_selection_probe": "passed",
+    "isolation": {
+      "blocked_network_calls": 0,
+      "blocked_production_writes": 0
+    },
+    "paid_model_calls": 0,
+    "submitted_jobs": 0
+  },
+  "data_preservation": {
+    "method": "Read-only SQLite row/table digests and repair metadata digests; raw data, primary keys and digests are excluded.",
+    "after_active_books": 0,
+    "unchanged": {
+      "translation_cache": true,
+      "jobs_database": true,
+      "repair_orders": true
+    },
+    "selected_job_tables": [
+      "epub_jobs",
+      "job_chapters",
+      "job_chunks",
+      "job_stages",
+      "job_dispatch_outbox",
+      "job_executions",
+      "llm_usage_attempts",
+      "llm_usage_requests",
+      "order_funnel_events",
+      "payment_email_outbox"
+    ],
+    "selected_cache_tables": [
+      "book_translation_checkpoints",
+      "translations"
+    ]
+  },
+  "historical_artifact_preservation": {
+    "case": "CASE-D",
+    "checked_at": "2026-10-14T05:36:58.275359+00:00",
+    "production_artifact_matches_accepted_p2_revision": true,
+    "reviewed_P3_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "all_source_and_translation_pairs_match_live_artifact": true,
+    "source_and_published_artifact_unchanged": true,
+    "production_order_unchanged": true,
+    "original_backups_intact": true,
+    "historical_model_requests": 804,
+    "new_model_requests": 0,
+    "production_writes": 0
+  },
+  "predeployment_validation": {
+    "evidence": "2026-10-14-terminology-occurrences-p3-review.json",
+    "related_backend_scripts_passed": 13,
+    "regression_catalog_tests_passed": 20,
+    "d89_tests_passed": 44,
+    "d89_new_tests": 9,
+    "local_tests_passed": 184,
+    "optional_real_book_tests_skipped": 2,
+    "readonly_p3_replay": {
+      "reviewed_paragraphs": 16,
+      "related_context_paragraphs": 21,
+      "changed_reviewed_items": 0,
+      "candidate_differences": 13,
+      "ambiguous_mapping": 1,
+      "time_precision_warnings": 2,
+      "new_context_occurrence_signals": 1,
+      "manual_targeted_fix_recommendations": 4,
+      "manual_retain_recommendations": 12,
+      "content_changes": 0
+    }
+  },
+  "verification_limits": [
+    "Production-host regression uses isolated synthetic fixtures and mocked model/EPUBCheck responses; no paid translation or historical artifact rewrite was performed.",
+    "Runtime data comparison covers the selected local order, accounting, cache and checkpoint tables during this deployment window; it is not an external payment-provider statement audit.",
+    "The historical rule replay was local and offline before deployment; postdeployment production checking verified unchanged source/translation pairs, not a new historical translation or EPUBCheck.",
+    "Occurrence gaps are non-blocking review evidence, not proof of omission. Unknown transliterations are not inferred; explicit dotted CJK parenthetical names have bounded coverage."
+  ],
+  "redaction": {
+    "excluded": [
+      "customer identities, order identifiers, book titles and source filenames",
+      "source text, artifacts and content digests",
+      "database rows, primary keys and runtime digests",
+      "credentials, configuration values and signed download URLs",
+      "private paths, process IDs and full operational logs"
+    ]
+  }
+}
