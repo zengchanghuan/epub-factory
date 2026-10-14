@@ -38,7 +38,7 @@ _NON_BODY_HEADINGS = {
     "illustration credits",
 }
 
-QA_RULES_VERSION = "20261014-terminology-occurrences-v17"
+QA_RULES_VERSION = "20261014-terminology-mentions-v18"
 
 
 def max_free_retries() -> int:

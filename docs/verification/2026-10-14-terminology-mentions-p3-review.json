@@ -1,0 +1,58 @@
+{
+  "verified_on": "2026-10-14",
+  "baseline_commit": "8f573a39c020e2e9e55a80317c5d0e7ba12e638d",
+  "rules_version": "20261014-terminology-mentions-v18",
+  "scope": "General code fixes and offline replay of previously verified historical materials. No production access, deployment or historical text changes.",
+  "validation": {
+    "d89_tests_passed": 53,
+    "d89_new_tests": 9,
+    "related_backend_scripts_passed": 13,
+    "backend_tests_passed": 173,
+    "regression_catalog_tests_passed": 20,
+    "local_tests_passed": 193,
+    "optional_real_book_tests_skipped": 2,
+    "skip_reason": "D29 real source/translated book fixtures were not supplied.",
+    "regression_coverage": [
+      "Automatic surname mappings cannot suppress known entity ambiguity; case variants are included and findings are not double-counted.",
+      "Resolution requires unique confirmed metadata matching the current translation and a known, unambiguous entity.",
+      "Longest complete names are not shadowed by ambiguous surnames.",
+      "Adjacent pure same-name or confirmed-alias annotations count as one mention; independent prose still counts separately.",
+      "Source annotations use the same grouping; original span evidence is preserved.",
+      "Target ownership is checked before grouping so another entity cannot claim an annotation span.",
+      "A synthetic translation with the new warning reuses its checkpoint without a second model transport call."
+    ],
+    "isolation": "Backend tests use network guards, disabled real dotenv loading and temporary databases/caches. Historical replay additionally prohibits database connections, subprocesses and file writes."
+  },
+  "private_replay": {
+    "catalog_mappings": 82,
+    "reviewed_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "flags_before_and_after": {
+      "glossary_candidate_difference": 13,
+      "glossary_mapping_ambiguous": 1,
+      "numbers_missing": 2
+    },
+    "changed_reviewed_items": 0,
+    "context_categories_before_and_after": {
+      "glossary_candidate_difference": 13,
+      "glossary_mapping_ambiguous": 6,
+      "glossary_occurrence_unresolved": 1
+    },
+    "manual_recommendations": {
+      "targeted_content_fixes": 4,
+      "retain": 12
+    },
+    "input_files_hash_verified_unchanged": 5,
+    "historical_inputs_written": false,
+    "production_accessed": false,
+    "model_requests": 0,
+    "payment_operations": 0
+  },
+  "limitations": [
+    "Only complete adjacent same-entity name/alias annotations are grouped; complex prose and unknown aliases are not guessed.",
+    "Confirmed entity resolution uses the existing normalized full source-name identity from character profiles; arbitrary unknown IDs do not clear ambiguity.",
+    "These are non-blocking review signals, not proof of omission or a reason to retry translation.",
+    "Confirmed alias metadata propagation through the runner and temporal precision classification remain separate follow-up work.",
+    "This record does not claim production deployment or paid end-to-end acceptance. CI is checked after pushing the containing commit."
+  ]
+}

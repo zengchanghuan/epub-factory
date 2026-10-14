@@ -9,6 +9,23 @@ from app.domain.translation_terms import visible_term_text, term_spans, relevant
 from app.domain.translation_terminology_policy import terminology_evidence, term_key
 
 
+def _confirmed_alias_entity(alias, candidates, canonical, catalog):
+    """A spelling contract alone does not disambiguate a shared surname."""
+    mappings = [(source, target) for source, target in canonical.items()
+                if term_key(source) == term_key(alias)]
+    rows = [row for row in catalog if isinstance(row, dict)
+            and isinstance(row.get("source"), str) and term_key(row["source"]) == term_key(alias)]
+    if len(mappings) != 1 or len(rows) != 1:
+        return False
+    row = rows[0]
+    if (row.get("status") != "confirmed" or row.get("translation") != mappings[0][1]
+            or not row.get("entity_id")):
+        return False
+    identities = {(candidate["entity_id"], candidate["translation"]) for candidate in candidates
+                  if candidate["entity_id"] == row["entity_id"]}
+    return len(identities) == 1
+
+
 def audit_book_consistency(
     *,
     chapter_results: dict[str, list[Any]],
@@ -49,19 +66,26 @@ def audit_book_consistency(
     # may fill gaps, but must never silently override a confirmed translation.
     canonical = dict(glossary or {})
     ambiguous_aliases = []
+    unresolved_keys = set()
     for candidates in character_terms.values():
         row = candidates[0]
         source = row["source"]
         # Two people sharing a surname is not evidence that they are one entity.
         if len({(r["entity_id"], r["translation"]) for r in candidates}) > 1:
             ambiguous_aliases.append(source)
+            if not _confirmed_alias_entity(source, candidates, canonical, catalog):
+                unresolved_keys.add(term_key(source))
             continue
         if not any(isinstance(term, str) and term_spans(term, source) == [(0, len(source))]
                    for term in canonical):
             canonical[source] = row["translation"]
             catalog.append(row)
-    unresolved = {alias: alias for alias in ambiguous_aliases if not any(
-        term_key(alias) == term_key(term) for term in canonical)}
+    # Preserve canonical spellings and longest-phrase selection. Replace the
+    # finding for an ambiguous key instead of counting a second violation.
+    unresolved = {term: term for term in canonical if term_key(term) in unresolved_keys}
+    for alias in ambiguous_aliases:
+        if term_key(alias) in unresolved_keys and not any(term_key(term) == term_key(alias) for term in unresolved):
+            unresolved[alias] = alias
     for chapter_id, results in chapter_results.items():
         for index, result in enumerate(results):
             source = visible_term_text(getattr(result, "original_html", ""))
@@ -69,6 +93,7 @@ def audit_book_consistency(
             if not source or not translated or getattr(result, "error", None):
                 continue
             findings = terminology_evidence(source, translated, canonical, catalog)
+            findings = [finding for finding in findings if term_key(finding["source_term"]) not in unresolved_keys]
             for alias in relevant_terms({**canonical, **unresolved}, source) if unresolved else ():
                 if alias in unresolved:
                     findings.append({"source_term": alias, "expected_translation": "",

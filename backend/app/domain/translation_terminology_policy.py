@@ -22,6 +22,29 @@ def _non_overlapping(spans):
     return sorted(selected)
 
 
+def _mention_groups(text, spans):
+    """Coalesce only a complete adjacent name/alias annotation, not prose.
+
+    Keep the original spans as evidence. Ownership across different entities
+    must be decided before grouping; an annotation cannot free a shared span.
+    """
+    units = [(a, b, [(a, b)]) for a, b in spans]
+    for start, end in sorted(parenthetical_spans(text), key=lambda span: span[1] - span[0]):
+        inside = [unit for unit in units if start < unit[0] and unit[1] < end]
+        if len(inside) != 1:
+            continue
+        right = inside[0]
+        if text[start + 1:right[0]].strip() or text[right[1]:end - 1].strip():
+            continue
+        left = next((unit for unit in units if unit[1] <= start
+                     and not text[unit[1]:start].strip()), None)
+        if left is not None:
+            units.remove(left)
+            units.remove(right)
+            units.append((left[0], end, left[2] + right[2]))
+    return [group for _, _, group in sorted(units)]
+
+
 def _parenthetical_variants(text, accepted):
     # Only an explicit dotted CJK name immediately beside a parenthesized
     # dotted name is evidence. Never infer a translation from a fuzzy spelling.
@@ -95,20 +118,22 @@ def terminology_evidence(source: str, target: str, glossary: dict[str, str],
     for group in entities.values():
         group["source"] = _non_overlapping(group["source"])
         group["target"] = _non_overlapping(group["target"])
+        group["source_mentions"] = _mention_groups(source, group["source"])
     for identity, group in entities.items():
         # A full target name owns its interior surname. The surname may still
         # match independently elsewhere; equal or crossing spans stay unowned.
         group["exclusive_target"] = [(a, b) for a, b in group["target"] if not any(
             a < d and b > c and not (a <= c and d <= b and (a, b) != (c, d))
             for other, spans in entities.items() if other != identity for c, d in spans["target"])]
+        group["exclusive_mentions"] = _mention_groups(target, group["exclusive_target"])
     for row in evidence:
         identity = row["entity_id"]
         group = entities[identity]
         reasons = row["review_reasons"]
         if (len(group["exclusive_target"]) < len(group["target"])
-                and len(group["exclusive_target"]) < len(group["source"])):
+                and len(group["exclusive_mentions"]) < len(group["source_mentions"])):
             reasons.append("shared_target_span")
-        if group["exclusive_target"] and len(group["exclusive_target"]) < len(group["source"]):
+        if group["exclusive_mentions"] and len(group["exclusive_mentions"]) < len(group["source_mentions"]):
             # Pronouns and ellipsis can be legitimate. This is a review signal,
             # never a missing-content verdict or an instruction to rewrite.
             reasons.append("source_occurrence_gap")
@@ -116,7 +141,9 @@ def terminology_evidence(source: str, target: str, glossary: dict[str, str],
             reasons.append("parenthetical_name_variants")
         if reasons:
             row["category"] = "glossary_occurrence_unresolved"
-        row["source_occurrences"] = len(group["source"])
-        row["target_occurrences"] = len(group["exclusive_target"])
+        row["source_occurrences"] = len(group["source_mentions"])
+        row["target_occurrences"] = len(group["exclusive_mentions"])
+        row["source_mention_groups"] = group["source_mentions"]
+        row["target_mention_groups"] = group["exclusive_mentions"]
         row["unambiguous_target_spans"] = group["exclusive_target"]
     return evidence

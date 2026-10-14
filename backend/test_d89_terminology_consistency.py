@@ -22,6 +22,99 @@ def chunk(source, target, identifier='sample'):
 
 
 class TerminologyContracts(unittest.TestCase):
+    def test_automatic_surname_mapping_cannot_clear_entity_ambiguity(self):
+        characters = [dict(source_name=name, translated_name=translated, aliases=['Rowan'])
+                      for name, translated in [('Mara Rowan', '玛拉·罗恩'), ('Lena Rowan', '莉娜·罗恩')]]
+        for source in ['Rowan', 'rowan']:
+            for target in ['罗恩来了。', '罗温来了。']:
+                with self.subTest(source=source, target=target):
+                    report = audit_book_consistency(chapter_results={'one': [chunk('Rowan arrived.', target)]},
+                        glossary={source: '罗恩'}, characters=characters, glossary_catalog=[
+                            dict(source=source, translation='罗恩', origin='auto', status='generated')])
+                    self.assertEqual(report['consistency_status'], 'review')
+                    self.assertEqual(report['consistency_categories'], {'glossary_mapping_ambiguous': 1})
+                    self.assertEqual(report['consistency_checks'], 1)
+                    self.assertEqual(report['consistency_mixed_entity_count'], 0)
+                    self.assertFalse(report['delivery_gate'])
+
+    def test_surname_resolution_requires_unique_confirmed_entity_evidence(self):
+        characters = [dict(source_name=name, translated_name=translated, aliases=['Rowan'])
+                      for name, translated in [('Mara Rowan', '玛拉·罗恩'), ('Lena Rowan', '莉娜·罗恩')]]
+        confirmed = dict(source='Rowan', translation='罗恩', origin='user', status='confirmed',
+                         entity_id='mara rowan')
+        for catalog, resolved in [([confirmed], True),
+                ([dict(confirmed, status='generated')], False),
+                ([dict(confirmed, entity_id='')], False),
+                ([dict(confirmed, entity_id='unrelated-person')], False),
+                ([dict(confirmed, translation='旧译名')], False),
+                ([confirmed, dict(confirmed, entity_id='lena rowan')], False)]:
+            with self.subTest(catalog=catalog):
+                report = audit_book_consistency(chapter_results={'one': [chunk('Rowan arrived.', '罗恩来了。')]},
+                    glossary={'Rowan': '罗恩'}, characters=characters, glossary_catalog=catalog)
+                self.assertEqual(report['consistency_status'], 'passed' if resolved else 'review')
+                self.assertEqual(report['consistency_checks'], 1)
+
+    def test_ambiguous_surname_does_not_shadow_an_explicit_full_name(self):
+        characters = [dict(source_name=name, translated_name=translated, aliases=['Rowan'])
+                      for name, translated in [('Mara Rowan', '玛拉·罗恩'), ('Lena Rowan', '莉娜·罗恩')]]
+        report = audit_book_consistency(chapter_results={'one': [chunk('Mara Rowan arrived.', '玛拉·罗恩来了。')]},
+            glossary={'Rowan': '罗恩', 'Mara Rowan': '玛拉·罗恩'}, characters=characters)
+        self.assertEqual(report['consistency_status'], 'passed')
+        self.assertEqual(report['consistency_checks'], 1)
+
+    def test_parenthetical_alias_annotations_count_as_one_mention(self):
+        glossary = {'Mara Rowan': '玛拉·罗恩'}
+        catalog = [dict(source='Mara Rowan', translation='玛拉·罗恩', origin='user', status='confirmed',
+                        target_aliases=[dict(translation='罗恩', status='confirmed')])]
+        for annotation in ['（玛拉·罗恩）', '（罗恩）', '( 罗恩 )', '（罗恩（罗恩））',
+                           '（<i>罗恩</i>）', '（&#32599;恩）']:
+            with self.subTest(annotation=annotation):
+                target = '<p>玛拉·罗恩' + annotation + '来了。马拉·罗温离开了。</p>'
+                audit = audit_translation_chunk(original_html='<p>Mara Rowan arrived. Mara Rowan left.</p>',
+                    translated_html=target, glossary=glossary, glossary_catalog=catalog)
+                self.assertIn('glossary_occurrence_unresolved', audit.flags)
+                finding = audit.terminology_findings[0]
+                self.assertEqual((finding['source_occurrences'], finding['target_occurrences']), (2, 1))
+                self.assertIn('source_occurrence_gap', finding['review_reasons'])
+                self.assertEqual(verify_and_fix('Mara Rowan arrived. Mara Rowan left.', target,
+                    glossary, glossary_catalog=catalog)[0], target)
+
+    def test_parenthetical_independent_prose_still_counts(self):
+        glossary = {'Mara Rowan': '玛拉·罗恩'}
+        catalog = [dict(source='Mara Rowan', translation='玛拉·罗恩', origin='user', status='confirmed',
+                        target_aliases=[dict(translation='罗恩', status='confirmed')])]
+        for target in ['玛拉·罗恩（罗恩随后离开）来了。', '玛拉·罗恩来了（后来罗恩离开了）。',
+                       '玛拉·罗恩（罗恩）来了。罗恩离开了。']:
+            with self.subTest(target=target):
+                self.assertFalse(audit_translation_chunk(original_html='Mara Rowan arrived. Mara Rowan left.',
+                    translated_html=target, glossary=glossary, glossary_catalog=catalog).terminology_findings)
+
+    def test_source_annotations_are_not_extra_mentions_either(self):
+        self.assertFalse(audit_translation_chunk(original_html='Mara Rowan (Mara Rowan) arrived.',
+            translated_html='玛拉·罗恩来了。', glossary={'Mara Rowan': '玛拉·罗恩'}).terminology_findings)
+
+    def test_explicit_entity_alias_annotations_preserve_raw_evidence(self):
+        from app.domain.translation_terminology_policy import terminology_evidence
+        glossary = {'Mara Rowan': '玛拉·罗恩', 'Rowan': '罗恩'}
+        catalog = [dict(source=s, translation=t, entity_id='person-one', origin='user', status='confirmed')
+                   for s, t in glossary.items()]
+        evidence = terminology_evidence('Mara Rowan (Rowan) arrived. Rowan left.',
+            '玛拉·罗恩（罗恩）来了。罗恩离开了。', glossary, catalog)
+        self.assertTrue(all(r['category'] == 'matched' for r in evidence))
+        self.assertTrue(all((r['source_occurrences'], r['target_occurrences']) == (2, 2) for r in evidence))
+        self.assertEqual(len(evidence[0]['unambiguous_target_spans']), 3)
+        self.assertEqual([len(g) for g in evidence[0]['target_mention_groups']], [2, 1])
+
+    def test_annotation_alias_cannot_be_reassigned_to_another_entity(self):
+        glossary = {'Mara Rowan': '玛拉·罗恩', 'Lena Rowan': '罗恩'}
+        catalog = [dict(source='Mara Rowan', translation='玛拉·罗恩', origin='user', status='confirmed',
+                        target_aliases=[dict(translation='罗恩', status='confirmed')])]
+        audit = audit_translation_chunk(original_html='Mara Rowan and Lena Rowan arrived.',
+            translated_html='玛拉·罗恩（罗恩）来了。', glossary=glossary, glossary_catalog=catalog)
+        lena = next(r for r in audit.terminology_findings if r['source_term'] == 'Lena Rowan')
+        self.assertIn('shared_target_span', lena['review_reasons'])
+        self.assertEqual(lena['target_occurrences'], 0)
+
     def test_parenthetical_original_names_are_never_rewritten(self):
         row = dict(source='Mara Rowan', translation='玛拉·罗恩', origin='auto', status='generated')
         for origin, status in [('auto', 'generated'), ('user', 'confirmed')]:
@@ -126,12 +219,17 @@ class TerminologyContracts(unittest.TestCase):
             self.assertFalse(qa['retryable'])
 
     def test_occurrence_warning_reuses_checkpoint_without_another_model_request(self):
+        self._assert_occurrence_checkpoint_reuse('玛拉·罗恩来了。马拉·罗温（Mara Rowan）离开了。')
+
+    def test_annotation_count_warning_reuses_checkpoint_without_another_model_request(self):
+        self._assert_occurrence_checkpoint_reuse('玛拉·罗恩（玛拉·罗恩）来了。马拉·罗温离开了。')
+
+    def _assert_occurrence_checkpoint_reuse(self, target):
         import asyncio
         from unittest.mock import patch
         import test_d29_translation_performance as fixture
         fixture.PerformanceTests.setUp(self)
         source = 'Mara Rowan arrived. Mara Rowan left.'
-        target = '玛拉·罗恩来了。马拉·罗温（Mara Rowan）离开了。'
         manifest = fixture.manifest_for(source)
         glossary = {'Mara Rowan': '玛拉·罗恩'}
         self.job.glossary = glossary
