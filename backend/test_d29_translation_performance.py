@@ -92,6 +92,41 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(TranslationCheckpoints('b', 'scope', self.db).chunks(), {})
         self.assertIsNone(TranslationCheckpoints('a', 'other', self.db).get('chunk:x'))
 
+    def test_alias_review_reaudits_saved_chunk_without_new_model_calls(self):
+        from app.domain.fast_translation_runner import _build_glossary_catalog
+        from app.domain.translation_quality_audit import audit_translation_chunk
+        glossary = {'Alpha': '阿尔法'}
+        preflight = {'confirmed': True, 'version': 2, 'glossary': glossary}
+        self.job.glossary = glossary
+        self.job.translation_stats['translation_preflight'] = preflight
+        manifest = manifest_for(ALPHA)
+        content = {'c0.xhtml': ('<html><body><p>' + ALPHA + '</p></body></html>').encode()}
+        def run(review=None):
+            catalog = _build_glossary_catalog(glossary_result=SimpleNamespace(candidates=[], user_glossary=glossary),
+                merged_glossary=glossary, character_glossary={}, terminology_review=review)
+            return asyncio.run(_translate_manifest_async(job=self.job, manifest=manifest, glossary=glossary,
+                glossary_catalog=catalog, content_by_file=content, progress_callback=lambda _: None))
+        async def draft(*args, **kwargs):
+            return reply({0: '阿尔发提出这种方法。'})
+        with patch.object(SemanticsTranslator, '_call_llm_json_batch', new=draft):
+            first, _ = run()
+        self.assertEqual(first['failed_chunks'], 0)
+        key = book_resume_key(self.job, manifest)
+        review = [dict(source='Alpha', translation='阿尔法', status='confirmed',
+                       target_aliases=[dict(translation='阿尔发', status='confirmed')])]
+        self.job.translation_stats['translation_preflight']['terminology_review'] = review
+        self.assertEqual(book_resume_key(self.job, manifest), key)
+        forbidden = AsyncMock(side_effect=AssertionError('saved chunk must not be retranslated'))
+        with patch.object(SemanticsTranslator, '_call_llm_json_batch', new=forbidden), \
+             patch('app.domain.fast_translation_runner.audit_translation_chunk', wraps=audit_translation_chunk) as audit:
+            second, _ = run(review)
+        self.assertEqual(second['checkpoint_resumed_chunks'], 1)
+        self.assertEqual(second['failed_chunks'], 0)
+        forbidden.assert_not_called()
+        self.assertTrue(audit.called)
+        self.assertTrue(all(call.kwargs['glossary_catalog'][0]['target_aliases'][0]['translation'] == '阿尔发'
+                            for call in audit.call_args_list))
+
     def test_resume_key_invalidates_source_and_user_settings_not_attempt(self):
         manifest = manifest_for(ALPHA)
         key = book_resume_key(self.job, manifest)

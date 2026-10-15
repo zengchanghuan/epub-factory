@@ -159,6 +159,15 @@ def test_confirmation_endpoint_starts_only_after_explicit_confirm():
     os.environ["SKIP_PAYMENT_CHECK"] = "1"
     try:
         with patch.object(main_module, "_enqueue_conversion") as enqueue:
+            invalid = TestClient(main_module.app).post(
+                f"/api/v2/jobs/{job_id}/confirm-profile",
+                headers={"X-Job-Token": token},
+                json={"terminology_review": [{"source": "Reflexivity", "translation": "旧译名",
+                      "status": "confirmed", "target_aliases": []}]},
+            )
+            assert invalid.status_code == 400
+            assert main_module.job_store.get(job_id).status == JobStatus.awaiting_confirmation
+            enqueue.assert_not_called()
             response = TestClient(main_module.app).post(
                 f"/api/v2/jobs/{job_id}/confirm-profile",
                 headers={"X-Job-Token": token},
@@ -168,11 +177,18 @@ def test_confirmation_endpoint_starts_only_after_explicit_confirm():
                     "characters": [],
                     "chapter_strategy_overrides": {},
                     "bilingual": False,
+                    "terminology_review": [{
+                        "source": "Reflexivity", "translation": "反身性", "status": "confirmed",
+                        "target_aliases": [{"translation": "反思性", "status": "confirmed"}],
+                    }],
                 },
             )
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "queued"
         assert response.json()["translation_preflight"]["confirmed"] is True
+        review = response.json()["translation_preflight"]["terminology_review"]
+        assert review[0]["target_aliases"][0]["entity_id"] == "reflexivity"
+        assert main_module.job_store.get(job_id).translation_stats["translation_preflight"]["terminology_review"] == review
         enqueue.assert_called_once()
         duplicate = TestClient(main_module.app).post(
             f"/api/v2/jobs/{job_id}/confirm-profile",

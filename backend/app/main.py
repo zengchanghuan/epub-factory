@@ -2114,6 +2114,9 @@ def _confirmed_translation_preflight(
             "origin": "user",
             "confidence": 1.0,
         })
+        if row.get("translation") != translated:
+            row.pop("entity_id", None)
+            row.pop("target_aliases", None)
         row.update({
             "source": source,
             "translation": translated,
@@ -2140,6 +2143,14 @@ def _confirmed_translation_preflight(
         "chapter_strategy_overrides": chapter_overrides,
         "enable_term_highlights": bool(payload.get("enable_term_highlights", False)),
     })
+    from .domain.translation_terminology_metadata import confirmed_terminology_review
+    try:
+        review = confirmed_terminology_review(existing, payload, glossary, characters)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    # An explicit empty list revokes evidence, including legacy catalog aliases.
+    # Keep it so workers cannot fall back to an older catalog after revocation.
+    confirmed["terminology_review"] = review
     return confirmed, strategy, bool(payload.get("bilingual", False)), glossary
 
 

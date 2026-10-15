@@ -41,6 +41,7 @@ from app.domain.translation_checkpoints import TranslationCheckpoints, book_resu
 from app.domain.translation_continuation import TranslationSliceExpired, slice_expired, cumulative_slice_usage
 from app.domain.manifest_service import build_manifest, chapter_requires_translation
 from app.domain.translation_quality_audit import audit_translation_chunk
+from app.domain.translation_terminology_metadata import apply_terminology_review, preflight_terminology_review
 from app.domain.translation_residual_policy import confirmed_preserved_terms
 from app.infra.llm_errors import ProviderAccountUnavailable
 from app.infra.async_requests import gather_cancel_on_error
@@ -159,6 +160,8 @@ def _build_glossary_catalog(
     glossary_result: Any,
     merged_glossary: dict[str, str],
     character_glossary: dict[str, str],
+    terminology_review: list[dict] | None = None,
+    characters: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
     """Persist an auditable whole-book terminology table without raw book dumps."""
     candidates = {
@@ -194,7 +197,7 @@ def _build_glossary_catalog(
             "origin": origin,
             "status": status,
         })
-    return rows
+    return apply_terminology_review(rows, terminology_review, characters)
 
 
 def _load_content_by_file(epub_path: str) -> dict[str, bytes]:
@@ -1505,6 +1508,8 @@ def run_fast_translation_job(
             glossary_result=glossary_result,
             merged_glossary=glossary,
             character_glossary=character_glossary,
+            terminology_review=preflight_terminology_review(confirmed_preflight or {}),
+            characters=book_profile.get("characters") or [],
         )
         timings.append(("Glossary", (time.monotonic() - t) * 1000))
         _log_stage("glossary", timings[-1][1], **glossary_result.stats)

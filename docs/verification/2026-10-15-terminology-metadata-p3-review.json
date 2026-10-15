@@ -1,0 +1,54 @@
+{
+  "verified_on": "2026-10-15",
+  "baseline_commit": "f5f8c583fe6209690103f83b21043122ef263e12",
+  "rules_version": "20261015-terminology-metadata-v19",
+  "scope": "General code changes and offline replay of saved historical materials. No production deployment or historical text changes.",
+  "validation": {
+    "d90_tests_passed": 12,
+    "new_checkpoint_reuse_test": true,
+    "confirmation_api_storage_roundtrip_verified": true,
+    "related_backend_scripts_passed": 13,
+    "backend_tests_passed": 201,
+    "regression_catalog_tests_passed": 20,
+    "local_tests_passed": 221,
+    "optional_real_book_tests_skipped": 2,
+    "skip_reason": "D29 real source/translated book fixtures were not supplied.",
+    "legacy_resume_keys_unchanged": true,
+    "qa_only_metadata_changes_preserve_resume_key": true,
+    "generation_setting_changes_still_invalidate_resume_key": true,
+    "synthetic_checkpoint_resumed_chunks": 1,
+    "synthetic_resume_new_model_transport_calls": 0,
+    "confirmed_alias_category_after_catalog_rebuild": "matched",
+    "revoked_legacy_aliases_stay_revoked": true,
+    "isolation": "Backend tests use a network guard, isolated temporary databases/caches and blocked real dotenv discovery. Historical replay additionally blocks database connections, subprocesses and file writes."
+  },
+  "private_replay": {
+    "catalog_mappings": 82,
+    "reviewed_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "flags_before_and_after": {
+      "glossary_candidate_difference": 13,
+      "glossary_mapping_ambiguous": 1,
+      "numbers_missing": 2
+    },
+    "changed_reviewed_items": 0,
+    "context_categories_before_and_after": {
+      "glossary_candidate_difference": 13,
+      "glossary_mapping_ambiguous": 6,
+      "glossary_occurrence_unresolved": 1
+    },
+    "manual_recommendations": {"targeted_content_fixes": 4, "retain": 12},
+    "input_files_hash_verified_unchanged": 5,
+    "historical_inputs_written": false,
+    "production_accessed": false,
+    "model_requests": 0,
+    "payment_operations": 0
+  },
+  "limitations": [
+    "Historical generated mappings are not automatically promoted to confirmed aliases.",
+    "Temporal precision classification is unchanged and remains separate follow-up work.",
+    "These are non-blocking review signals, not proof of complete semantic alignment.",
+    "No historical confirmation snapshots or paid checkpoints were migrated; no post-confirmation editing endpoint was added.",
+    "CI is checked after pushing the containing commit. This record does not claim production deployment."
+  ]
+}

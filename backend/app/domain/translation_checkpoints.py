@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.domain.translation_terminology_metadata import generation_preflight
+
 CHECKPOINT_VERSION = "book-resume-v1"
 
 
@@ -35,7 +37,8 @@ def book_resume_key(job, manifest: dict) -> str:
                          or os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL")
                          or os.environ.get("OPENAI_MODEL", "deepseek-flash"))
     settings["provider"] = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    settings["preflight"] = (getattr(job, "translation_stats", None) or {}).get("translation_preflight")
+    settings["preflight"] = generation_preflight(
+        (getattr(job, "translation_stats", None) or {}).get("translation_preflight"))
     # A fresh user attempt must not reuse an earlier attempt's checkpoint, but
     # a worker restart within that same fresh attempt can still resume safely.
     if getattr(job, "cache_policy", "reuse") == "fresh":
