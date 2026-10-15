@@ -11,6 +11,64 @@ from app.engine.packager import EpubPackager
 
 
 class NavigationPackagingTests(unittest.TestCase):
+    def test_empty_optional_navigation_is_repaired_during_real_packaging(self):
+        for kind in ('landmarks', 'page-list'):
+            with self.subTest(kind=kind):
+                book = self.make_book()
+                nav = next(item for item in book.get_items() if isinstance(item, epub.EpubNav))
+                root = etree.fromstring(nav.content.encode())
+                node = root.xpath(f'//*[local-name()="nav" and @epub:type="{kind}"]',
+                                  namespaces={'epub': 'http://www.idpf.org/2007/ops'})[0]
+                node.attrib.clear()
+                node.set('{http://www.idpf.org/2007/ops}type', kind)
+                node.set('hidden', 'hidden')
+                for child in list(node):
+                    node.remove(child)
+                etree.SubElement(node, '{http://www.w3.org/1999/xhtml}ol').text = ' \n '
+                nav.content = etree.tostring(root)
+                source = nav.content
+                output = self.package(book)
+                self.assertFalse(output.xpath(f'//*[local-name()="nav" and @epub:type="{kind}"]',
+                                              namespaces={'epub': 'http://www.idpf.org/2007/ops'}))
+                self.assertEqual(output.xpath('string(//*[@id="entry"])'), 'Translated chapter')
+                self.assertEqual(output.xpath('string(//*[@id="editor-note"])'), 'Editor note')
+                self.assertEqual(nav.content, source)
+
+    def test_empty_navigation_repair_preserves_meaningful_or_ambiguous_markup(self):
+        cases = [
+            '<nav epub:type="toc"><ol/></nav>',
+            '<nav epub:type="landmarks toc"><ol/></nav>',
+            '<nav epub:type="other"><ol/></nav>',
+            '<nav epub:type="landmarks" id="referenced"><ol/></nav>',
+            '<nav epub:type="landmarks"><ol id="referenced"/></nav>',
+            '<nav epub:type="landmarks"><h2>Landmarks</h2><ol/></nav>',
+            '<nav epub:type="landmarks">Editorial note<ol/></nav>',
+            '<nav epub:type="landmarks"><ol/>Editorial note</nav>',
+            '<nav epub:type="landmarks"><ol>Editorial note</ol></nav>',
+            '<nav epub:type="landmarks"><ol><li><a href="chapter.xhtml">Start</a></li></ol></nav>',
+            '<nav epub:type="landmarks"><ol><li/></ol></nav>',
+            '<nav epub:type="landmarks"><ol><!-- preserved --></ol></nav>',
+            '<nav epub:type="landmarks" aria-label="Start"><ol/></nav>',
+            '<nav epub:type="landmarks"><ol/><ol/></nav>',
+        ]
+        for markup in cases:
+            with self.subTest(markup=markup):
+                root = etree.fromstring(('<body xmlns="http://www.w3.org/1999/xhtml" '
+                    'xmlns:epub="http://www.idpf.org/2007/ops">' + markup + '</body>').encode())
+                before = etree.tostring(root)
+                self.assertEqual(EpubPackager._remove_empty_optional_navigation(root), 0)
+                self.assertEqual(etree.tostring(root), before)
+
+    def test_empty_navigation_removal_preserves_surrounding_text_and_is_idempotent(self):
+        for prefix in ('Before', '<p>Before</p>'):
+            with self.subTest(prefix=prefix):
+                root = etree.fromstring(('<body xmlns="http://www.w3.org/1999/xhtml" '
+                    'xmlns:epub="http://www.idpf.org/2007/ops">' + prefix +
+                    '<nav epub:type="landmarks"><ol/></nav>After</body>').encode())
+                self.assertEqual(EpubPackager._remove_empty_optional_navigation(root), 1)
+                self.assertEqual(''.join(root.itertext()), 'BeforeAfter')
+                self.assertEqual(EpubPackager._remove_empty_optional_navigation(root), 0)
+
     def test_translated_label_removes_only_empty_decorative_spans(self):
         book = self.make_book()
         nav = next(item for item in book.get_items() if isinstance(item, epub.EpubNav))

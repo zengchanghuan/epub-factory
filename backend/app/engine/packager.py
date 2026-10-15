@@ -406,6 +406,41 @@ class EpubPackager:
     def _navigation_types(node) -> set[str]:
         return set((node.get('{http://www.idpf.org/2007/ops}type') or '').split())
 
+    @staticmethod
+    def _remove_empty_optional_navigation(root) -> int:
+        """Drop only anonymous, content-free auxiliary navigation placeholders.
+
+        An empty ol is invalid EPUB navigation. Do not invent a destination,
+        discard an anchor/label, or hide an invalid required TOC to fix it.
+        Unknown attributes and richer malformed structures remain fail-closed.
+        """
+        xhtml = '{http://www.w3.org/1999/xhtml}'
+        type_attribute = '{http://www.idpf.org/2007/ops}type'
+        removed = 0
+        for nav in list(root.iter(xhtml + 'nav')):
+            if nav.get(type_attribute, '').strip() not in {'landmarks', 'page-list'}:
+                continue
+            if set(nav.attrib) - {type_attribute, 'hidden'} or (nav.text or '').strip():
+                continue
+            if len(nav) != 1:
+                continue
+            listing = nav[0]
+            if (listing.tag != xhtml + 'ol' or listing.attrib or len(listing)
+                    or (listing.text or '').strip() or (listing.tail or '').strip()):
+                continue
+            parent = nav.getparent()
+            if parent is None:
+                continue
+            # Tail text belongs to the surrounding document, not this nav.
+            previous = nav.getprevious()
+            if previous is None:
+                parent.text = (parent.text or '') + (nav.tail or '')
+            else:
+                previous.tail = (previous.tail or '') + (nav.tail or '')
+            parent.remove(nav)
+            removed += 1
+        return removed
+
     def _preserve_navigation_documents(self, temp_dir: Path) -> bool:
         """ebooklib regenerates NAV and otherwise discards its non-TOC content.
 
@@ -526,6 +561,9 @@ class EpubPackager:
                 if types and not types & existing_types:
                     body.append(safe_generated_copy(node))
                     existing_types.update(types)
+            removed = self._remove_empty_optional_navigation(original)
+            if removed:
+                print(f'🔧 [PackageFix] Removed {removed} empty optional navigation placeholder(s)')
             path.write_bytes(etree.tostring(original, encoding='utf-8', xml_declaration=True))
             changed = True
         return changed
