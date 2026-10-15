@@ -1,0 +1,188 @@
+{
+  "archived_on": "2026-10-15",
+  "release": "7ebfe35656be034b8c8d17cc1b19c36e42e0b63d",
+  "implementation_commit": "70c64038bc22b4a7553a769cc196aa5f418d73cd",
+  "scope": "Archive of saved CI, deployment and acceptance evidence for 7ebfe35. This documentation update does not redeploy, run conversions, change historical orders or contact payment/model providers.",
+  "ci": {
+    "conclusion": "success",
+    "createdAt": "2026-10-15T09:33:13Z",
+    "headSha": "7ebfe35656be034b8c8d17cc1b19c36e42e0b63d",
+    "status": "completed",
+    "updatedAt": "2026-10-15T09:43:35Z",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38713782506",
+    "jobs": [
+      {
+        "name": "frontend",
+        "conclusion": "success"
+      },
+      {
+        "name": "regression",
+        "conclusion": "success"
+      }
+    ],
+    "redis_versions_verified": [
+      "6.0.16",
+      "7.2.10"
+    ],
+    "private_originals_in_ci": false
+  },
+  "pages": {
+    "conclusion": "success",
+    "createdAt": "2026-10-15T09:33:13Z",
+    "headSha": "7ebfe35656be034b8c8d17cc1b19c36e42e0b63d",
+    "status": "completed",
+    "updatedAt": "2026-10-15T09:34:01Z",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38713783001"
+  },
+  "deployment": {
+    "source": "Clean main at the exact release commit",
+    "package_files": 593,
+    "package_bytes": 2225948,
+    "preflight": {
+      "active_jobs": 0,
+      "persisted_active_repairs": 0,
+      "nginx": "passed",
+      "worker_roles": "passed"
+    },
+    "backup_created_at": "2026-10-15T09:44:14Z",
+    "backup_files_present": {
+      "previous-code.zip": true,
+      "production.env": true,
+      "jobs.sqlite3": true,
+      "translation-cache.sqlite3": true,
+      "pip-freeze.txt": true,
+      "deploy-manifest.json": true
+    },
+    "manifest_sha256": "dc2b41c8df18031d987caf6cd3a3951cb876f0ca3d5565d91fc512eb2bae070f",
+    "exit_code": 0,
+    "public_health": {
+      "url": "https://fixepub.com/api/healthz",
+      "status": "ok"
+    },
+    "matched_release_files": 593,
+    "mismatches": 0,
+    "services": {
+      "epub-factory": {
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "epub-factory-worker": {
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "epub-factory-beat": {
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      },
+      "epub-factory-housekeeping": {
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "SubState": "running"
+      }
+    }
+  },
+  "acceptance": {
+    "postdeploy_d91": {
+      "tests": 12,
+      "passed": 12,
+      "skipped": 0,
+      "exit_code": 0,
+      "duration_seconds": 69.651,
+      "private_original_cases": 2,
+      "isolation": "Independent temporary databases and output files; read-only originals; simulated verified payment facts and broker transport; no model or live payment calls.",
+      "coverage": [
+        "required conversion failure",
+        "missing/empty selected vocabulary",
+        "safe fallback from original with preserved options",
+        "missing prose and textless documents",
+        "cancellation and timeout propagation",
+        "wrong payment amount rejection",
+        "broker outage and durable recovery",
+        "paid failure and same-order recovery",
+        "duplicate callback, task and upload",
+        "download integrity and access control",
+        "two-file paid batch and incomplete ZIP refusal"
+      ]
+    },
+    "configuration_matrix": {
+      "configurations": 7,
+      "all_epubcheck_passed": true,
+      "all_coverage_passed": true,
+      "source": "synthetic",
+      "modes": [
+        "simplified:auto",
+        "simplified:tw",
+        "simplified:hk",
+        "traditional:auto",
+        "traditional:tw",
+        "traditional:hk",
+        "keep:auto"
+      ]
+    },
+    "public_downloads": [
+      {
+        "case": "A",
+        "status": "completed",
+        "original_token_download": {
+          "status": 200,
+          "hash_match": true
+        },
+        "signed_download": {
+          "status": 200,
+          "hash_match": true
+        },
+        "negative_access": {
+          "no_credential": 403,
+          "wrong_token": 403,
+          "tampered_signature": 403
+        },
+        "order_unchanged": true
+      },
+      {
+        "case": "B",
+        "status": "completed",
+        "original_token_download": {
+          "status": 200,
+          "hash_match": true
+        },
+        "signed_download": {
+          "status": 200,
+          "hash_match": true
+        },
+        "negative_access": {
+          "no_credential": 403,
+          "wrong_token": 403,
+          "tampered_signature": 403
+        },
+        "order_unchanged": true
+      }
+    ],
+    "preservation": {
+      "orders_unchanged": true,
+      "completed_basic_files_unchanged": true,
+      "summary": {
+        "completed_basic": 21,
+        "zip_integrity_passed": 21,
+        "legacy_without_receipt": 18,
+        "receipt_matched": 3
+      }
+    },
+    "recorded_at_utc": {
+      "release_hashes": "2026-10-15T09:44:53.093464+00:00",
+      "isolated_tests": "2026-10-15T09:46:18.053745+00:00",
+      "public_downloads": "2026-10-15T09:45:26.113573+00:00",
+      "order_comparison": "2026-10-15T09:46:32.753793+00:00"
+    },
+    "timestamp_basis": "UTC modification times of the saved result files, not a new verification run."
+  },
+  "limitations": [
+    "Only two real failed EPUB originals were replayed in isolated orders; no replay of all historical orders.",
+    "18 legacy basic artifacts have no historical acceptance receipt; ZIP integrity checks are not receipt validation.",
+    "No new real payment or historical translation was performed.",
+    "No new real paid PDF/MOBI/AZW3 acceptance is claimed."
+  ],
+  "redaction": "No customer titles, order IDs, source/artifact hashes, tokens, signed URLs, private server addresses or absolute private paths are included."
+}
