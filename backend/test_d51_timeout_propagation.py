@@ -44,7 +44,7 @@ def test_safe_preprocessing_interrupt_propagates(compiler, monkeypatch, interrup
 def test_cleaner_interrupt_is_not_skipped_or_downgraded(compiler, monkeypatch, interruption):
     doc = SimpleNamespace(get_type=lambda: 9, get_name=lambda: "chapter.xhtml",
                           get_content=lambda: b"<html><body><p>Source text.</p></body></html>")
-    book = SimpleNamespace(get_items=lambda: [doc])
+    book = SimpleNamespace(get_items=lambda: [doc], get_items_of_type=lambda _type: [doc])
     monkeypatch.setattr(compiler_module, "EpubUnpacker",
                         lambda _path: SimpleNamespace(load_book=lambda: book, source_warnings=[]))
     cleaner = SimpleNamespace(process=Mock(side_effect=interruption("stop")))

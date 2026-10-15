@@ -16,6 +16,8 @@ import logging
 from typing import List, Optional
 
 from opencc import OpenCC
+from billiard.exceptions import SoftTimeLimitExceeded
+from app.cancellation import JobCancelled
 
 from app.utils.encoding import decode_with_fallback
 from app.utils.html_text import map_html_text, map_html_styles
@@ -78,8 +80,12 @@ class CjkNormalizer:
                     domains=domains,
                     enable_proper_noun=enable_proper_noun,
                 )
-            except Exception as e:
-                logger.warning("LexiconMatcher init failed, L2/L3 disabled: %s", e)
+            except (SoftTimeLimitExceeded, JobCancelled):
+                raise
+            except Exception as exc:
+                # Selected vocabulary is part of the requested conversion.
+                # A broken dependency/dictionary must not silently change it.
+                raise RuntimeError("所选繁简词典无法加载，已停止转换，请联系客服恢复；无需再次付款。") from exc
 
         # 累计命中报告（整本书所有 HTML item 的汇总）
         self._report: Optional[LexiconReport] = None

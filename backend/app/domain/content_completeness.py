@@ -15,6 +15,8 @@ import zipfile
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 import ebooklib
 from lxml import etree
+from billiard.exceptions import SoftTimeLimitExceeded
+from app.cancellation import JobCancelled
 
 from app.engine.chunk_extractor import is_source_placeholder_document
 from app.engine.unpacker import EpubUnpacker
@@ -82,6 +84,10 @@ def _documents(path, *, bilingual=False):
     book = EpubUnpacker(Path(path)).load_book()
     if book is None:
         raise ValueError("unreadable_epub")
+    return _book_documents(book, bilingual=bilingual)
+
+
+def _book_documents(book, *, bilingual=False):
     docs = {}
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
         name = item.get_name()
@@ -95,9 +101,9 @@ def _documents(path, *, bilingual=False):
     return docs
 
 
-def capture_content_baseline(source_path):
+def capture_content_baseline(source_path, *, book=None, allow_textless=False):
     """Fail closed before model calls if the source cannot be inventoried."""
-    documents = _documents(source_path)
+    documents = _book_documents(book) if book is not None else _documents(source_path)
     expected = {}
     skipped = 0
     for name, doc in documents.items():
@@ -107,6 +113,10 @@ def capture_content_baseline(source_path):
         units = {path: unit["id"] for path, unit in doc["units"].items() if unit["nonempty"]}
         if units:
             expected[name] = units
+    if not expected and allow_textless:
+        # Image-only publications are valid basic-conversion inputs. Still
+        # require their real documents to survive; placeholders do not count.
+        expected = {name: {} for name, doc in documents.items() if not doc["placeholder"]}
     if not expected:
         raise ValueError("no_source_text_units")
     return {"version": VERSION, "documents": expected, "source_placeholders_skipped": skipped}
@@ -177,8 +187,10 @@ def audit_content_completeness(baseline, output_path, *, bilingual=False, sample
                 elif not target["nonempty"]:
                     report["empty_units"] += 1
                     record(name, path, "empty_unit")
-        if report["missing_units"] or report["empty_units"]:
+        if report["missing_documents"] or report["missing_units"] or report["empty_units"]:
             report["status"] = "failed"
+    except (SoftTimeLimitExceeded, JobCancelled):
+        raise
     except Exception:
         # Do not publish parser exceptions, filesystem paths or manuscript text.
         report["status"] = "scan_error"

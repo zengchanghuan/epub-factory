@@ -178,6 +178,8 @@ class LexiconMatcher:
             version = data.get("version", "unknown")
             entries = data.get("entries", [])
             automaton = _build_automaton(entries)
+            if automaton is None:
+                raise RuntimeError("Selected vocabulary is unavailable: " + domain)
             if automaton is not None:
                 self._l2_automatons[domain] = (automaton, version)
                 logger.info("L2 loaded domain=%s version=%s entries=%d", domain, version, len(entries))
@@ -188,6 +190,8 @@ class LexiconMatcher:
             self._l3_version = data.get("version", "unknown")
             entries = data.get("entries", [])
             self._l3_automaton = _build_automaton(entries)
+            if self._l3_automaton is None:
+                raise RuntimeError("Selected proper-name vocabulary is unavailable")
             if self._l3_automaton:
                 logger.info("L3 loaded proper_noun version=%s entries=%d", self._l3_version, len(entries))
 

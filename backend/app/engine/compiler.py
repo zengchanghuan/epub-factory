@@ -24,6 +24,9 @@ class TranslationPipelineError(RuntimeError):
     """翻译链路失败，不应回退到 SafeMode 伪装成功。"""
 
 
+class ConversionPipelineError(RuntimeError):
+    """A required conversion step failed; packaging cannot make it deliverable."""
+
 
 @dataclass
 class StageTimer:
@@ -87,6 +90,8 @@ class ExtremeCompiler:
         self.error_code = None
         self.validation_passed = False  # 只有实际执行并通过 EPUBCheck 才可交付
         self._epubcheck_result: EpubValidationResult | None = None
+        self._content_baseline = None
+        self._content_audit = None
         self.source_warnings: list[str] = []
         
         # 依赖 models.QualityStats，我们先局部引入避免循环依赖
@@ -95,6 +100,8 @@ class ExtremeCompiler:
         self._ErrorCode = ErrorCode
 
         _lexicon_domains = lexicon_domains if lexicon_domains is not None else ["general", "tech", "movie"]
+        self.lexicon_domains = list(_lexicon_domains)
+        self.enable_proper_noun = enable_proper_noun
         self._cjk_normalizer = CjkNormalizer(
             output_mode=self.output_mode,
             traditional_variant=self.traditional_variant,
@@ -210,6 +217,8 @@ class ExtremeCompiler:
         print(f"🚀 [Start] Processing: {self.input_path}")
         self.validation_passed = False
         self._epubcheck_result = None
+        self._content_baseline = None
+        self._content_audit = None
         t0 = time.monotonic()
         try:
             result = self._run_full_pipeline()
@@ -217,6 +226,11 @@ class ExtremeCompiler:
             # Worker control flow is not a malformed book. Let the execution
             # boundary retain checkpoints / release ownership, never fallback.
             raise
+        except ConversionPipelineError as exc:
+            self.metrics.total_ms = (time.monotonic() - t0) * 1000
+            self.final_message = str(exc)
+            self.error_code = self._ErrorCode.CONVERT_FAILED
+            return False
         except TranslationPipelineError as exc:
             self.metrics.total_ms = (time.monotonic() - t0) * 1000
             self.final_message = str(exc)
@@ -274,6 +288,8 @@ class ExtremeCompiler:
                 msg = f"{msg}: {err!s}"
             raise RuntimeError(msg)
 
+        self._capture_conversion_baseline(self.book)
+
         if hasattr(self.book, 'direction'):
             self.book.direction = 'ltr'
         elif hasattr(self.book, 'spine'):
@@ -323,6 +339,8 @@ class ExtremeCompiler:
                 except (SoftTimeLimitExceeded, JobCancelled):
                     raise
                 except Exception as exc:
+                    if isinstance(cleaner, CjkNormalizer):
+                        raise ConversionPipelineError("繁简转换未完成，已停止交付，请联系客服恢复；无需再次付款。") from exc
                     self.progress_callback(
                         f"{cleaner.__class__.__name__} 处理 {file_name} 失败，已跳过：{str(exc)[:160]}"
                     )
@@ -412,25 +430,24 @@ class ExtremeCompiler:
     # ─── 安全模式（兜底）：仅做排版方向转换 ──────────────────────────────
 
     def _run_safe_mode(self) -> bool:
-        book = None
-        if getattr(self, "book", None) is not None:
-            book = self.book
-            self.metrics.record("SafeMode:ReuseBook", 0)
-        if book is None:
-            t = time.monotonic()
-            unpacker = getattr(self, "_unpacker", None) or EpubUnpacker(self.input_path)
-            book = unpacker.load_book()
-            self.source_warnings = list(getattr(unpacker, "source_warnings", []) or [])
-            self.metrics.record("SafeMode:Unpack", (time.monotonic() - t) * 1000)
-            if not book:
-                err = getattr(unpacker, "_last_error", None)
-                msg = "Failed to load EPUB in safe mode"
-                if err:
-                    msg = f"{msg}: {err!s}"
-                raise RuntimeError(msg)
+        # A failed pipeline may already have mutated or removed source prose.
+        # Restart from the original, preserving the purchased conversion options.
+        t = time.monotonic()
+        unpacker = EpubUnpacker(self.input_path)
+        book = unpacker.load_book()
+        self.source_warnings = list(getattr(unpacker, "source_warnings", []) or [])
+        self.metrics.record("SafeMode:Unpack", (time.monotonic() - t) * 1000)
+        if not book:
+            raise RuntimeError("Failed to load EPUB in safe mode")
+        self._capture_conversion_baseline(book)
+        book.direction = 'ltr'
 
         t = time.monotonic()
-        safe_cleaner = CjkNormalizer(output_mode=self.output_mode, traditional_variant=getattr(self, "traditional_variant", "auto"))
+        safe_cleaner = CjkNormalizer(output_mode=self.output_mode,
+                                    traditional_variant=self.traditional_variant,
+                                    lexicon_domains=self.lexicon_domains,
+                                    enable_proper_noun=self.enable_proper_noun)
+        self._cjk_normalizer = safe_cleaner
         for item in book.get_items():
             item_type = item.get_type()
             if item_type == 9 or item_type == 2:
@@ -443,6 +460,14 @@ class ExtremeCompiler:
                 if result_content is not None:
                     item.set_content(result_content)
         self.metrics.record("SafeMode:CjkNormalizer", (time.monotonic() - t) * 1000)
+
+        if not self.enable_translation:
+            from bs4 import BeautifulSoup
+            def normalize_title(title):
+                raw = safe_cleaner.process(f'<span>{escape(title)}</span>'.encode(), ebooklib.ITEM_DOCUMENT)
+                return BeautifulSoup(raw, 'html.parser').get_text()
+            book = TocRebuilder().rebuild(book, title_normalizer=normalize_title,
+                                          source_warnings=self.source_warnings)
 
         t = time.monotonic()
         packager = EpubPackager(book, self.output_path)
@@ -472,7 +497,19 @@ class ExtremeCompiler:
                     break
         if self.source_warnings:
             stats["source_warnings"] = list(self.source_warnings)
+        if self._content_audit is not None:
+            stats["content_completeness"] = self._content_audit
         return stats
+
+    def _capture_conversion_baseline(self, book):
+        if not self.enable_translation:
+            from app.domain.content_completeness import capture_content_baseline
+            try:
+                self._content_baseline = capture_content_baseline(self.input_path, book=book, allow_textless=True)
+            except (SoftTimeLimitExceeded, JobCancelled):
+                raise
+            except Exception as exc:
+                raise ConversionPipelineError("无法建立原稿正文完整性清单，已停止转换，请联系客服。") from exc
 
     def _validate_output(self) -> None:
         """All packaging paths, including safe fallback, share the delivery gate."""
@@ -482,6 +519,15 @@ class ExtremeCompiler:
         self.validation_passed = self._run_epubcheck()
         elapsed = (time.monotonic() - started) * 1000
         self.metrics.record("EpubCheck", elapsed, "ok" if self.validation_passed else "error")
+        if self.validation_passed and not self.enable_translation:
+            from app.domain.content_completeness import audit_content_completeness
+            self._content_audit = audit_content_completeness(self._content_baseline, self.output_path)
+            if self._content_audit['status'] != 'passed':
+                self.validation_passed = False
+                self.error_code = self._ErrorCode.CONVERT_FAILED
+                self.final_message = "成品正文完整性核验未通过，已停止交付，请联系客服恢复；无需再次付款。"
+                self.stage_callback("content_validation_failed", self.final_message)
+                return
         if self.validation_passed:
             self.stage_callback("validating", "校验通过", int(elapsed))
             return
