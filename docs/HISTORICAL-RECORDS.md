@@ -16,6 +16,7 @@
 - [2026-10-14 完整姓名与术语来源分级发布](PRODUCTION-RELEASE-2026-10-14-TERMINOLOGY-PROVENANCE.md)：`44c1485` 的 CI、生产部署、35 项生产代码隔离回归及历史数据保持核验。
 - [2026-10-14 括号原名与出现位置复核发布](PRODUCTION-RELEASE-2026-10-14-TERMINOLOGY-OCCURRENCES.md)：`d219fb4` 的 CI、生产部署、44 项生产代码隔离回归及历史数据保持核验。
 - [2026-10-15 同姓歧义与括号注释计数发布](PRODUCTION-RELEASE-2026-10-15-TERMINOLOGY-MENTIONS.md)：`a477782` 的 CI、生产部署、53 项生产代码隔离回归及历史数据保持核验。
+- [2026-10-15 确认别名与检查点兼容发布](PRODUCTION-RELEASE-2026-10-15-TERMINOLOGY-METADATA.md)：`ae1407d` 的 CI、生产部署、67 项生产代码隔离回归、旧恢复键兼容及历史数据保持核验。
 
 旧记录里的 PDF OCR／翻译公共入口、价格和开关不能套用于当前独立文字型 PDF → 原文 EPUB 产品。旧 `job_dispatches`、每 5 分钟对账和部分精校错误码已被新版实现替代。旧文档中的“未提交”“已部署”“待处理”均指记录当时；客户订单最终处置、备案申请状态未在本次归档重新查询。
 

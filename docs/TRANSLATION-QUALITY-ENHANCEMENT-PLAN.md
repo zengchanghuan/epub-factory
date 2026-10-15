@@ -81,7 +81,7 @@
 
 ### 2026-10-15：确认别名元数据贯通与检查点兼容
 
-规则版本 `20261015-terminology-metadata-v19`。本条记录代码修复与部署前离线验证，不表示已部署生产。
+规则版本 `20261015-terminology-metadata-v19`。以下条目记录代码修复与部署前离线验证；提交 `ae1407d` 已于 2026-10-15 通过 CI 并部署生产，67 项生产代码隔离回归、旧恢复键兼容、服务健康及历史数据保持核验通过，详见[发布验收记录](PRODUCTION-RELEASE-2026-10-15-TERMINOLOGY-METADATA.md)。
 
 - 确认接口支持独立的 `terminology_review` 数组，也支持 `glossary_catalog` 或人物编辑中的显式 `entity_id` / `target_aliases`。复核行须包含当前 `source`、`translation`、`status: confirmed`；别名须明确确认，实体采用规范化完整原名。未知实体、错误归属、重复来源、旧译名和超限输入在确认前拒绝，尚未开始支付或派发。
 - 已验证记录单独保存于 `translation_preflight.terminology_review`，不注入人物生成画像或提示。执行器在术语合并后再次校验，贯通残留术语核验、逐段质检、检查点复核和全书审计，最终术语目录保留实体与别名。旧目录中有效的确认元数据可只读兼容；显式空数组撤销全部别名，后续不得回退并重新启用旧目录记录。

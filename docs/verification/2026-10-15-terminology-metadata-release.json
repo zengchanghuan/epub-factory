@@ -1,0 +1,214 @@
+{
+  "archived_on": "2026-10-15",
+  "release_date": "2026-10-15",
+  "release": "ae1407ddb0a2271d80054c2bed52a5d1ea1ea8b9",
+  "site": "https://fixepub.com",
+  "scope": "Archive of saved release evidence. This documentation update does not redeploy, rerun production tests or modify historical orders.",
+  "ci": {
+    "headSha": "ae1407ddb0a2271d80054c2bed52a5d1ea1ea8b9",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38692318781",
+    "createdAt": "2026-10-15T06:25:30Z",
+    "updatedAt": "2026-10-15T06:35:51Z",
+    "jobs": [
+      {
+        "name": "frontend",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-10-15T06:25:33Z",
+        "completedAt": "2026-10-15T06:26:58Z",
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38692318781/job/116280839984"
+      },
+      {
+        "name": "regression",
+        "status": "completed",
+        "conclusion": "success",
+        "startedAt": "2026-10-15T06:25:34Z",
+        "completedAt": "2026-10-15T06:35:50Z",
+        "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38692318781/job/116280840362"
+      }
+    ]
+  },
+  "related_pages_run": {
+    "headSha": "ae1407ddb0a2271d80054c2bed52a5d1ea1ea8b9",
+    "name": "pages build and deployment",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/zengchanghuan/epub-factory/actions/runs/38692317845"
+  },
+  "deployment": {
+    "source": "isolated checkout at the exact release commit",
+    "package_files": 589,
+    "package_bytes": 2205188,
+    "preflight": {
+      "nginx_config": "passed",
+      "worker_roles": "passed",
+      "active_books": 0,
+      "persisted_active_repairs": 0
+    },
+    "backup_created_at": "2026-10-15T06:39:37Z",
+    "backup_presence_verified": [
+      "previous-code.zip",
+      "production.env",
+      "jobs.sqlite3",
+      "translation-cache.sqlite3",
+      "pip-freeze.txt"
+    ],
+    "manifest_sha256": "d8c6cf2009a68262995f9ba61fa078ab43d56d52a9135641eeea13bb68346483",
+    "matched_files": 589,
+    "mismatched_files": 0,
+    "deploy_exit_code": 0,
+    "local_health_status": "ok",
+    "public_health": {
+      "url": "https://fixepub.com/api/healthz",
+      "status": "ok"
+    },
+    "environment_values_unchanged": true,
+    "dependency_versions_unchanged": true,
+    "services": {
+      "epub-factory": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-15T06:39:45+00:00",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-beat": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-15T06:39:45+00:00",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-housekeeping": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-15T06:39:45+00:00",
+        "error_log_entries_since_deploy": 0
+      },
+      "epub-factory-worker": {
+        "active_state": "active",
+        "sub_state": "running",
+        "restart_count": 0,
+        "started_at": "2026-10-15T06:39:45+00:00",
+        "error_log_entries_since_deploy": 0
+      }
+    }
+  },
+  "production_code_verification": {
+    "rules_version": "20261015-terminology-metadata-v19",
+    "regression_tests_passed": 67,
+    "live_source_modules_verified": 11,
+    "confirmation_api_roundtrip": "passed",
+    "checkpoint_reuse_without_new_model_calls": "passed",
+    "exact_previous_production_resume_key_compatible": true,
+    "qa_only_metadata_preserves_legacy_key": true,
+    "canonical_translation_change_invalidates_key": true,
+    "prompt_selection_probe": "passed",
+    "isolation": {
+      "blocked_network_calls": 0,
+      "blocked_production_writes": 0
+    },
+    "paid_model_calls": 0,
+    "submitted_jobs": 0,
+    "test_breakdown": {
+      "D90_metadata": 12,
+      "D89_terminology": 53,
+      "D29_checkpoint_reuse": 1,
+      "D20_confirmation_api": 1
+    },
+    "legacy_algorithm_comparison": "Pure functions read from the previous production code backup; the same synthetic snapshot produces the same key. QA-only review data preserves it; a canonical translation change invalidates it."
+  },
+  "data_preservation": {
+    "method": "Read-only SQLite row/table digests and repair metadata digests; raw data, primary keys and digests excluded.",
+    "after_active_books": 0,
+    "unchanged": {
+      "translation_cache": true,
+      "repair_orders": true,
+      "jobs_database": true
+    },
+    "selected_job_tables": [
+      "epub_jobs",
+      "job_chapters",
+      "job_chunks",
+      "job_stages",
+      "job_dispatch_outbox",
+      "job_executions",
+      "llm_usage_attempts",
+      "llm_usage_requests",
+      "order_funnel_events",
+      "payment_email_outbox"
+    ],
+    "selected_cache_tables": [
+      "book_translation_checkpoints",
+      "translations"
+    ]
+  },
+  "historical_artifact_preservation": {
+    "case": "CASE-D",
+    "checked_at": "2026-10-15T06:41:56.778372+00:00",
+    "production_artifact_matches_accepted_p2_revision": true,
+    "reviewed_P3_paragraphs": 16,
+    "related_context_paragraphs": 21,
+    "all_source_and_translation_pairs_match_live_artifact": true,
+    "source_and_published_artifact_unchanged": true,
+    "production_order_unchanged": true,
+    "original_backups_intact": true,
+    "historical_model_requests": 804,
+    "new_model_requests": 0,
+    "production_writes": 0
+  },
+  "predeployment_validation": {
+    "evidence": "2026-10-15-terminology-metadata-p3-review.json",
+    "d90_tests_passed": 12,
+    "related_backend_scripts_passed": 13,
+    "backend_tests_passed": 201,
+    "regression_catalog_tests_passed": 20,
+    "local_tests_passed": 221,
+    "optional_real_book_tests_skipped": 2,
+    "readonly_p3_replay": {
+      "catalog_mappings": 82,
+      "reviewed_paragraphs": 16,
+      "related_context_paragraphs": 21,
+      "flags_before_and_after": {
+        "glossary_candidate_difference": 13,
+        "glossary_mapping_ambiguous": 1,
+        "numbers_missing": 2
+      },
+      "changed_reviewed_items": 0,
+      "context_categories_before_and_after": {
+        "glossary_candidate_difference": 13,
+        "glossary_mapping_ambiguous": 6,
+        "glossary_occurrence_unresolved": 1
+      },
+      "manual_recommendations": {
+        "targeted_content_fixes": 4,
+        "retain": 12
+      },
+      "input_files_hash_verified_unchanged": 5,
+      "historical_inputs_written": false,
+      "production_accessed": false,
+      "model_requests": 0,
+      "payment_operations": 0
+    }
+  },
+  "verification_limits": [
+    "Production-host verification uses temporary synthetic fixtures and mocked model, EPUBCheck and enqueue boundaries; it is not a paid public end-to-end translation.",
+    "Existing upload/output mkdir calls are suppressed during API module import; test paths are redirected to temporary directories. No business data is written.",
+    "The runtime comparison covers selected database tables during the release window, not external payment-provider statements.",
+    "Historical artifact checks verify unchanged source/translation pairs and accepted artifacts; they do not rerun customer-book EPUBCheck or full semantic review.",
+    "No historical metadata or checkpoints were migrated, no post-confirmation editing endpoint was added, and generated aliases are not automatically confirmed.",
+    "Temporal precision classification remains separate follow-up work."
+  ],
+  "redaction": {
+    "excluded": [
+      "customer identities, order identifiers, book titles and source filenames",
+      "source text, artifacts and content digests",
+      "database rows, primary keys and runtime digests",
+      "credentials, configuration values and signed download URLs",
+      "private paths, process IDs and full operational logs"
+    ]
+  }
+}
