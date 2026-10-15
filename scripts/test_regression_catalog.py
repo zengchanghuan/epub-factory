@@ -89,7 +89,8 @@ class RegressionCatalogTests(unittest.TestCase):
     def test_current_catalog_including_d17_d59_d64_and_d80_to_d84_matches_ast_without_running_real_scripts(self):
         suites = catalog_literals(self.source)
         expected = suites["D_SUITE"] + suites["C_SUITE"]
-        self.assertEqual(len(expected), 129)
+        self.assertEqual(len(expected), 130)
+        self.assertIn("test_d91_basic_delivery.py", expected)
         self.assertIn("test_d90_terminology_metadata.py", expected)
         self.assertIn("test_d89_terminology_consistency.py", expected)
         self.assertIn("test_d80_content_completeness.py", expected)
