@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><meta name="referrer" content="no-referrer">
+<title>PayPal 付款 · FixEpub</title>
+<style>
+body{margin:0;background:#f4f6fa;color:#182b46;font:16px/1.7 system-ui,sans-serif}main{max-width:480px;margin:7vh auto;padding:30px;background:white;border:1px solid #e1e6ee;border-radius:18px;box-shadow:0 10px 36px #182b4608}h1{font-size:25px;margin:12px 0}a{color:#1455a0}small,.muted{color:#617187}.price{font-size:38px;font-weight:750;margin:18px 0}#status{white-space:pre-line}button{padding:10px 18px;border-radius:8px;border:1px solid #bbc6d7;background:white;cursor:pointer}[hidden]{display:none!important}@media(max-width:540px){main{margin:20px;padding:24px}}
+</style></head><body><main>
+<a href="/">FixEpub</a><h1>确认订单并付款</h1>
+<p id="description">正在读取原订单…</p><div class="price" id="price"></div>
+<p class="muted">以美元结算。付款后自动处理，可回到任务中心查看进度和下载文件。</p>
+<div id="paypal-buttons"></div><p id="status" role="status" aria-live="polite"></p>
+<button id="recover" hidden>我已付款，重新核验</button>
+<p><a id="return" href="/">返回 FixEpub</a></p>
+<small>翻译、格式修复及用词精校暂不支持 PayPal。</small>
+</main><script src="/paypal-checkout.js?v=20261018"></script></body></html>

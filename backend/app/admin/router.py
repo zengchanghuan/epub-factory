@@ -151,7 +151,9 @@ def make_router(store, upload_dir, output_dir, enqueue):
 
     def check_payment(job):
         number, expected = order_identity(job)
-        result = query_verified_trade(number)
+        from ..domain import paypal_checkout as pp
+        leader = (store.list_jobs_by_batch_id(job.batch_id) or [job])[0] if job.batch_id else job
+        result = pp.safe_query_trade(store, leader) if pp.is_paypal(leader) else query_verified_trade(number)
         state, amount, trade_no = "unknown", None, None
         if result:
             amount = result.get("total_amount")
@@ -184,7 +186,7 @@ def make_router(store, upload_dir, output_dir, enqueue):
                     jobs = store.list_jobs_by_batch_id(job.batch_id) if job.batch_id else [job]
                     queue_paid_order_email(number, amount,
                         "batch" if job.batch_id else order_kind(job),
-                        file_count=len(jobs), is_test_order=any(j.is_test_order for j in jobs))
+                        file_count=len(jobs), is_test_order=any(j.is_test_order for j in jobs), currency=pp.currency(job))
                 except Exception:
                     logger.warning("Paid order email could not be queued", extra={"job_id": number})
         return values
@@ -341,7 +343,10 @@ def make_router(store, upload_dir, output_dir, enqueue):
             # transactional service still verifies the request hash and CAS.
             if body.action == "fulfill" and "fulfill" in snapshot["allowed_actions"]:
                 try:
-                    trade = query_verified_trade(snapshot["order_no"])
+                    from ..domain import paypal_checkout as pp
+                    target = get_job(job_id)
+                    leader = (store.list_jobs_by_batch_id(target.batch_id) or [target])[0] if target.batch_id else target
+                    trade = pp.safe_query_trade(store, leader) if pp.is_paypal(leader) else query_verified_trade(snapshot["order_no"])
                 except Exception:
                     raise HTTPException(503, "支付核验暂不可用，未执行履约，请稍后重试",
                                         headers={"Cache-Control": "no-store"}) from None

@@ -13,6 +13,17 @@ const pending = (id = "job-a", extra = {}) => ({ job_id: id, status: "pending_pa
   pay_url: "https://payments.invalid/original-order", amount: "9.90", ...extra });
 const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
+test("PayPal 续付显示美元及原 PayPal 链接，不误标为支付宝", async () => {
+  const { context, $ } = setup();
+  context.respond = () => response(pending("job-a", { currency: "USD", payment_method: "paypal",
+    amount: "0.99", pay_url: "https://fixepub.com/paypal-checkout.html?order=job-a" }));
+  await context.continuePendingPayment();
+  assert($("continuePaymentMessage").textContent.includes("US$0.99"));
+  assert($("continuePaymentLink").textContent.includes("PayPal"));
+  assert(!$("continuePaymentMessage").textContent.includes("支付宝"));
+  assert.equal($("continuePaymentLink").href, "https://fixepub.com/paypal-checkout.html?order=job-a");
+});
+
 function setup() {
   const nodes = new Map(), calls = [], popups = [], polls = [], tokens = new Map(), events = [];
   const $ = id => {

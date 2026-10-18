@@ -60,6 +60,8 @@ def order_view(job, payment, upload_dir, output_dir, *, expected=None):
         "filename": job.source_filename, "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(), "status": job.status.value,
         "price_cny": expected if expected is not None else (job.expected_amount or None),
+        "currency": "USD" if stats.get("payment_method") == "paypal" else "CNY",
+        "payment_method": stats.get("payment_method", "alipay"),
         "price_scope": "整批价格，勿重复相加" if job.batch_id else "订单价格",
         "batch_id": job.batch_id or None, "translation": job.enable_translation,
         "service": order_kind(job), "service_label": SERVICE_LABELS[order_kind(job)],

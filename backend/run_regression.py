@@ -120,6 +120,7 @@ D_SUITE = [
     "test_d59_pdf_store.py",
     "test_d59_pdf_checkout.py",
     "test_d59_pdf_api.py",
+    "test_paypal_checkout.py",
     "test_d64_metadata.py",
     "test_d64_package_uri.py",
     "test_d80_content_completeness.py",

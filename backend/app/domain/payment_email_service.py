@@ -62,7 +62,7 @@ def _normalize_paid_at(value):
     return value.astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S") + " 北京时间"
 
 
-def queue_paid_order_email(order_no, amount, order_kind, file_count=1, paid_at=None, is_test_order=False):
+def queue_paid_order_email(order_no, amount, order_kind, file_count=1, paid_at=None, is_test_order=False, currency="CNY"):
     """Called only after server-side signature/account/amount verification.
 
 No SMTP and no historical-order scan here. Errors are contained so notification
@@ -74,6 +74,8 @@ SMTP configuration may follow later: newly verified receipts remain durable.
     try:
         if not isinstance(order_no, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", order_no):
             raise ValueError("invalid_order_no")
+        if currency not in {"CNY", "USD"}:
+            raise ValueError("invalid_currency")
         value = Decimal(str(amount))
         if not value.is_finite() or value <= 0 or value != value.quantize(Decimal("0.01")):
             raise ValueError("invalid_order_amount")
@@ -84,7 +86,7 @@ SMTP configuration may follow later: newly verified receipts remain durable.
         record = dict(order_no=order_no, email=recipient, status="pending", attempts=0,
                       next_attempt_at=0, lease_id="", lease_until=0, created_at=now,
                       sent_at=None, last_error_code=None,
-                      payload=dict(amount=format(value, ".2f"), order_kind=ORDER_KINDS.get(str(order_kind), "订单"),
+                      payload=dict(amount=format(value, ".2f"), currency=currency, order_kind=ORDER_KINDS.get(str(order_kind), "订单"),
                                    file_count=file_count, paid_at=_normalize_paid_at(paid_at)))
         queued = PaymentEmailRepository(job_store).mutate(order_no, lambda old: record if old is None else None)
     except Exception:
@@ -102,8 +104,9 @@ SMTP configuration may follow later: newly verified receipts remain durable.
 
 def _body(record):
     payload = record["payload"]
+    symbol = "US$" if payload.get("currency") == "USD" else "¥"
     return ("有一笔订单已通过服务端支付验证。\n\n"
-            f"实付金额：¥{payload['amount']}\n"
+            f"实付金额：{symbol}{payload['amount']}\n"
             f"商户订单号：{record['order_no']}\n"
             f"订单类型：{payload['order_kind']}\n"
             f"文件数量：{payload['file_count']} 本\n"
@@ -145,7 +148,8 @@ def dispatch_pending_payment_emails(limit=20):
         error = None
         try:
             identity = hashlib.sha256(("payment:" + claimed["order_no"]).encode()).hexdigest()
-            completion_mail._send_email(claimed["email"], f"[FixEpub] 新订单已付款 ¥{claimed['payload']['amount']}",
+            symbol = "US$" if claimed["payload"].get("currency") == "USD" else "¥"
+            completion_mail._send_email(claimed["email"], f"[FixEpub] 新订单已付款 {symbol}{claimed['payload']['amount']}",
                                         _body(claimed), "<" + identity + "@fixepub.com>", require_enabled=False)
         except Exception as exc:
             error = completion_mail._error_code(exc)

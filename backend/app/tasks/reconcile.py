@@ -70,7 +70,8 @@ def reconcile_payments(self) -> dict:
     for job in stale:
         batch_id = getattr(job, "batch_id", "") or ""
         order_no = f"batch_{batch_id}" if batch_id else job.id
-        trade = query_verified_trade(order_no)
+        from app.domain import paypal_checkout as pp
+        trade = pp.safe_query_trade(job_store, job) if pp.is_paypal(job) else query_verified_trade(order_no)
         # The SDK query is signature-verified. Keep the identity guard here as
         # well so an unrelated response can never release this order.
         if not trade or trade.get("out_trade_no") != order_no:
@@ -86,7 +87,7 @@ def reconcile_payments(self) -> dict:
         except CheckoutUnavailable:
             skipped += 1
             continue
-        if trade_status == "WAIT_BUYER_PAY" and created_at_utc < timeout_cutoff:
+        if not pp.is_paypal(job) and trade_status == "WAIT_BUYER_PAY" and created_at_utc < timeout_cutoff:
             # The gateway, not a local clock, decides whether closing won the
             # race with payment. Unknown/failed close is never a closed order.
             receipt = close_verified_trade(order_no)
@@ -159,6 +160,7 @@ def _queue_paid_email(job, order_no: str, amount: str) -> None:
             "batch" if batch_id else ("translation" if job.enable_translation else "conversion"),
             file_count=len(jobs) or 1,
             is_test_order=any(getattr(item, "is_test_order", False) for item in jobs),
+            currency="USD" if (job.translation_stats or {}).get("payment_method") == "paypal" else "CNY",
         )
     except Exception:
         logger.warning("reconcile: payment email could not be queued", extra={"job_id": order_no})

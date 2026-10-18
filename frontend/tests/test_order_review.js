@@ -93,7 +93,7 @@ test('坏历史元数据详情保留原状态或未知，仅显示诊断且全�
     assert.equal(h.$('review-submit'), null);
     assert.equal(h.walk(h.$('detail-body'), el => el.tagName === 'A' && el.className === 'file-link'), null);
     const count = h.calls.length;
-    for (const text of ['核验支付宝支付', '重试失败订单', '查看逐请求费用明细', '查看人工处理历史']) {
+    for (const text of ['核验支付', '重试失败订单', '查看逐请求费用明细', '查看人工处理历史']) {
       const button = h.walk(h.$('detail-body'), el => el.tagName === 'BUTTON' && el.textContent === text);
       assert(button, text); assert.equal(button.disabled, true, text);
       await button.onclick(); assert.equal(button.disabled, true, text);
@@ -226,7 +226,7 @@ test('旧订单的历史和原支付核验响应不会抢回新订单详情', as
   for (const kind of ['history', 'payment']) {
     const h = setup(); await h.ready; await h.open(); const gate = deferred(), original = h.context.respond;
     h.context.respond = (url, options) => url.includes('/review-history?') || url.endsWith('/payment') ? gate.promise : original(url, options);
-    const control = kind === 'history' ? h.$('review-history-more') : h.walk(h.$('detail-body'), el => el.tagName === 'BUTTON' && el.textContent === '核验支付宝支付');
+    const control = kind === 'history' ? h.$('review-history-more') : h.walk(h.$('detail-body'), el => el.tagName === 'BUTTON' && el.textContent === '核验支付');
     const work = control.onclick(); await h.open(order('other')); const count = h.calls.length;
     gate.resolve(response(kind === 'history' ? { items: [{ id: 'old', note: '旧历史秘密' }], next_cursor: null } : order())); await work;
     assert(h.body().includes('other.epub')); assert(!h.body().includes('旧历史秘密')); assert.equal(h.calls.length, count);
@@ -270,4 +270,14 @@ test('登录失败文字正常显示而不吞掉 401 原因', async () => {
   const h = setup(); await h.ready; h.context.showLogin(); const original = h.context.respond;
   h.context.respond = (url, options) => url === '/api/admin/login' ? response({ detail: '用户名或密码错误' }, 401) : original(url, options);
   await h.$('login-form').onsubmit(event()); assert.equal(h.$('error').textContent, '用户名或密码错误'); assert.equal(h.$('login-button').disabled, false);
+});
+
+
+test('PayPal 订单价格和已核验付款均显示美元', async () => {
+  const h = setup(); await h.ready;
+  const d = order('paypal', {currency:'USD',payment_method:'paypal',price_cny:'0.99',payment:{status:'paid',amount:'0.99'},payment_resolution:{state:'paid',amount:'0.99'}});
+  await h.open(d);
+  assert(h.body().includes('US$0.99'));
+  assert(!h.body().includes('¥0.99'));
+  assert(h.body().includes('核验支付'));
 });

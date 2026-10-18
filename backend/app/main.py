@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import uuid
 import html as html_lib
@@ -35,6 +36,8 @@ from .infra.alipay import init_alipay, create_alipay_page_pay, verify_alipay_not
 from .job_runner import run_job
 from .models import DeviceProfile, ErrorCode, Job, JobStage, JobStatus, OutputMode, StageStatus, TraditionalVariant
 from .storage import job_store
+from .domain import paypal_checkout as ppcheckout
+from .infra import paypal as paypal_api
 from .domain.upload_guard import upload_guard
 from .infra.temporary_file_response import TemporaryFileResponse
 from .order_events import BrowserEvent, record_event, make_event_router
@@ -910,6 +913,8 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
         "cache_policy": getattr(job, "cache_policy", "reuse") or "reuse",
         "amount": job.expected_amount or None,
+        "currency": ppcheckout.currency(job),
+        "payment_method": "paypal" if ppcheckout.is_paypal(job) else "alipay",
         "pricing": public_translation_stats.get("translation_pricing"),
         "translation_strategy": getattr(job, "translation_strategy", "auto") or "auto",
         "translation_preflight": (
@@ -1377,17 +1382,19 @@ def product_capabilities_v2():
 async def create_pdf_job_v2(
     request: Request, background_tasks: BackgroundTasks,
     file: UploadFile = File(...), admin_key: Optional[str] = Form(None),
+    payment_method: str = Form("alipay"),
 ):
     """Persist a bounded, unpaid preparation before dispatching the PDF parser."""
     if not _pdf_product_enabled():
         raise HTTPException(status_code=503, detail="文本 PDF 转换入口尚未开放或持久执行服务未就绪")
+    payment_method = ppcheckout.select_method(payment_method, store=job_store)
     from .domain.pdf_product import new_pdf_plan
     import hmac
     # This endpoint has one product, not a second path around translation,
     # batch, CJK conversion or precision-polish validation.
     fields = await request.form()
-    if (set(fields) - {"file", "admin_key"} or len(fields.getlist("file")) != 1
-            or len(fields.getlist("admin_key")) > 1):
+    if (set(fields) - {"file", "admin_key", "payment_method"} or len(fields.getlist("file")) != 1
+            or len(fields.getlist("admin_key")) > 1 or len(fields.getlist("payment_method")) > 1):
         raise HTTPException(status_code=400, detail="此入口仅支持单本 PDF 保留原文转换，不支持翻译、精校或批量")
     if Path(file.filename or "").suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="请选择一份含可靠文字层的 PDF")
@@ -1407,7 +1414,7 @@ async def create_pdf_job_v2(
     secret = (os.environ.get("ADMIN_SECRET") or "").strip()
     admin_test = bool(secret and admin_key and hmac.compare_digest(secret, admin_key.strip()))
     try:
-        amount = Decimal("0.01" if admin_test else CONVERSION_PRICE_CNY)
+        amount = Decimal("0.99" if payment_method == "paypal" else ("0.01" if admin_test else CONVERSION_PRICE_CNY))
         if not amount.is_finite() or amount <= 0 or amount != amount.quantize(Decimal("0.01")):
             raise ValueError()
     except Exception:
@@ -1454,9 +1461,9 @@ async def create_pdf_job_v2(
         token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
         creator_ip=get_real_ip(request), creator_session=_get_client_session(request) or uuid.uuid4().hex,
         user_id=user.id if user else None, expected_amount=f"{amount:.2f}",
-        is_test_order=admin_test or skip_payment, status=JobStatus.pending,
+        is_test_order=(paypal_api.settings()[0] == "sandbox" if payment_method == "paypal" else admin_test) or skip_payment, status=JobStatus.pending,
         message="PDF 已保存，正在准备并校验 EPUB；尚未收费，可稍后在任务中心继续",
-        translation_stats={"attempt_id": f"pdf-prepare-{uuid.uuid4().hex}", "pdf_conversion": plan},
+        translation_stats={"attempt_id": f"pdf-prepare-{uuid.uuid4().hex}", "pdf_conversion": plan, "payment_method": payment_method},
     )
     try:
         job_store.add(job)  # Same transaction records the durable preparation intent.
@@ -1500,13 +1507,14 @@ def confirm_pdf_conversion_v2(job_id: str, payload: dict[str, Any], request: Req
         if not skip_payment:
             # Page-pay only signs a URL locally. No payment URL is exposed
             # before the complete frozen plan/checkout is atomically saved.
-            pay_url = create_alipay_page_pay(
+            pay_url = ppcheckout.checkout_url(job.id) if ppcheckout.is_paypal(job) else create_alipay_page_pay(
                 out_trade_no=job.id, total_amount=job.expected_amount,
                 subject=f"PDF 转 EPUB（保留原文） - {job.source_filename[:45]}",
                 return_url=f"https://fixepub.com/?job_id={job.id}",
             )
             checkout = checkout_snapshot(job.id, job.expected_amount, pay_url=pay_url,
-                                         created_at=datetime.now(timezone.utc))
+                                         created_at=datetime.now(timezone.utc),
+                                         provider="paypal" if ppcheckout.is_paypal(job) else "alipay")
         # Signing may be slow or fail. Recheck the files immediately before
         # the CAS; a process crash before it leaves the original prepared plan.
         validate_pdf_job(job, OUTPUT_DIR, require_billable=True)
@@ -1623,6 +1631,7 @@ async def create_job_v2(
     out_trade_no: Optional[str] = Form(None),
     temperature: Optional[float] = Form(None),
     admin_key: Optional[str] = Form(None),
+    payment_method: str = Form("alipay"),
     # 繁简 v2 参数：词典域 + 精校开关
     lexicon_domains_json: Optional[str] = Form(None),   # JSON 数组字符串，如 '["general","tech"]'
     enable_proper_noun: bool = Form(True),
@@ -1634,6 +1643,8 @@ async def create_job_v2(
     各质量档位默认 Flash；标准模式 0.3/复用缓存，高质量模式 0.2/验证缓存；
     文学模式增加全书风格档案、章节编辑和原文语义回查。
     """
+    payment_method = ppcheckout.select_method(payment_method, translation=enable_translation,
+                                               polish=enable_precision_polish, store=job_store)
     import os as _os
     import hmac as _hmac
     if output_mode == OutputMode.original:
@@ -1753,7 +1764,7 @@ async def create_job_v2(
                     "temperature": temperature, "variant": traditional_variant.value,
                     "lexicon_domains": lexicon_domains, "proper_noun": enable_proper_noun,
                     "polish": enable_precision_polish, "confirmation": profile_confirmation,
-                    "test": _is_admin_test or _skip_payment,
+                    "test": _is_admin_test or _skip_payment, "payment_method": payment_method,
                 }) as (upload_fingerprint, upload_lease):
             # ── 通过所有"无副作用"的校验后，才创建支付订单 ────────────────────
             pay_url = None
@@ -1827,7 +1838,11 @@ async def create_job_v2(
                     )
             if not require_profile_confirmation and not _skip_payment:
                 try:
-                    if enable_translation:
+                    if payment_method == "paypal":
+                        expected_amount = conversion_base_amount = "0.99"
+                        precision_polish_amount = "0.00"
+                        pay_url = ppcheckout.checkout_url(job_id)
+                    elif enable_translation:
                         # Every format has already been normalized, inspected and
                         # quoted before any payment-side effect.
                         subject = f"EPUB AI 翻译服务 - {safe_name[:50]}"
@@ -1869,7 +1884,7 @@ async def create_job_v2(
                                 return_url=f"https://fixepub.com/?job_id={job_id}",
                             )
                     job_status = JobStatus.pending_payment
-                    logger.info("Created alipay payment order", extra={
+                    logger.info("Created payment checkout", extra={
                         "job_id": job_id, "amount": expected_amount, "translation": enable_translation
                     })
                 except Exception as e:
@@ -1887,7 +1902,7 @@ async def create_job_v2(
                 token_expires_at=datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_TTL_DAYS),
                 creator_ip=client_ip,
                 creator_session=client_session,
-                is_test_order=_is_admin_test or _skip_payment,
+                is_test_order=(paypal_api.settings()[0] == "sandbox" if payment_method == "paypal" else _is_admin_test) or _skip_payment,
                 expected_amount=expected_amount,
                 enable_translation=enable_translation,
                 target_lang=target_lang,
@@ -1927,6 +1942,7 @@ async def create_job_v2(
                     if enable_translation or enable_precision_polish else {}
                 ),
             )
+            job.translation_stats["payment_method"] = payment_method
             if source_warnings:
                 job.translation_stats["source_warnings"] = source_warnings
             if translation_input_identity:
@@ -1938,7 +1954,7 @@ async def create_job_v2(
                 job.translation_stats["translation_pricing"] = pricing_info
             if job_status == JobStatus.pending_payment:
                 job.translation_stats["payment_checkout"] = checkout_snapshot(
-                    job_id, expected_amount, pay_url=pay_url, qr_code=qr_code)
+                    job_id, expected_amount, pay_url=pay_url, qr_code=qr_code, provider=payment_method)
             if enable_precision_polish:
                 job.translation_stats["precision_polish"] = {
                     "version": 1, "status": "awaiting_payment" if job_status == JobStatus.pending_payment else "pending",
@@ -1986,6 +2002,8 @@ async def create_job_v2(
                 "pay_url": pay_url,
                 "qr_code": qr_code,
                 "amount": expected_amount,
+                "currency": "USD" if payment_method == "paypal" else "CNY",
+                "payment_method": payment_method,
                 "base_amount": conversion_base_amount,
                 "precision_polish_amount": precision_polish_amount,
                 "precision_polish": (job.translation_stats or {}).get("precision_polish"),
@@ -2325,6 +2343,8 @@ def _batch_payload(batch_id: str, jobs: Optional[list[Job]] = None) -> dict:
     pending_payment = sum(job.status == JobStatus.pending_payment for job in jobs)
     progress = round(((completed + failed) / total) * 100) if total else 0
     return {
+        "currency": ppcheckout.currency(jobs[0]) if jobs else "CNY",
+        "payment_method": "paypal" if jobs and ppcheckout.is_paypal(jobs[0]) else "alipay",
         "batch_id": batch_id,
         "status": _batch_status(jobs),
         "file_count": total,
@@ -2392,7 +2412,7 @@ def _release_batch(batch_id: str, background_tasks: BackgroundTasks | None = Non
 
 
 def _record_verified_payment(order_no, amount, order_kind, *, source="verified_webhook",
-                             file_count=1, is_test_order=False, notify_owner=True):
+                             file_count=1, is_test_order=False, notify_owner=True, currency="CNY"):
     """Only call after verifying the payment identity and frozen order amount."""
     if order_kind in {"translation", "conversion"}:
         job = job_store.get(order_no)
@@ -2406,7 +2426,7 @@ def _record_verified_payment(order_no, amount, order_kind, *, source="verified_w
     try:
         from .domain.payment_email_service import queue_paid_order_email
         queue_paid_order_email(order_no, amount, order_kind,
-                               file_count=file_count, is_test_order=is_test_order)
+                               file_count=file_count, is_test_order=is_test_order, currency=currency)
     except Exception:
         # A mail outage must never undo a verified payment or stop book processing.
         logger.warning("Paid order email could not be queued", extra={"job_id": order_no})
@@ -2422,8 +2442,10 @@ async def create_batch_v2(
     device: DeviceProfile = Form(DeviceProfile.generic),
     enable_precision_polish: bool = Form(False),
     admin_key: Optional[str] = Form(None),
+    payment_method: str = Form("alipay"),
 ):
     """一次上传 2-N 本书，统一支付，分别转换，并提供批次进度与 ZIP 下载。"""
+    payment_method = ppcheckout.select_method(payment_method, polish=enable_precision_polish, store=job_store)
     import hmac as _hmac
     from decimal import Decimal
 
@@ -2490,14 +2512,18 @@ async def create_batch_v2(
                 allow_access_recovery=current_user is None or current_user.is_active,
                 client_session=client_session, paths=[path for _, _, path in saved],
                 options={"mode": output_mode.value, "device": device.value,
-                         "variant": traditional_variant.value, "test": is_admin_test or skip_payment}
+                         "variant": traditional_variant.value, "test": is_admin_test or skip_payment, "payment_method": payment_method}
                 ) as (upload_fingerprint, upload_lease):
             expected_amount = ""
             qr_code = None
             pay_url = None
             job_status = JobStatus.pending
 
-            if not skip_payment:
+            if not skip_payment and payment_method == "paypal":
+                expected_amount = f"{Decimal('0.99') * len(saved):.2f}"
+                pay_url = ppcheckout.checkout_url(f"batch_{batch_id}")
+                job_status = JobStatus.pending_payment
+            elif not skip_payment:
                 expected_amount = "0.01" if is_admin_test else f"{Decimal(CONVERSION_PRICE_CNY) * len(saved):.2f}"
                 order_no = f"batch_{batch_id}"
                 subject = f"EPUB 批量转换服务 - {len(saved)} 个文件"
@@ -2537,7 +2563,7 @@ async def create_batch_v2(
                     creator_ip=client_ip,
                     creator_session=client_session,
                     user_id=current_user.id if current_user else None,
-                    is_test_order=is_admin_test,
+                    is_test_order=(paypal_api.settings()[0] == "sandbox" if payment_method == "paypal" else is_admin_test),
                     expected_amount=expected_amount if index == 0 else "",
                     batch_id=batch_id,
                     batch_index=index,
@@ -2547,9 +2573,10 @@ async def create_batch_v2(
                     status=job_status,
                     message="等待批次支付" if job_status == JobStatus.pending_payment else "批次任务已排队",
                     translation_stats={
+                        "payment_method": payment_method,
                         **({"source_warnings": source_warnings_by_file[index]} if source_warnings_by_file[index] else {}),
                         **({"payment_checkout": checkout_snapshot(
-                            f"batch_{batch_id}", expected_amount, pay_url=pay_url, qr_code=qr_code)}
+                            f"batch_{batch_id}", expected_amount, pay_url=pay_url, qr_code=qr_code, provider=payment_method)}
                            if index == 0 and job_status == JobStatus.pending_payment else {}),
                     },
                 ))
@@ -2565,6 +2592,8 @@ async def create_batch_v2(
             payload.update({
                 "access_token": access_token,
                 "amount": expected_amount,
+                "currency": "USD" if payment_method == "paypal" else "CNY",
+                "payment_method": payment_method,
                 "qr_code": qr_code,
                 "pay_url": pay_url,
                 "message": "请完成一次支付以启动整批任务" if job_status == JobStatus.pending_payment else "批次已进入后台队列",
@@ -2604,6 +2633,8 @@ def recover_batch_payment_v2(batch_id: str, request: Request, background_tasks: 
     if not any(job.status in {JobStatus.pending_payment, JobStatus.pending, JobStatus.cancelled}
                and (getattr(job, "payment_resolution", None) or {}).get("state") != "paid_review" for job in jobs):
         return {**_batch_payload(batch_id, jobs), "recovered": False}
+    if jobs and ppcheckout.is_paypal(jobs[0]):
+        return _continue_existing_checkout(request, jobs[0], batch_id=batch_id)
     from .infra.alipay import query_verified_trade
     order_no = f"batch_{batch_id}"
     trade = query_verified_trade(order_no)
@@ -3621,6 +3652,8 @@ def recover_job_payment(job_id: str, request: Request):
         return {"job_id": job_id, "status": _job_to_v2_status(job), "recovered": False,
                 "message": job.message, "payment_resolution": dict(getattr(job, "payment_resolution", None) or {})}
 
+    if ppcheckout.is_paypal(job):
+        return _continue_existing_checkout(request, job)
     from .infra.alipay import query_verified_trade
     trade = query_verified_trade(job_id)
     trade_status = (trade or {}).get("trade_status")
@@ -3680,6 +3713,11 @@ def _continue_existing_checkout(request: Request, job: Job, *, batch_id=None):
                                          require_open_checkout, original_checkout, valid_checkout_url)
     from .infra.alipay import query_checkout_trade
 
+    if ppcheckout.is_paypal(job):
+        try:
+            return ppcheckout.resume(sys.modules[__name__], job, request, batch_id=batch_id)
+        except (paypal_api.PayPalUnavailable, CheckoutUnavailable) as exc:
+            raise HTTPException(getattr(exc, "status_code", 503), str(exc)) from None
     order_no = f"batch_{batch_id}" if batch_id else job.id
 
     def reload_jobs():
@@ -4052,6 +4090,11 @@ async def alipay_webhook(request: Request):
             logger.warning("Alipay webhook seller_id mismatch", extra={"job_id": out_trade_no or ""})
             return Response("fail")
         
+        if isinstance(out_trade_no, str):
+            bound = (_list_batch_jobs(out_trade_no[6:]) if out_trade_no.startswith("batch_")
+                     else [job_store.get(out_trade_no)])
+            if any(row and ppcheckout.is_paypal(row) for row in bound):
+                return Response("fail")
         if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and out_trade_no:
             # ── 修复订单（repair_ 前缀）────────────────────────────
             if out_trade_no.startswith("repair_"):
@@ -4888,7 +4931,7 @@ def stop_completion_email_worker():
 async def admin_private_cache(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches", "/api/v2/repair", "/api/v2/email-capabilities", "/api/v2/notifications")):
+    if path.startswith(("/api/admin", "/api/v2/jobs", "/api/v2/batches", "/api/v2/repair", "/api/v2/email-capabilities", "/api/v2/notifications", "/api/v2/paypal")):
         # A refresh must recover authoritative state and a newly signed download URL.
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -4896,6 +4939,8 @@ async def admin_private_cache(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
+
+app.include_router(ppcheckout.router(sys.modules[__name__]))
 
 if _FRONTEND_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

@@ -23,12 +23,19 @@ def valid_checkout_url(value):
         return False
 
 
-def checkout_snapshot(order_no, amount, *, pay_url=None, qr_code=None, created_at=None):
+def checkout_snapshot(order_no, amount, *, pay_url=None, qr_code=None, created_at=None, provider="alipay"):
     """Remember the successful payment product, not a newly guessed one."""
     if bool(pay_url) == bool(qr_code) or not valid_checkout_url(qr_code or pay_url):
         raise ValueError("invalid checkout response")
     saved = {"schema_version": 1, "order_no": order_no, "amount": amount,
              "channel": "qr" if qr_code else "page", **({"qr_code": qr_code} if qr_code else {})}
+    if provider == "paypal":
+        from .paypal_checkout import checkout_url
+        if qr_code or pay_url != checkout_url(order_no):
+            raise ValueError("invalid PayPal checkout")
+        saved.update(schema_version=2, channel="paypal", currency="USD")
+    elif provider != "alipay":
+        raise ValueError("unknown provider")
     if created_at is not None:
         if not isinstance(created_at, datetime) or created_at.tzinfo is None:
             raise ValueError("checkout creation requires an aware datetime")
@@ -79,6 +86,14 @@ def original_checkout(job, order_no, amount):
             return {"schema_version": 1, "order_no": order_no, "amount": amount, "channel": "page"}
         raise CheckoutUnavailable("旧订单未记录原支付通道，请联系客服核验；不会切换通道或另建付款订单")
     saved = stats["payment_checkout"]
+    if isinstance(saved, dict) and saved.get("channel") == "paypal":
+        if (stats.get("payment_method") != "paypal" or saved.get("schema_version") != 2
+                or saved.get("currency") != "USD" or saved.get("order_no") != order_no
+                or saved.get("amount") != amount or saved.get("qr_code")):
+            raise CheckoutUnavailable("PayPal 原订单信息不完整，请联系客服")
+        return dict(saved)
+    if stats.get("payment_method") == "paypal":
+        raise CheckoutUnavailable("PayPal 原订单通道不完整，请联系客服")
     if (not isinstance(saved, dict) or type(saved.get("schema_version")) is not int
             or saved["schema_version"] != 1 or saved.get("order_no") != order_no
             or saved.get("amount") != amount or saved.get("channel") not in {"page", "qr"}
@@ -132,7 +147,7 @@ def require_open_checkout(jobs, *, now=None, artifact_root=None):
         checkout = (job.translation_stats or {}).get("payment_checkout")
         # The existing precreate integration uses the provider's two-hour QR
         # lifetime. A longer reconciliation timeout must not revive that code.
-        checkout_hours = min(hours, 2) if isinstance(checkout, dict) and checkout.get("channel") == "qr" else hours
+        checkout_hours = min(hours, 2) if isinstance(checkout, dict) and checkout.get("channel") in {"qr", "paypal"} else hours
         if now >= created + timedelta(hours=checkout_hours):
             # Local expiry is not gateway closure and is not written as such.
             raise CheckoutUnavailable("原订单已超过支付有效期，请勿再次付款；已付款可点击恢复状态，未付款请重新上传")

@@ -57,6 +57,17 @@ class Base(DeclarativeBase):
     pass
 
 
+class PayPalOrderRecord(Base):
+    """One immutable provider order per local order; no buyer PII or secrets."""
+    __tablename__ = "paypal_orders"
+    local_id = Column(String(100), primary_key=True)
+    order_id = Column(String(40), unique=True, nullable=False)
+    merchant_id = Column(String(40), nullable=False)
+    amount = Column(String(16), nullable=False)
+    mode = Column(String(8), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
 class OrderEventRecord(Base):
     __tablename__ = "order_funnel_events"
     order_no = Column(String(100), primary_key=True)

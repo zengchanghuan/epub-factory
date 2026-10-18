@@ -96,6 +96,8 @@
         try {
           const form = new options.FormData();
           form.append("file", Array.from(files)[0]);
+          const method = options.paymentMethod && options.paymentMethod();
+          if (method === "paypal") form.append("payment_method", method);
           const key = options.adminKey && options.adminKey();
           if (key) form.append("admin_key", key);
           return await decode(await options.fetch(url("/api/v2/pdf-jobs"), { method: "POST", headers: headers(), body: form }));

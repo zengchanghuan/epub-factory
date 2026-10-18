@@ -1624,6 +1624,11 @@
       </div>
 
       <!-- 提交按钮 -->
+      <div id="paymentMethodBox" hidden style="margin:14px 0;">
+        <label for="paymentMethod">支付方式</label>
+        <select id="paymentMethod"><option value="alipay">支付宝 · 人民币</option><option value="paypal">PayPal · US$0.99 / 本</option></select>
+        <p style="font-size:12px;color:var(--muted);">PayPal 仅用于普通转换，按本数计费；不包含翻译、修复和用词精校。</p>
+      </div>
       <button class="submit-btn" id="submitBtn" disabled>开始转换</button>
 
       <!-- 格式转换扫码支付区 -->
@@ -1644,7 +1649,7 @@
            style="display:inline-block; padding:10px 28px; background:#1677ff; color:#fff; border-radius:8px; font-weight:600; text-decoration:none; font-size:14px;">
           前往支付宝付款
         </a>
-        <div style="font-size:12px; color:var(--subtle); margin-top:12px;">支付宝将在小窗口中打开；服务器会确认付款并在后台开始任务，可以关闭本页</div>
+        <div style="font-size:12px; color:var(--subtle); margin-top:12px;">所选支付页面将在小窗口中打开；付款确认后自动处理，可关闭本页稍后返回</div>
       </div>
     </div>
 
@@ -1657,6 +1662,11 @@
       <button type="button" class="diagnostics-btn" id="pdfChooseBtn">选择一个 PDF</button>
       <span id="pdfFilename" style="margin-left:8px; overflow-wrap:anywhere;"></span>
       <p id="pdfUploadError" class="error-msg" role="alert" style="display:none;"></p>
+      <div id="pdfPaymentMethodBox" hidden style="margin:14px 0;">
+        <label for="pdfPaymentMethod">支付方式</label>
+        <select id="pdfPaymentMethod"><option value="alipay">支付宝 · 人民币</option><option value="paypal">PayPal · US$0.99 / 本</option></select>
+        <p style="font-size:12px;color:var(--muted);">先检查并确认转换结果，再付款获取 EPUB。</p>
+      </div>
       <button type="button" class="submit-btn" id="pdfUploadBtn" disabled>上传并检查 PDF</button>
     </section>
 
@@ -1850,7 +1860,7 @@
 
   <script src="/vendor/qrcode.js?v=1.5.4"></script>
   <script src="lib.js?v=20261012-merged-pdf-c"></script>
-  <script src="pdf-conversion.js?v=20261003-pdf-c"></script>
+  <script src="pdf-conversion.js?v=20261018-paypal"></script>
   <script src="return-later.js?v=20260918"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
   <script src="tool-entry.js?v=20261001-r11"></script>
@@ -1977,6 +1987,21 @@
     let jobStartMs = null;
     let lastProgressMessage = "";
     let renderedEventKeys = new Set();
+    let paypalAvailable = false;
+    function refreshPaymentMethod() {
+      const eligible = paypalAvailable && getTaskMode() !== "translate" && !enablePrecisionPolish.checked;
+      $("paymentMethodBox").hidden = !eligible;
+      if (!eligible) $("paymentMethod").value = "alipay";
+      $("pdfPaymentMethodBox").hidden = !paypalAvailable;
+    }
+    fetch(`${API}/api/v2/paypal/config`, { cache: "no-store" }).then(r => r.ok ? r.json() : {}).then(c => {
+      paypalAvailable = c.enabled === true && c.currency === "USD" && c.unit_amount === "0.99";
+      refreshPaymentMethod();
+    }).catch(() => {});
+    $("paymentMethod").addEventListener("change", () => { _updatePriceHint(); updateSubmitButton(); });
+    $("pdfPaymentMethod").addEventListener("change", () => {
+      if (pdfCapabilities.enabled) $("pdfCapabilityHint").textContent = `单文件不超过 ${pdfCapabilities.maxFileSizeMb} MB / ${pdfCapabilities.maxPages} 页。先检查并确认风险，再支付 ${$("pdfPaymentMethod").value === "paypal" ? "US$0.99" : "¥" + pdfCapabilities.price}；不支持批量或文件夹。`;
+    });
     let currentJobId = null;
     let currentBatchId = null;
     let currentJobStatus = "";
@@ -2003,6 +2028,7 @@
     const pdfClient = pdfTools && pdfTools.createClient({
       api: API, fetch: (...args) => fetch(...args), FormData,
       headers: clientHeaders, authHeaders,
+      paymentMethod: () => $("pdfPaymentMethod").value,
       adminKey: () => localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key"),
     });
 
@@ -2063,7 +2089,7 @@
       $("pdfPlanSummary").textContent = [
         `保留原文 · ${number(state.pageCount)} 页 · ${number(state.characters)} 字符`,
         `${number(state.imageAssets)} 张原图 · ${number(state.tocEntries)} 项目录`,
-        `确认后的订单金额：${state.amount === null ? "待核实" : "¥" + state.amount}；不包含 电子书翻译或精校`,
+        `确认后的订单金额：${state.amount === null ? "待核实" : (data.currency === "USD" ? "US$" : "¥") + state.amount}；不包含 电子书翻译或精校`,
       ].join("\n");
       $("pdfBlockedMessage").textContent = state.blockedMessage;
       $("pdfConfirmationPanel").style.display = "block";
@@ -2385,6 +2411,9 @@
       window.open(link.href, "_blank", "noopener");
     }
 
+    function paymentCurrency(data) { return data.currency === "USD" ? "US$" : "¥"; }
+    function paymentProvider(data) { return data.payment_method === "paypal" ? "PayPal" : "支付宝"; }
+
     function closeAlipayPopup() {
       if (alipayPopup && !alipayPopup.closed) alipayPopup.close();
       alipayPopup = null;
@@ -2515,13 +2544,13 @@
         } else {
           $("continuePaymentLink").href = checkout;
           $("continuePaymentLink").hidden = false;
-          $("continuePaymentLink").textContent = target.kind === "batch" ? "前往支付宝支付整批订单" : "前往支付宝付款";
+          $("continuePaymentLink").textContent = `前往${paymentProvider(data)}${target.kind === "batch" ? "支付整批订单" : "付款"}`;
         }
         const amount = Number(data.amount);
         const amountText = ["number", "string"].includes(typeof data.amount) && String(data.amount).trim() !== "" && Number.isFinite(amount) && amount >= 0
-          ? `，订单金额 ¥${amount.toFixed(2)}` : "";
+          ? `，订单金额 ${paymentCurrency(data)}${amount.toFixed(2)}` : "";
         $("continuePaymentMessage").textContent = `原订单可继续付款${amountText}。` + (hasQr
-          ? "请使用支付宝扫描二维码完成支付。" : "请点击付款链接，在支付宝小窗口中完成支付。");
+          ? "请使用支付宝扫描二维码完成支付。" : `请点击付款链接，在${paymentProvider(data)}页面完成支付。`);
         renderTranslationQuoteSummary(data);
         resumePaymentPolling(target.kind, target.id);
       } catch (error) {
@@ -3789,6 +3818,7 @@
     const DEV_MODE = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
     function updateSubmitButton() {
+      refreshPaymentMethod();
       if (!selectedFiles.length) {
         submitBtn.disabled = true;
         submitBtn.textContent = "选择文件后开始";
@@ -3798,7 +3828,7 @@
       submitBtn.disabled = false;
       const verb = getTaskMode() === "translate" ? "翻译" : "转换";
       const _isAdminTest = !!(localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key"));
-      if (_isAdminTest) {
+      if (_isAdminTest && $("paymentMethod").value !== "paypal") {
         submitBtn.textContent = "提交订单 (¥0.01 测试)";
       } else if (selectedFiles.length > 1) {
         submitBtn.textContent = `批量转换 ${selectedFiles.length} 个文件`;
@@ -3852,6 +3882,8 @@
       $("conversionPriceHint").innerHTML = selectedFiles.length > 1
         ? `批量转换：<strong style="color:var(--text);">¥0.99 × ${selectedFiles.length}</strong>，一次支付，分别处理，完成后可打包下载。`
         : `基础转换：<strong style="color:var(--text);">¥0.99 / 本</strong>，支持繁简转换、竖排改横排、设备排版优化；用词精校另计。`;
+      refreshPaymentMethod();
+      if ($("paymentMethod").value === "paypal") $("conversionPriceHint").textContent = `PayPal：US$0.99 / 本${selectedFiles.length > 1 ? ` × ${selectedFiles.length} 本 = US$${(selectedFiles.length * 0.99).toFixed(2)}` : ""}，付款后自动转换。`;
       // 重置支付区（避免上次残留）
       $("conversionPayArea").style.display = "none";
       $("translationPayArea").style.display = "none";
@@ -3952,6 +3984,8 @@
 
     enablePrecisionPolish.addEventListener("change", () => {
       if (enablePrecisionPolish.checked) setTaskMode("convert");
+      refreshPaymentMethod();
+      _updatePriceHint();
       $("precisionPolishOptions").style.display = enablePrecisionPolish.checked ? "block" : "none";
       estimatePolishPrice();
     });
@@ -4164,6 +4198,7 @@
       form.append("device", $("device").value);
       form.append("enable_precision_polish", !isTranslationMode && enablePrecisionPolish.checked);
       form.append("enable_translation", isTranslationMode);
+      form.append("payment_method", !isTranslationMode && !enablePrecisionPolish.checked ? $("paymentMethod").value : "alipay");
       if (isTranslationMode) {
         form.append("target_lang", $("targetLang").value);
         form.append("bilingual", $("enableBilingual").checked);
@@ -4259,7 +4294,7 @@
           } else if (data.pay_url) {
             const amt = data.amount || "—";
             const chars = data.estimated_chars || 0;
-            $("translationPriceDisplay").textContent = `¥${amt}`;
+            $("translationPriceDisplay").textContent = `${paymentCurrency(data)}${amt}`;
 
             let charInfo = chars > 0 ? `约 ${(chars / 1000).toFixed(1)}K 字符` : "";
             if (!isTranslationMode) {
@@ -4267,13 +4302,13 @@
               const polishAmount = parseFloat(data.precision_polish_amount || "0");
               charInfo = polishAmount > 0
                 ? `基础转换 ¥${baseAmount} + 用词精校 ¥${polishAmount.toFixed(2)}`
-                : `基础转换 ¥${baseAmount}`;
+                : `基础转换 ${paymentCurrency(data)}${baseAmount}`;
             }
 
             if (isTranslationMode) renderTranslationPricing(data);
             else $("translationCharDisplay").textContent = charInfo;
             $("translationPayLink").href = data.pay_url;
-            $("translationPayLink").textContent = isBatchMode ? "前往支付宝支付整批订单" : "前往支付宝付款";
+            $("translationPayLink").textContent = `前往${paymentProvider(data)}${isBatchMode ? "支付整批订单" : "付款"}`;
             $("translationPayArea").style.display = "block";
             reportCheckoutEvent("quote_shown");
           }
