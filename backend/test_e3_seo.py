@@ -108,6 +108,22 @@ def test_e3_6_canonical_sitemap_and_localized_pages():
         assert question['acceptedAnswer']['text'] in homepage
 
 
+def test_e3_7_new_feature_pages_are_crawlable_and_do_not_collect_payment():
+    import json,re
+    from pathlib import Path
+    frontend=Path(__file__).resolve().parent.parent/'frontend'
+    for name in ['txt-to-epub.html','ebook-proofreading.html','proofreading-changes.html']:
+        page=(frontend/name).read_text()
+        assert client.get('/'+name).status_code==200
+        assert name in (frontend/'sitemap.xml').read_text()
+        assert name in (frontend/'index.html').read_text()
+        assert page.count('<h1 ')==1
+        assert '<form' not in page and 'paypal.Buttons' not in page
+        schema=json.loads(re.search(r'<script type="application/ld\+json">([\s\S]*?)</script>',page).group(1))
+        assert schema['url']=='https://fixepub.com/'+name
+        assert '付款前' in page and '不支持' in page
+
+
 # ── 运行 ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     tests = [
@@ -117,6 +133,7 @@ if __name__ == "__main__":
         test_e3_4_json_ld,
         test_e3_5_faq_section,
         test_e3_6_canonical_sitemap_and_localized_pages,
+        test_e3_7_new_feature_pages_are_crawlable_and_do_not_collect_payment,
     ]
     passed = failed = 0
     for t in tests:

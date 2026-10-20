@@ -1340,7 +1340,7 @@
   <script src="/qq-support.js?v=2" defer></script>
   <link rel="stylesheet" href="/return-later.css?v=20260918">
 <script src="/polish-review.js?v=20261019-txt-review2"></script>
-<script src="/locales/ui.js?v=20261019-txt-review2"></script>
+<script src="/locales/ui.js?v=20261020-preview2"></script>
 <script src="/site-preferences.js?v=20261019-txt-review2"></script>
 <link rel="stylesheet" href="/site-preferences.css?v=20261019-txt-review2">
 </head>
@@ -1381,6 +1381,13 @@
         <button type="button" id="folderSelectBtn" style="margin-top:10px; padding:7px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); cursor:pointer; font-size:12px; font-family:inherit;"><span data-i18n="ui_9">选择整个文件夹</span></button>
         <div class="file-name" id="fileName" style="display:none;"></div>
       </div>
+      <section id="txtPreview" hidden aria-labelledby="txtPreviewTitle" style="margin:16px 0;padding:16px;border:1px solid var(--border);border-radius:12px;">
+        <h3 id="txtPreviewTitle" data-i18n="txt_preview_title">TXT 导入预览</h3>
+        <p data-i18n="txt_preview_notice">仅在本机预览，不上传、不收费。最多预览 2 MB 文件、前 600 字及前 30 个章标题；识别规则最多生成 2000 个目录项，最终以上传检查为准。</p>
+        <p id="txtPreviewStatus" role="status"></p>
+        <pre id="txtPreviewSample" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;"></pre>
+        <ol id="txtPreviewHeadings" style="max-height:200px;overflow:auto;"></ol>
+      </section>
       <input id="fileInput" type="file" multiple accept=".epub,.mobi,.azw3,.docx,.md,.markdown,.txt" />
       <input id="folderInput" type="file" multiple webkitdirectory directory accept=".epub,.mobi,.azw3,.docx,.md,.markdown,.txt" />
 
@@ -1887,6 +1894,7 @@
   <script src="pdf-conversion.js?v=20261018-paypal"></script>
   <script src="return-later.js?v=20261019-multilingual"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
+  <script src="/txt-preview.js?v=20261020"></script>
   <script src="tool-entry.js?v=20261001-r11"></script>
   <script>
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
@@ -3890,6 +3898,7 @@
       returnLater.setTask(null, true);
       selectedFiles = nextFiles;
       selectedFile = nextFiles[0];
+      window.dispatchEvent(new CustomEvent("fixepub:files-selected", {detail: nextFiles}));
       const totalSize = nextFiles.reduce((sum, file) => sum + file.size, 0);
       const folderName = fromFolder && selectedFile.webkitRelativePath
         ? selectedFile.webkitRelativePath.split("/")[0]
@@ -4561,6 +4570,7 @@
       <div class="feature-grid">
         <article class="feature-card"><h3><a href="/epub-translator.html">五语翻译与双语对照</a></h3><p>简体中文、繁体中文、英语、日语、韩语两两互译。支持 EPUB、TXT、DOCX、Markdown 输入，输出 EPUB；可选双语对照与术语表，尽量保留目录、插图和可重排布局。译文适合辅助阅读，专业术语和重要内容建议结合原文复核。</p></article>
         <article class="feature-card"><h3><a href="/epub-repair.html">EPUB 格式修复</a></h3><p>诊断 EPUB 包结构、资源引用等格式问题。先查看诊断与报价，再决定是否修复；无法安全修复的文件会提示原因。</p></article>
+        <article class="feature-card"><h3><a href="/txt-to-epub.html">TXT 转 EPUB</a> · <a href="/ebook-proofreading.html">五语言精校</a> · <a href="/proofreading-changes.html">修改对照</a></h3><p>先预览 TXT 编码与章标题，精校完成后复核修改并下载选择版本。</p></article>
         <article class="feature-card"><h3><a href="/traditional-to-simplified.html">繁简转换</a>与<a href="/vertical-to-horizontal.html">横排排版</a></h3><p>支持台湾、港澳和通用繁体选项，提供 Kindle 与 Apple Books 排版设置。基础转换 ¥0.99 / 本，PayPal 为 US$0.99 / 本，输出 EPUB。</p></article>
         <article class="feature-card"><h3>五语 AI 精校</h3><p>单本 EPUB 或 TXT 可选择简中、繁中、英语、日语或韩语精校。新增四种语言检查拼写、语法和用词，保留原语言；简中检查两岸风险用词。精校另行报价。</p></article>
         <article class="feature-card"><h3>文字型 PDF 转 EPUB</h3><p>独立 PDF 入口保留原文与图片，先检查版面风险，再确认付款。扫描件 OCR、PDF 翻译与精校暂未开放。</p></article>

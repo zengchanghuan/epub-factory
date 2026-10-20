@@ -121,7 +121,7 @@ test("F28-9 报价携带与下单一致的来源繁体与简体模式", async ()
 
 test("F28-10 选单个非EPUB不能覆盖精校不支持状态", () => {
   const { context } = setup();
-  Object.assign(context, { returnLater: { setTask() {} }, fileNameEl: { style: {} },
+  Object.assign(context, { window: {dispatchEvent() {}}, CustomEvent: class {constructor(type, options){this.type=type;this.detail=options.detail;}}, returnLater: { setTask() {} }, fileNameEl: { style: {} },
     refreshTaskModeAvailability() {}, isTranslationSupportedForSelectedFile: () => true,
     updateSubmitButton() {}, _updatePriceHint() {}, estimatePolishPrice() {},
     alert: message => { throw Error(message); } });

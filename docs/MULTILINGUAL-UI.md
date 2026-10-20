@@ -132,3 +132,28 @@ upload was unavailable because the extension lacks file-URL access; live multipa
 TXT uploads were instead verified directly through the estimate API. Full paid
 end-to-end proofreading delivery was not run. Frontend 41 suites passed again after
 completing the English/Japanese/Korean TXT format hints.
+
+## 2026-10-20: TXT preview and feature discovery
+
+Selecting one TXT in the main uploader now shows an automatic local preview in
+all five interface languages. It displays detected encoding, the first 600
+characters, recognized chapter count and the first 30 chapter headings with line
+numbers. No file is uploaded and no order/model request is made for preview.
+Preview is limited to 2 MB; larger files may still use the existing upload flow
+(TXT limit 60 MB). UTF-8 and BOM-marked UTF-16 are supported. Empty, invalid or
+control-character-containing input shows an error. No recognized heading does not
+mean missing body text. Preview is read-only; manual chapter editing is not offered.
+Server-side validation and the final quote remain authoritative.
+
+New static discovery pages are `/txt-to-epub.html`, `/ebook-proofreading.html` and
+`/proofreading-changes.html`. They describe examples, limits and pricing and link
+to the single existing uploader; they never implement a second payment flow.
+They are currently Chinese guides, not five-language copies. All five languages
+are supported in the interactive TXT preview and existing service interface.
+
+The five-language quality seed covers 20 translation directions and five
+same-language proofreading cases. These are synthetic reference samples, not
+customer books or native-speaker-certified translations. Automated checks catch
+missing outputs, changed numeric literals and source echoes; human assessment of
+meaning, fluency, terminology and structure is still required. A passing code
+regression is not a passing model-quality evaluation.

@@ -2302,7 +2302,16 @@
     "en": "TXT accepts UTF-8 or UTF-16 with BOM. Common chapter headings create a contents list. Basic conversion preserves the language and outputs EPUB; translation and proofreading are priced separately.",
     "ja": "TXT は UTF-8 または BOM 付き UTF-16 に対応。一般的な章見出しから目次を作成します。通常変換は原言語の EPUB を出力し、翻訳・校正は別料金です。",
     "ko": "TXT는 UTF-8 또는 BOM이 있는 UTF-16을 지원합니다. 일반적인 장 제목으로 목차를 만듭니다. 기본 변환은 원어 EPUB을 출력하며 번역·교정은 별도 요금입니다."
-  }
+  },
+"txt_preview_title": {"zh-CN": "TXT 导入预览", "zh-TW": "TXT 匯入預覽", "en": "TXT import preview", "ja": "TXT 読み込みプレビュー", "ko": "TXT 가져오기 미리보기"},
+"txt_preview_notice": {"zh-CN": "仅在本机预览，不上传、不收费。最多预览 2 MB 文件、前 600 字及前 30 个章标题；识别规则最多生成 2000 个目录项，最终以上传检查为准。", "zh-TW": "僅在本機預覽，不上傳、不收費。最多預覽 2 MB 檔案、前 600 字及前 30 個章標題；最多產生 2000 個目錄項，最終以上傳檢查為準。", "en": "Local preview only: no upload or charge. Files up to 2 MB; first 600 characters and 30 headings. Up to 2000 contents entries are recognized. Server validation remains final.", "ja": "端末内のみのプレビューです。アップロード・課金はありません。2 MB 以下、先頭600文字と30見出しを表示し、目次は最大2000件です。最終判定はアップロード時に行います。", "ko": "기기 내 미리보기이며 업로드나 결제가 없습니다. 2 MB 이하 파일의 처음 600자와 제목 30개를 표시하고 목차는 최대 2000개까지 인식합니다. 최종 검사는 업로드 시 진행합니다."},
+"txt_preview_loading": {"zh-CN": "正在读取本机文件…", "zh-TW": "正在讀取本機檔案…", "en": "Reading local file…", "ja": "ファイルを読み込み中…", "ko": "로컬 파일을 읽는 중…"},
+"txt_preview_count": {"zh-CN": "识别章节数", "zh-TW": "辨識章節數", "en": "Recognized headings", "ja": "認識した見出し数", "ko": "인식된 제목 수"},
+"txt_preview_none": {"zh-CN": "没有识别到章标题，正文仍会保留。", "zh-TW": "未辨識到章標題，正文仍會保留。", "en": "No chapter headings recognized; body text is preserved.", "ja": "章見出しは認識されませんでした。本文は保持されます。", "ko": "장 제목이 인식되지 않았습니다. 본문은 보존됩니다."},
+"txt_preview_large": {"zh-CN": "文件超过 2 MB，跳过预览；仍可按原流程上传（TXT 上限 60 MB）。", "zh-TW": "檔案超過 2 MB，略過預覽；仍可照常上傳（TXT 上限 60 MB）。", "en": "Over 2 MB: preview skipped. Normal upload is still available (TXT limit: 60 MB).", "ja": "2 MB を超えるためプレビューを省略します。通常のアップロードは可能です（TXT 上限60 MB）。", "ko": "2 MB 초과로 미리보기를 건너뜁니다. 일반 업로드는 가능합니다(TXT 최대 60 MB)."},
+"txt_preview_encoding": {"zh-CN": "编码或控制字符不支持，请另存为 UTF-8 或带 BOM 的 UTF-16。", "zh-TW": "編碼或控制字元不支援，請另存為 UTF-8 或含 BOM 的 UTF-16。", "en": "Unsupported encoding or control characters. Save as UTF-8 or UTF-16 with BOM.", "ja": "未対応の文字コードまたは制御文字です。UTF-8 または BOM 付き UTF-16 で保存してください。", "ko": "지원하지 않는 인코딩 또는 제어 문자입니다. UTF-8 또는 BOM이 있는 UTF-16으로 저장하세요."},
+"txt_preview_empty": {"zh-CN": "文件没有正文。", "zh-TW": "檔案沒有正文。", "en": "The file has no body text.", "ja": "本文がありません。", "ko": "본문이 없습니다."},
+"txt_preview_read": {"zh-CN": "无法读取文件，请重新选择。", "zh-TW": "無法讀取檔案，請重新選擇。", "en": "Cannot read file. Select it again.", "ja": "ファイルを読み込めません。再度選択してください。", "ko": "파일을 읽을 수 없습니다. 다시 선택하세요."}
 };
 if(typeof module === "object" && module.exports) module.exports=messages; else root.FixEpubMessages=messages;
 })(typeof window !== "undefined" ? window : globalThis);

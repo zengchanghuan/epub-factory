@@ -68,6 +68,12 @@ jobs:
               python ../scripts/test_deploy_lock.py || fail=1
               python ../scripts/test_release_runtime.py || fail=1
               python ../scripts/test_release_gate.py || fail=1
+              python ../scripts/test_language_quality.py || fail=1
+              python test_txt_import.py || fail=1
+              python test_multilingual_checkout.py || fail=1
+              python test_e3_seo.py || fail=1
+              python ../scripts/generate_seo_pages.py --check || fail=1
+              python ../scripts/generate_language_pages.py --check || fail=1
               python ../scripts/test_regression_catalog.py || fail=1
               python ../scripts/test_artifact_retention.py || fail=1
               # Its parser child deliberately uses -I and its own network guard.
