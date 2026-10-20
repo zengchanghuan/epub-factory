@@ -63,6 +63,7 @@ from app.engine.glossary_extractor import verify_and_fix, GlossaryCandidate
 from app.engine.glossary_service import build_consistent_glossary, GlossaryBuildResult, load_global_glossary
 from app.engine.unpacker import EpubUnpacker
 from app.models import (
+    OutputMode,
     ChapterKind,
     ChapterStatus,
     ChunkStatus,
@@ -233,6 +234,7 @@ async def _translate_book_title_async(
     *,
     title: str,
     target_lang: str,
+    source_lang: str = "auto",
     glossary: dict[str, str],
     temperature: float | None,
     model: str | None = None,
@@ -256,6 +258,7 @@ async def _translate_book_title_async(
         translation_strategy=translation_strategy,
         book_profile=book_profile,
     )
+    translator.source_lang = source_lang
     translator.cancel_check = cancel_check
     result = await translator.translate_single_chunk_async(f"<p>{html.escape(title)}</p>")
     if result.error:
@@ -482,6 +485,7 @@ async def _translate_manifest_async(
         book_profile=book_profile,
         preserved_terms=confirmed_preserved_terms(getattr(job, "glossary", {})),
     )
+    translator.source_lang = (job.translation_stats or {}).get("source_lang", "auto")
     translator.cancel_check = cancel_check
 
     body_chapters = [
@@ -1316,7 +1320,7 @@ def run_fast_translation_job(
         pre_result = converter.convert_file_to_horizontal(
             input_path,
             preprocessed,
-            job.output_mode,
+            OutputMode.original,
             enable_translation=False,
             target_lang=job.target_lang,
             device=job.device.value,
@@ -1534,6 +1538,7 @@ def run_fast_translation_job(
             preparation_hits["title"] = True
         else:
             translated_book_title = asyncio.run(_translate_book_title_async(
+                source_lang=(job.translation_stats or {}).get("source_lang", "auto"),
                 title=original_book_title,
                 target_lang=job.target_lang,
                 glossary=glossary,

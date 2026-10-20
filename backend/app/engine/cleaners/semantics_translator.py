@@ -339,7 +339,7 @@ class AdaptiveConcurrencyLimiter:
 
 
 class SemanticsTranslator:
-    _CACHE_PROMPT_VERSION = "quality-v5-script-aware"
+    _CACHE_PROMPT_VERSION = "quality-v6-multilingual"
     _ROUTE_HEALTH: dict[tuple[str, str], dict[str, float]] = {}
 
     def __init__(self, target_lang="zh-CN", concurrency=6, bilingual=False,
@@ -353,6 +353,7 @@ class SemanticsTranslator:
                  book_profile: dict | None = None,
                  preserved_terms: list[str] | None = None):
         self.target_lang = target_lang
+        self.source_lang = "auto"
         self.bilingual = bilingual
         self.glossary: dict[str, str] = glossary or {}
         self.preserved_terms = (confirmed_preserved_terms(self.glossary)
@@ -681,6 +682,15 @@ class SemanticsTranslator:
             parts.append(f"此前已失败 {failed_attempts} 次，请避免重复上一轮输出。")
         return " ".join(parts)
 
+    def _language_prompt(self, prompt):
+        from app.domain.translation_scripts import LANGUAGES
+        target = LANGUAGES.get(self.target_lang, self.target_lang)
+        # Custom literary/review prompts must obey the same target as the draft.
+        if not self.target_lang.lower().startswith("zh"):
+            prompt = prompt.replace("中文", target).replace("Chinese", target)
+        source = LANGUAGES.get(getattr(self, "source_lang", "auto"), "自动识别原文语言")
+        return prompt + f"\n原文语言：{source}。正文、标题、术语及校订结果必须使用目标语言 {target} ({self.target_lang})；保留公式、代码和明确要求保留的原文。不得擅自切换目标语言。"
+
     def _build_system_prompt(self, translation_strategy: str | None = None) -> str:
         effective_strategy = normalize_translation_strategy(
             translation_strategy or self.translation_strategy,
@@ -738,7 +748,7 @@ class SemanticsTranslator:
                 f"{self.style_guide[:4000]}"
             )
 
-        return prompt
+        return self._language_prompt(prompt)
 
     def _relevant_glossary_for_html(self, html: str) -> dict[str, str]:
         if not self.glossary:
@@ -774,7 +784,7 @@ class SemanticsTranslator:
         )
         strategy_hash = profile_cache_hash(self.book_profile)
         return (
-            f"{self.target_lang}@{self._CACHE_PROMPT_VERSION}@{self.quality_mode}"
+            f"{self.target_lang}@{getattr(self, 'source_lang', 'auto')}@{self._CACHE_PROMPT_VERSION}@{self.quality_mode}"
             f"@{self.model}@t{temperature}@s{style_hash}"
             f"@{TRANSLATION_STRATEGY_VERSION}:{self.translation_strategy}@p{strategy_hash}"
         )
@@ -968,10 +978,16 @@ class SemanticsTranslator:
         只在中文目标语言下启用，避免其它目标语言误判。阈值故意保守，允许 DNA、
         journal title、专名等少量拉丁字符残留，但会拦住整段英文或大段英文夹少量中文。
         """
-        if not str(self.target_lang or "").lower().startswith("zh"):
-            return False
         source_text = self._visible_text(without_reference_text_nodes(source_html))
         translated_text = self._visible_text(without_reference_text_nodes(translated_html))
+        if not str(self.target_lang or "").lower().startswith("zh"):
+            # Conservative cross-language guard: reject a long, verbatim source
+            # paragraph; short shared names/terms remain valid. This is not a
+            # substitute for linguistic quality evaluation in each language.
+            source = getattr(self, "source_lang", "auto")
+            return (source not in {"auto", self.target_lang}
+                    and len(re.findall(r"[^\W\d_]", source_text)) >= 40
+                    and source_text == translated_text)
         if not re.search(r'\w', source_text):
             return False
         if not re.search(r'\w', translated_text):
@@ -1227,7 +1243,7 @@ class SemanticsTranslator:
         ):
             return False
         from app.domain.translation_scripts import has_foreign_letters
-        if not stripped or not has_foreign_letters(stripped, self.target_lang):
+        if not stripped or not has_foreign_letters(stripped, self.target_lang, getattr(self, "source_lang", "auto")):
             return False
         if not re.search(r'[A-Za-z]', stripped):
             return True
@@ -1368,7 +1384,7 @@ class SemanticsTranslator:
         """发送 JSON batch 并返回解析后的 {id: translation} 字典。"""
         self._raise_if_cancelled()
         self.stats.batch_requests += 1
-        system_prompt = system_prompt or self._build_system_prompt()
+        system_prompt = self._language_prompt(system_prompt) if system_prompt else self._build_system_prompt()
         protected_payload: list[dict] = []
         protected_replacements: dict[int, dict[str, str]] = {}
         for item in payload:
@@ -2775,7 +2791,7 @@ class SemanticsTranslator:
 
     def _should_translate(self, text: str) -> bool:
         from app.domain.translation_scripts import has_foreign_letters
-        return has_foreign_letters(text, self.target_lang)
+        return has_foreign_letters(text, self.target_lang, getattr(self, "source_lang", "auto"))
 
     async def process_async(self, content: bytes, item_type: int) -> bytes:
         if item_type == 9:

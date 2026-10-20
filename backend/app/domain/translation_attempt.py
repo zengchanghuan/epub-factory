@@ -108,6 +108,7 @@ def restarted_translation_stats(
         "cost_usd": None,
         "live": False,
     }
+    stats["source_lang"] = old.get("source_lang", "auto")
     if old.get("upload_fingerprint"):
         stats["upload_fingerprint"] = old["upload_fingerprint"]
     if old.get("payment_verified"):

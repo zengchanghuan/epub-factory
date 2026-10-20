@@ -343,3 +343,16 @@ test('F25-28 同任务旧 status 错误晚于付款成功，不覆盖已确认�
   await h.el('payBtn').click(); late.resolve(response({}, 404)); await staleRead;
   assert.ok(h.el('fixStatus').textContent.includes('支付已确认')); assert.equal(h.el('payBtn').disabled, true);
 });
+
+test('PayPal 修复按美元展示且只打开本订单付款入口', async () => {
+  const h = harness({fetch(call) {
+    if(call.url.endsWith('/pay')) return response({...pending('0.99'),currency:'USD',payment_method:'paypal',
+      pay_url:'https://fixepub.com/paypal-checkout.html?order=repair_usd'});
+  }});
+  h.states.set('usd', {...pending('0.99'),currency:'USD',payment_method:'paypal'});
+  await h.controller.resume('usd'); await h.controller.pay();
+  assert.equal(h.el('priceLabel').textContent,'US$0.99');
+  assert.equal(h.el('alipayLink').textContent,'前往 PayPal 付款');
+  assert.equal(h.el('alipayLink').href,'https://fixepub.com/paypal-checkout.html?order=repair_usd');
+  assert(h.el('repairPaymentMethod').disabled);
+});

@@ -72,6 +72,42 @@ def test_e3_5_faq_section():
     assert "Kindle" in html, "FAQ 应包含 Kindle 关键词"
 
 
+def test_e3_6_canonical_sitemap_and_localized_pages():
+    import json
+    import re
+    from xml.etree import ElementTree as ET
+    from pathlib import Path
+    frontend = Path(__file__).resolve().parent.parent / "frontend"
+    response = client.get("/sitemap.xml")
+    assert response.content == (frontend / "sitemap.xml").read_bytes()
+    urls = [node.text for node in ET.fromstring(response.text).iter() if node.tag.endswith("}loc")]
+    assert len(urls) == len(set(urls))
+    for url in urls:
+        assert url.startswith("https://fixepub.com/")
+        name = url.removeprefix("https://fixepub.com/") or "index.html"
+        page = frontend / name
+        assert page.is_file(), name
+        assert f'rel="canonical" href="{url}"' in page.read_text(), name
+        assert client.get("/" + name).status_code == 200, name
+    variants = {"zh-CN":"ebook-tools.html", "zh-TW":"zh-tw.html", "en":"en.html", "ja":"ja.html", "ko":"ko.html"}
+    for language, name in variants.items():
+        html = (frontend / name).read_text()
+        assert f'<html lang="{language}">' in html
+        assert html.count('<h1>') == 1
+        for code, other in variants.items():
+            assert f'hreflang="{code}" href="https://fixepub.com/{other}"' in html
+        assert f'href="/?lang={language}"' in html
+        assert 'hreflang="x-default"' in html
+    homepage = (frontend / 'index.html').read_text()
+    for forbidden in ['aggregateRating', 'reviewCount', 'John Doe', '99.8%', '10,000+', '68%']:
+        assert forbidden not in homepage, forbidden
+    schemas = [json.loads(x) for x in re.findall(r'<script type="application/ld\+json">([\s\S]*?)</script>', homepage)]
+    faq = next(item for item in schemas if item.get('@type') == 'FAQPage')
+    for question in faq['mainEntity']:
+        assert question['name'] in homepage
+        assert question['acceptedAnswer']['text'] in homepage
+
+
 # ── 运行 ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     tests = [
@@ -80,6 +116,7 @@ if __name__ == "__main__":
         test_e3_3_index_html_meta_tags,
         test_e3_4_json_ld,
         test_e3_5_faq_section,
+        test_e3_6_canonical_sitemap_and_localized_pages,
     ]
     passed = failed = 0
     for t in tests:

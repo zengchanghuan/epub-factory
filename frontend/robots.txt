@@ -1,5 +1,6 @@
 User-agent: *
 Allow: /
+Disallow: /api/
 Disallow: /admin.html
 Disallow: /orders-admin.html
 Disallow: /tests/

@@ -5,20 +5,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>EPUB 繁体转简体与地域词汇转换 – FixEpub</title>
-  <meta name="description" content="使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；统一在主页处理，暂不支持 PDF。" />
+  <meta name="description" content="使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；PDF 使用独立的原文转换入口。" />
   <link rel="canonical" href="https://fixepub.com/traditional-to-simplified.html" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="EPUB 繁体转简体与地域词汇转换 – FixEpub" />
-  <meta property="og:description" content="使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；统一在主页处理，暂不支持 PDF。" />
+  <meta property="og:description" content="使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；PDF 使用独立的原文转换入口。" />
   <meta property="og:url" content="https://fixepub.com/traditional-to-simplified.html" />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="EPUB 繁体转简体与地域词汇转换 – FixEpub" />
-  <meta name="twitter:description" content="使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；统一在主页处理，暂不支持 PDF。" />
+  <meta name="twitter:description" content="使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；PDF 使用独立的原文转换入口。" />
   <script type="application/ld+json">{
   "@context": "https://schema.org",
   "@type": "WebPage",
   "name": "EPUB 繁体转简体与地域词汇转换 – FixEpub",
-  "description": "使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；统一在主页处理，暂不支持 PDF。",
+  "description": "使用 OpenCC 进行 EPUB 繁简转换，支持选择台湾、港澳或通用繁体来源。基础转换 ¥0.99 / 本，用词精校另计；PDF 使用独立的原文转换入口。",
   "url": "https://fixepub.com/traditional-to-simplified.html",
   "inLanguage": "zh-CN"
 }</script>
@@ -65,14 +65,14 @@
       <div class="features">
         <article><h3>繁简与地域用语</h3><p>基于 OpenCC 及配置的词汇规则进行转换。根据原书来源选择自动 / 通用、台湾或港澳选项。</p></article>
         <article><h3>排版与结构检查</h3><p>转换同时处理横排输出及适用的样式兼容问题，并检查成品结构。复杂原书仍建议下载后核对目录、脚注与插图。</p></article>
-        <article><h3>可选 用词精校</h3><p>普通规则转换不调用翻译模型。单个 EPUB 转为简体时可另选 用词精校，对符合条件的风险用语进行检查，不等同于全书重译。</p></article>
+        <article><h3>可选 用词精校</h3><p>普通规则转换不调用翻译模型。单个 EPUB 或 TXT 转为简体时可另选 用词精校，对符合条件的风险用语进行检查，不等同于全书重译。</p></article>
       </div>
     </section>
     <section class="panel" aria-labelledby="pricing-title">
       <h2 id="pricing-title">格式与费用</h2>
       <p>繁简基础转换价为 <strong>¥0.99 / 本</strong>。用词精校不包含在基础价中，启用时另行计费；最终金额以主页报价为准。</p>
-      <p class="formats">主页转换支持 .epub、.mobi、.azw3、.docx、.md 和 .markdown。繁简处理针对可提取的文字，不会识别或改写图片像素里的文字。</p>
-      <p class="warning"><strong>暂不支持 PDF。</strong>请准备受支持的源文件；本页不会接收文件或创建收费订单。</p>
+      <p class="formats">主页转换支持 .epub、.mobi、.azw3、.docx、.txt、.md 和 .markdown。繁简处理针对可提取的文字，不会识别或改写图片像素里的文字。</p>
+      <p class="warning"><strong>本服务暂不支持 PDF。</strong>文字型 PDF 可使用主页独立的 PDF → EPUB 原文转换入口；不含 OCR、翻译或精校。</p>
     </section>
     <section class="panel" aria-labelledby="steps-title">
       <h2 id="steps-title">如何开始</h2>
@@ -86,7 +86,7 @@
     <section class="panel" aria-labelledby="faq-title">
       <h2 id="faq-title">常见问题</h2>
       <details><summary>为什么要选择台湾或港澳繁体来源？</summary><p>相同文字在不同地区可能有不同常用词。来源选项影响对应规则，应按原书内容选择，不确定时可先使用自动 / 通用。</p></details>
-      <details><summary>可以一次转换多本书吗？</summary><p>可以。主页支持多文件及文件夹选择，每批最多 10 个文件；用词精校只支持单个 EPUB 的普通简体转换。</p></details>
+      <details><summary>可以一次转换多本书吗？</summary><p>可以。主页支持多文件及文件夹选择，每批最多 10 个文件；用词精校支持单个 EPUB 或 TXT，不能与批量转换合用。</p></details>
       <details><summary>费用与任务状态在哪里查看？</summary><p>基础转换 ¥0.99 / 本，用词精校另计；最终金额在主页付款前确认。已有任务请使用原浏览器到主页任务中心查看，不要重复付款。</p></details>
     </section>
     <section class="panel" aria-labelledby="contact-title">

@@ -27,7 +27,7 @@ if dotenv_path.exists():
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .converter import converter
@@ -71,6 +71,15 @@ def _validate_upload_format(upload: UploadFile) -> list[str]:
         upload.file.seek(position)
     if is_pdf_header(prefix):
         raise HTTPException(status_code=400, detail=PDF_DISABLED_MESSAGE)
+    if (upload.filename or '').lower().endswith('.txt'):
+        from .engine.adapters.txt_adapter import decode_txt
+        try:
+            upload.file.seek(0)
+            decode_txt(upload.file.read(60 * 1024 * 1024 + 1))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        finally:
+            upload.file.seek(position)
     if (upload.filename or '').lower().endswith('.epub'):
         upload.file.seek(0, 2)
         size = upload.file.tell()
@@ -908,6 +917,7 @@ def _job_to_v2_detail(job: Job, download_url_path: str) -> dict:
         "enable_precision_polish": bool(getattr(job, "enable_precision_polish", False)),
         "precision_polish": public_translation_stats.get("precision_polish"),
         "target_lang": job.target_lang,
+        "source_lang": (job.translation_stats or {}).get("source_lang", "auto"),
         "bilingual": job.bilingual,
         "translation_model": getattr(job, "translation_model", "") or "",
         "translation_quality": getattr(job, "translation_quality", "standard") or "standard",
@@ -1291,6 +1301,7 @@ async def create_job(
         "status": job.status,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
+        "source_lang": (job.translation_stats or {}).get("source_lang", "auto"),
         "bilingual": job.bilingual,
         "translation_model": job.translation_model,
         "translation_strategy": job.translation_strategy,
@@ -1317,6 +1328,7 @@ def get_job(job_id: str, request: Request):
         "output_mode": job.output_mode,
         "enable_translation": job.enable_translation,
         "target_lang": job.target_lang,
+        "source_lang": (job.translation_stats or {}).get("source_lang", "auto"),
         "bilingual": job.bilingual,
         "translation_model": getattr(job, "translation_model", "") or "",
         "translation_strategy": getattr(job, "translation_strategy", "auto") or "auto",
@@ -1620,6 +1632,7 @@ async def create_job_v2(
     traditional_variant: TraditionalVariant = Form(TraditionalVariant.auto),
     enable_translation: bool = Form(False),
     target_lang: str = Form("zh-CN"),
+    source_lang: str = Form("auto"),
     bilingual: bool = Form(False),
     translation_model: str = Form(""),
     translation_quality: str = Form("standard"),
@@ -1635,6 +1648,7 @@ async def create_job_v2(
     # 繁简 v2 参数：词典域 + 精校开关
     lexicon_domains_json: Optional[str] = Form(None),   # JSON 数组字符串，如 '["general","tech"]'
     enable_proper_noun: bool = Form(True),
+    polish_language: str = Form("zh-CN"),
     enable_precision_polish: bool = Form(False),         # L4 精校开关
     polish_order_no: Optional[str] = Form(None),         # Legacy client field; never payment evidence.
 ):
@@ -1643,6 +1657,10 @@ async def create_job_v2(
     各质量档位默认 Flash；标准模式 0.3/复用缓存，高质量模式 0.2/验证缓存；
     文学模式增加全书风格档案、章节编辑和原文语义回查。
     """
+    from .domain.translation_scripts import LANGUAGES
+    source_lang = source_lang if isinstance(source_lang, str) else "auto"
+    if enable_translation and (target_lang not in LANGUAGES or source_lang not in {"auto", *LANGUAGES}):
+        raise HTTPException(400, "请选择支持的源语言和目标语言")
     payment_method = ppcheckout.select_method(payment_method, translation=enable_translation,
                                                polish=enable_precision_polish, store=job_store)
     import os as _os
@@ -1667,11 +1685,14 @@ async def create_job_v2(
             validate_translation_filename(file.filename or "")
         except TranslationInputError as exc:
             raise _translation_input_http_error(exc) from None
+    polish_language = polish_language if isinstance(polish_language, str) else "zh-CN"
+    if enable_precision_polish and polish_language not in LANGUAGES:
+        raise HTTPException(400, "不支持的精校语言")
     if polish_order_no:
         raise HTTPException(status_code=400, detail="精校与转换使用同一订单，不允许客户端自带精校订单号")
     if enable_precision_polish and (enable_translation or output_mode != OutputMode.simplified
-            or Path(file.filename or "").suffix.lower() != ".epub"):
-        raise HTTPException(status_code=400, detail="AI 精校目前仅支持 EPUB 的普通简体转换，不能与翻译或繁体输出合用")
+            or Path(file.filename or "").suffix.lower() not in {".epub", ".txt"}):
+        raise HTTPException(status_code=400, detail="AI 精校支持单本 EPUB 或 TXT；请选择精校语言，不可同时启用翻译或繁简转换")
     source_warnings = await asyncio.to_thread(_validate_upload_format, file)
 
     # 免费配额已关闭，所有转换均走付费流程
@@ -1758,12 +1779,12 @@ async def create_job_v2(
                 allow_access_recovery=current_user is None or current_user.is_active,
                 client_session=client_session, paths=[input_path], options={
                     "mode": output_mode.value, "device": device.value,
-                    "translation": enable_translation, "target_lang": target_lang,
+                    "translation": enable_translation, "target_lang": target_lang, "source_lang": source_lang,
                     "bilingual": bilingual, "model": translation_model, "quality": translation_quality,
                     "cache_policy": cache_policy, "strategy": translation_strategy, "glossary": glossary,
                     "temperature": temperature, "variant": traditional_variant.value,
                     "lexicon_domains": lexicon_domains, "proper_noun": enable_proper_noun,
-                    "polish": enable_precision_polish, "confirmation": profile_confirmation,
+                    "polish": enable_precision_polish, "polish_language": polish_language, "confirmation": profile_confirmation,
                     "test": _is_admin_test or _skip_payment, "payment_method": payment_method,
                 }) as (upload_fingerprint, upload_lease):
             # ── 通过所有"无副作用"的校验后，才创建支付订单 ────────────────────
@@ -1786,7 +1807,7 @@ async def create_job_v2(
                     polish_inspection = await asyncio.to_thread(
                         inspect_precision_polish_source, input_path,
                         traditional_variant=traditional_variant.value, lexicon_domains=lexicon_domains,
-                        enable_proper_noun=enable_proper_noun,
+                        enable_proper_noun=enable_proper_noun, language=polish_language,
                     )
                     estimated_chars = int(polish_inspection.get("char_count") or 0)
                     if estimated_chars <= 0 or not int(polish_inspection.get("candidates") or 0):
@@ -1794,7 +1815,7 @@ async def create_job_v2(
                 except Exception as exc:
                     input_path.unlink(missing_ok=True)
                     raise HTTPException(status_code=400, detail=str(exc) or "无法分析精校正文，请检查 EPUB 文件")
-                precision_polish_amount = _TEST_PRICE if _is_admin_test else f"{calculate_polish_price(estimated_chars):.2f}"
+                precision_polish_amount = _TEST_PRICE if _is_admin_test and payment_method != "paypal" else f"{calculate_polish_price(estimated_chars):.2f}"
             require_profile_confirmation = bool(enable_translation and profile_confirmation)
             if enable_translation:
                 try:
@@ -1811,7 +1832,7 @@ async def create_job_v2(
                     estimated_chars = pricing_info.get("total_chars", 0)
                     expected_amount = (
                         _TEST_PRICE
-                        if _is_admin_test
+                        if _is_admin_test and payment_method != "paypal"
                         else pricing_info.get(
                             "price_cny",
                             _calc_translation_price(estimated_chars, translation_quality, translation_model),
@@ -1836,11 +1857,19 @@ async def create_job_v2(
                         status_code=500,
                         detail="图书分析暂时失败，请稍后重试",
                     )
+            if payment_method == "paypal":
+                if enable_translation:
+                    pricing_info["reference_price_cny"] = expected_amount
+                    expected_amount = ppcheckout.service_usd(expected_amount)
+                elif enable_precision_polish:
+                    precision_polish_amount = ppcheckout.polish_usd(precision_polish_amount)["price_usd"]
             if not require_profile_confirmation and not _skip_payment:
                 try:
                     if payment_method == "paypal":
-                        expected_amount = conversion_base_amount = "0.99"
-                        precision_polish_amount = "0.00"
+                        if not enable_translation:
+                            conversion_base_amount = "0.99"
+                            precision_polish_amount = precision_polish_amount or "0.00"
+                            expected_amount = f"{Decimal(conversion_base_amount) + Decimal(precision_polish_amount):.2f}"
                         pay_url = ppcheckout.checkout_url(job_id)
                     elif enable_translation:
                         # Every format has already been normalized, inspected and
@@ -1943,6 +1972,8 @@ async def create_job_v2(
                 ),
             )
             job.translation_stats["payment_method"] = payment_method
+            if enable_translation:
+                job.translation_stats["source_lang"] = source_lang
             if source_warnings:
                 job.translation_stats["source_warnings"] = source_warnings
             if translation_input_identity:
@@ -1950,7 +1981,8 @@ async def create_job_v2(
             if enable_translation and pricing_info:
                 # Retain the original quote through confirmation, refresh and retries.
                 # Existing orders are never retroactively repriced by this code path.
-                pricing_info = dict(pricing_info, price_cny=expected_amount, quoted_amount=expected_amount)
+                pricing_info = dict(pricing_info, price_cny=expected_amount, quoted_amount=expected_amount,
+                                    currency="USD" if payment_method == "paypal" else "CNY")
                 job.translation_stats["translation_pricing"] = pricing_info
             if job_status == JobStatus.pending_payment:
                 job.translation_stats["payment_checkout"] = checkout_snapshot(
@@ -1958,7 +1990,7 @@ async def create_job_v2(
             if enable_precision_polish:
                 job.translation_stats["precision_polish"] = {
                     "version": 1, "status": "awaiting_payment" if job_status == JobStatus.pending_payment else "pending",
-                    "order_no": job_id, "char_count": estimated_chars,
+                    "order_no": job_id, "char_count": estimated_chars, "language": polish_language,
                     "quoted_amount": precision_polish_amount,
                     "candidates": int(polish_inspection.get("candidates") or 0),
                     "api_calls": 0, "reviewed": 0, "changed": 0, "refund_required": False,
@@ -1990,6 +2022,7 @@ async def create_job_v2(
                 "source_filename": job.source_filename,
                 "enable_translation": job.enable_translation,
                 "target_lang": job.target_lang,
+                "source_lang": (job.translation_stats or {}).get("source_lang", "auto"),
                 "bilingual": job.bilingual,
                 "translation_model": job.translation_model,
                 "translation_quality": job.translation_quality,
@@ -2241,7 +2274,7 @@ def confirm_translation_profile_v2(
     pay_url = None
     try:
         if not skip_payment:
-            pay_url = create_alipay_page_pay(
+            pay_url = ppcheckout.checkout_url(claimed.id) if ppcheckout.is_paypal(claimed) else create_alipay_page_pay(
                 out_trade_no=claimed.id,
                 total_amount=amount,
                 subject=f"EPUB AI 翻译服务 - {claimed.source_filename[:50]}",
@@ -2260,7 +2293,7 @@ def confirm_translation_profile_v2(
             expected_amount=amount,
             payment_checkout=(
                 checkout_snapshot(
-                    claimed.id, amount, pay_url=pay_url) if not skip_payment else None
+                    claimed.id, amount, pay_url=pay_url, provider="paypal" if ppcheckout.is_paypal(claimed) else "alipay") if not skip_payment else None
             ),
         ) if callable(finish) else None
         if not refreshed:
@@ -2688,6 +2721,7 @@ def download_batch_v2(batch_id: str, request: Request, exp: Optional[int] = None
 async def estimate_polish_price(
     request: Request,
     file: UploadFile = File(...),
+    polish_language: str = Form("zh-CN"),
     output_mode: OutputMode = Form(OutputMode.simplified),
     traditional_variant: TraditionalVariant = Form(TraditionalVariant.auto),
     lexicon_domains_json: Optional[str] = Form(None),
@@ -2702,15 +2736,19 @@ async def estimate_polish_price(
     from .domain.precision_polish_service import inspect_precision_polish_source
     import tempfile
 
-    if not (file.filename and file.filename.lower().endswith(".epub")):
-        raise HTTPException(status_code=400, detail="AI 精校仅支持 .epub 文件")
+    if not (file.filename and Path(file.filename).suffix.lower() in {".epub", ".txt"}):
+        raise HTTPException(status_code=400, detail="AI 精校仅支持 .epub 或 .txt 文件")
+    from .engine.cleaners.llm_polish import POLISH_LANGUAGES
+    polish_language = polish_language if isinstance(polish_language, str) else "zh-CN"
+    if polish_language not in POLISH_LANGUAGES:
+        raise HTTPException(400, "不支持的精校语言")
     if output_mode != OutputMode.simplified:
         raise HTTPException(status_code=400, detail="AI 精校仅支持普通简体转换")
     lexicon_domains = _parse_lexicon_domains_json(lexicon_domains_json)
 
     await asyncio.to_thread(_validate_upload_format, file)
 
-    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=Path(file.filename).suffix.lower(), delete=False) as tmp:
         tmp_path = tmp.name
         try:
             size = 0
@@ -2723,7 +2761,7 @@ async def estimate_polish_price(
             inspection = await asyncio.to_thread(
                 inspect_precision_polish_source, Path(tmp_path),
                 traditional_variant=traditional_variant.value, lexicon_domains=lexicon_domains,
-                enable_proper_noun=enable_proper_noun,
+                enable_proper_noun=enable_proper_noun, language=polish_language,
             )
             char_count = int(inspection.get("char_count") or 0)
             if char_count <= 0 or not int(inspection.get("candidates") or 0):
@@ -2739,6 +2777,7 @@ async def estimate_polish_price(
     return {
         "char_count": char_count,
         "price_cny": f"{price:.2f}",
+        **ppcheckout.polish_usd(f"{price:.2f}"),
         "tier": _get_polish_tier_label(char_count),
         "candidates": int(inspection.get("candidates") or 0),
     }
@@ -2839,6 +2878,60 @@ def download_result_v2(
     _validate_pdf_download(job, output_path)
     _verify_download_artifact(job)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
+
+
+def _polish_review_job(job_id, request):
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    if not _authorize_job_access(request, job):
+        raise HTTPException(403, "无权访问该任务")
+    if not _job_can_download(job) or not job.enable_precision_polish:
+        raise HTTPException(400, "此任务尚无可交付精校结果")
+    _verify_download_artifact(job)
+    return job
+
+
+@app.get("/api/v2/jobs/{job_id}/polish-review")
+def polish_review_v2(job_id: str, request: Request, offset: int = 0):
+    from .domain.polish_review import load_review
+    job = _polish_review_job(job_id, request)
+    try:
+        data, _ = load_review(job.output_path)
+    except FileNotFoundError:
+        raise HTTPException(404, "此历史任务没有修改对照记录，无需重新付款") from None
+    except (ValueError, OSError):
+        raise HTTPException(409, "无法读取精校对照，请联系客服") from None
+    if offset < 0 or offset > len(data['changes']):
+        raise HTTPException(400, "无效的分页位置")
+    # Do not expose filesystem names, XML node identities or unneeded book text.
+    return JSONResponse({'language': data['language'], 'revision': data['revision'],
+        'total': len(data['changes']), 'offset': offset,
+        'changes': [{key: change[key] for key in ('id', 'before', 'after')}
+                    for change in data['changes'][offset:offset + 20]]},
+        headers={'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex'})
+
+
+@app.post("/api/v2/jobs/{job_id}/polish-review/download")
+async def download_polish_selection_v2(job_id: str, request: Request):
+    from .domain.polish_review import export_selection
+    from starlette.background import BackgroundTask
+    job = _polish_review_job(job_id, request)
+    body = await request.body()
+    if len(body) > 1024 * 1024:
+        raise HTTPException(413, "选择内容过大")
+    try:
+        payload = json.loads(body)
+        if not isinstance(payload, dict) or set(payload) != {'revision', 'rejected'}:
+            raise ValueError('Invalid selection')
+        path, temporary = await asyncio.to_thread(export_selection, Path(job.output_path), payload['rejected'], payload['revision'])
+    except FileNotFoundError:
+        raise HTTPException(404, "此任务没有修改对照记录") from None
+    except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile):
+        raise HTTPException(422, "无法生成所选版本，请重新打开对照或联系客服") from None
+    return FileResponse(path, filename='proofread-selection.epub', media_type='application/epub+zip',
+        headers={'Cache-Control':'no-store', 'X-Robots-Tag':'noindex'},
+        background=BackgroundTask(path.unlink, missing_ok=True) if temporary else None)
 
 
 @app.get("/api/v2/jobs/{job_id}/preview")
@@ -4103,6 +4196,8 @@ async def alipay_webhook(request: Request):
                 if not repair_job:
                     logger.warning("Alipay webhook for unknown repair job", extra={"job_id": out_trade_no})
                     return Response("success")
+                if repair_job.get("payment_method") == "paypal":
+                    return Response("fail")
                 expected = _repair_expected_amount(repair_job)
                 actual = str(total_amount or "").strip()
                 if not _amount_equal(actual, expected):
@@ -4331,7 +4426,7 @@ _REPAIR_UPLOAD_DIR = Path(os.environ.get("REPAIR_UPLOAD_DIR", "/tmp/epub-repair"
 _REPAIR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 修复单价（元）
-REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "2.99").strip() or "2.99"
+REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "0.99").strip() or "0.99"
 
 # order.json is authoritative across API processes, never a process-local cache.
 # Paid records form the durable waiting queue; admission is globally bounded.
@@ -4447,7 +4542,8 @@ def _repair_publish_confirmation(job_id: str) -> None:
             from .domain.payment_email_service import queue_paid_order_email
             from .domain.payment_email_repository import PaymentEmailRepository
             receipt_saved = bool(queue_paid_order_email(order_no, _repair_expected_amount(snapshot), "repair",
-                paid_at=datetime.fromtimestamp(snapshot["payment_confirmed_at"], timezone.utc)))
+                paid_at=datetime.fromtimestamp(snapshot["payment_confirmed_at"], timezone.utc),
+                currency=snapshot.get("currency", "CNY")))
             if not receipt_saved:
                 # False also means the unique receipt already exists; do not
                 # confuse a duplicate callback with a persistence failure.
@@ -4505,7 +4601,7 @@ def _repair_check_payment(job_id: str, *, background=False) -> dict:
         return _repair_check_response(job_id, "not_started")
     if background and not job.get("checkout_started_at"):
         return _repair_check_response(job_id, "not_started")
-    if background and not _repair_gateway_available():
+    if background and not (paypal_api.enabled() if job.get("payment_method") == "paypal" else _repair_gateway_available()):
         return _repair_check_response(job_id, "unavailable")
     now = _repair_now()
     if background and now - float(job["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
@@ -4539,7 +4635,11 @@ def _repair_check_payment(job_id: str, *, background=False) -> dict:
             expected = _repair_expected_amount(current)
         from .infra.alipay import query_verified_trade
         try:
-            trade = query_verified_trade(order_no)
+            if job.get("payment_method") == "paypal":
+                from .domain.paypal_repair import query_trade
+                trade = query_trade(job_store, job_id, job)
+            else:
+                trade = query_verified_trade(order_no)
         except Exception:
             trade = None
         # The adapter verifies SDK signature and exact merchant identity; defend
@@ -4552,7 +4652,7 @@ def _repair_check_payment(job_id: str, *, background=False) -> dict:
             checked = "pending" if trade_status in {"WAIT_BUYER_PAY", "TRADE_CLOSED"} else "unavailable"
             _repair_store_check(job_id, checked)
             return _repair_check_response(job_id, checked, trade_status=trade_status, retry_after_seconds=delay)
-        if not _amount_equal(str(trade.get("total_amount") or ""), expected):
+        if (job.get("payment_method") == "paypal" and trade.get("currency") != "USD") or not _amount_equal(str(trade.get("total_amount") or ""), expected):
             _repair_store_check(job_id, "unavailable")
             logger.warning("Repair payment recovery amount mismatch", extra={"job_id": job_id})
             return _repair_check_response(job_id, "unavailable", retry_after_seconds=delay)
@@ -4587,7 +4687,7 @@ def _repair_payment_tick() -> None:
                 logger.warning("Repair receipt retry deferred", extra={"job_id": job_id})
         if job.get("status") == "paid" and resumed < 3:
             resumed += bool(_ensure_repair_running(job_id))
-        elif gateway_available and job.get("status") == "pending_payment" and job.get("checkout_started_at"):
+        elif (paypal_api.enabled() if job.get("payment_method") == "paypal" else gateway_available) and job.get("status") == "pending_payment" and job.get("checkout_started_at"):
             if now - float(job["checkout_started_at"]) > _REPAIR_CHECK_WINDOW:
                 if job.get("payment_check") != "manual_review_required":
                     _repair_store_check(job_id, "manual_review_required")
@@ -4641,8 +4741,11 @@ def _queue_repair_completion_email(job_id: str, status: str) -> None:
 async def repair_diagnose(
     request: Request,
     file: UploadFile = File(...),
+    payment_method: str = Form("alipay"),
 ):
     """上传 EPUB，返回诊断报告（不修改文件）。免费。"""
+    payment_method = ppcheckout.select_method(payment_method, store=job_store)
+    quote = "0.99" if payment_method == "paypal" else REPAIR_PRICE_CNY
     if not (file.filename and file.filename.lower().endswith(".epub")):
         raise HTTPException(status_code=400, detail="仅支持 .epub 文件")
 
@@ -4662,7 +4765,8 @@ async def repair_diagnose(
     input_path.write_bytes(content)
 
     diagnosis, can_pay = await asyncio.to_thread(_repair_diagnosis, job_id, {"filename": safe_name})
-    _repair_job_set(job_id, status="pending_payment", filename=safe_name, quoted_amount=REPAIR_PRICE_CNY,
+    _repair_job_set(job_id, status="pending_payment", filename=safe_name, quoted_amount=quote,
+                    payment_method=payment_method, currency="USD" if payment_method == "paypal" else "CNY",
                     can_pay=can_pay, **diagnosis)
 
     return {
@@ -4670,7 +4774,8 @@ async def repair_diagnose(
         "filename": safe_name,
         "report": diagnosis["report"],
         "can_pay": can_pay,
-        "price_cny": REPAIR_PRICE_CNY,
+        "price_cny": quote, "amount": quote,
+        "currency": "USD" if payment_method == "paypal" else "CNY", "payment_method": payment_method,
     }
 
 
@@ -4717,6 +4822,20 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
                 current.update(status="paid", is_test_order=True)
         _ensure_repair_running(job_id)
         return {"job_id": job_id, "status": "paid", "qr_code": None}
+
+    if job.get("payment_method") == "paypal":
+        ppcheckout.select_method("paypal", store=job_store)
+        with _repair_repository().transaction(job_id) as current:
+            if current.get("status") != "pending_payment":
+                return {"job_id": job_id, "status": current["status"]}
+            current.setdefault("expected_amount", current["quoted_amount"])
+            current.setdefault("checkout_started_at", _repair_now())
+            current.setdefault("next_payment_check_at", _repair_now() + 10)
+            current.update(out_trade_no=f"repair_{job_id}", is_test_order=paypal_api.settings()[0] == "sandbox")
+            amount = current["expected_amount"]
+        return {"job_id": job_id, "status": "pending_payment", "amount": amount, "price_cny": amount,
+                "currency": "USD", "payment_method": "paypal", "qr_code": None,
+                "pay_url": ppcheckout.checkout_url(f"repair_{job_id}")}
 
     from .infra.alipay import create_alipay_page_pay, create_alipay_precreate
     out_trade_no = f"repair_{job_id}"
@@ -4800,6 +4919,7 @@ async def repair_status(job_id: str):
         "error": job.get("error"),
         "report": diagnosis["report"],
         "can_pay": can_pay and pending,
+        "currency": job.get("currency", "CNY"), "payment_method": job.get("payment_method", "alipay"),
         "payment_started": bool(job.get("checkout_started_at") or job.get("out_trade_no")),
         "payment_check": job.get("payment_check"),
     }
@@ -4842,33 +4962,12 @@ async def repair_download(job_id: str):
 
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
-    content = "\n".join([
-        "User-agent: *",
-        "Allow: /",
-        "Disallow: /api/",
-        "Disallow: /admin.html",
-        "Disallow: /orders-admin.html",
-        "Sitemap: https://fixepub.com/sitemap.xml",
-    ])
-    return Response(content=content, media_type="text/plain")
+    return FileResponse(str(_FRONTEND_DIR / "robots.txt"), media_type="text/plain")
 
 
 @app.get("/sitemap.xml", include_in_schema=False)
 def sitemap_xml():
-    content = """<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://fixepub.com/</loc>
-    <changefreq>weekly</changefreq>
-    <priority>1.0</priority>
-  </url>
-  <url>
-    <loc>https://fixepub.com/epub-repair.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-</urlset>"""
-    return Response(content=content, media_type="application/xml")
+    return FileResponse(str(_FRONTEND_DIR / "sitemap.xml"), media_type="application/xml")
 
 
 # ---------- 前端静态资源（与 API 同域，避免跨域） ----------

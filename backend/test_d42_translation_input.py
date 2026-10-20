@@ -104,7 +104,7 @@ class TranslationInputTests(unittest.TestCase):
                 self.assert_reason('service_disabled', self.root / 'missing.md')
 
     def test_filename_gate_is_early_and_narrow(self):
-        for suffix in ('.pdf', '.mobi', '.azw3', '.txt', ''):
+        for suffix in ('.pdf', '.mobi', '.azw3', '.rtf', ''):
             self.assert_reason('unsupported_input', self.root / ('missing' + suffix))
         for suffix in ('.EPUB', '.DOCX', '.md', '.markdown'):
             service.validate_translation_filename('book' + suffix)

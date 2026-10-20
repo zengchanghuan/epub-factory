@@ -43,7 +43,7 @@ def _resource_path(base, href, names):
     return resolved
 
 
-def _load_plans(path):
+def _load_plans(path, language="zh-CN"):
     """Read manifest/spine without extracting files or changing the source."""
     try:
         with zipfile.ZipFile(path) as archive:
@@ -78,7 +78,7 @@ def _load_plans(path):
                     continue
                 name = _resource_path(posixpath.dirname(package_path), item.get("href", ""), names)
                 if name not in plans:
-                    plans[name] = plan_document(archive.read(name))
+                    plans[name] = plan_document(archive.read(name), language)
             if not plans or not sum(plan.char_count for plan in plans.values()):
                 raise PrecisionPolishError("no_body_text", "书稿没有可精校的正文文字，未发起模型请求")
             return plans
@@ -90,7 +90,7 @@ def _load_plans(path):
 
 def inspect_precision_polish_source(epub_path: Path, *, traditional_variant: str = "auto",
                                     lexicon_domains: list[str] | None = None,
-                                    enable_proper_noun: bool = True) -> dict:
+                                    enable_proper_noun: bool = True, language: str = "zh-CN") -> dict:
     """Quote the source text, but review candidates after the selected L1–L3.
 
     The actual conversion applies the same CjkNormalizer before paid review.
@@ -99,16 +99,21 @@ def inspect_precision_polish_source(epub_path: Path, *, traditional_variant: str
     is written here; execution receives an already converted artifact and does
     not use this inspection normalization a second time.
     """
+    if Path(epub_path).suffix.lower() == ".txt":
+        from app.domain.translation_input import normalized_translation_input
+        with normalized_translation_input(Path(epub_path)) as normalized:
+            return inspect_precision_polish_source(normalized.epub_path, traditional_variant=traditional_variant,
+                lexicon_domains=lexicon_domains, enable_proper_noun=enable_proper_noun, language=language)
     from app.engine.cleaners.cjk_normalizer import CjkNormalizer
 
-    original_plans = _load_plans(Path(epub_path))
+    original_plans = _load_plans(Path(epub_path), language)
     char_count = sum(p.char_count for p in original_plans.values())
-    cleaner = CjkNormalizer(output_mode="simplified", traditional_variant=traditional_variant,
+    cleaner = CjkNormalizer(output_mode="simplified" if language == "zh-CN" else "keep", traditional_variant=traditional_variant,
                             lexicon_domains=lexicon_domains, enable_proper_noun=enable_proper_noun)
     # The real unpacker/ebooklib boundary resolves numeric character entities
     # before cleaners run. Use the already validated XML tree, not the original
     # lexical spelling (e.g. &#x8d85;&#x5546;), so dictionaries see the same words.
-    plans = [plan_document(cleaner.process(
+    plans = list(original_plans.values()) if language != "zh-CN" else [plan_document(cleaner.process(
         etree.tostring(plan.tree, encoding="utf-8", xml_declaration=True), 9))
         for plan in original_plans.values()]
     for plan in plans:
@@ -123,6 +128,7 @@ def _snapshot(plan):
     nodes = list(plan.tree.getroot().iter())
     identities = {node: index for index, node in enumerate(nodes)}
     allowed = {}
+    multilingual = bool(plan.paragraphs and plan.paragraphs[0].language != "zh-CN")
     for paragraph in plan.paragraphs:
         for occurrence in paragraph.occurrences:
             if occurrence.editable:
@@ -138,6 +144,10 @@ def _snapshot(plan):
                 pieces.extend((re.escape(original[position:occurrence.start]), r"[\u3400-\u9fff]{1,24}"))
                 position = occurrence.end
             pattern = "".join(pieces) + re.escape(original[position:]) if pieces else None
+            if multilingual and pieces:
+                # All nonblank slices in this slot are editable; use one bounded
+                # group, avoiding pathological backtracking on adjacent slices.
+                pattern = r"[^<>\x00]{1," + str(max(480, len(original) * 3)) + "}"
             fields.append((original, pattern))
         records.append((tag, tuple(sorted(node.attrib.items())), node.getparent() is None,
                         len(node), fields))
@@ -166,7 +176,7 @@ def _check_document(snapshot, after):
 
 
 def run_precision_polish(input_path: Path, output_path: Path, *, cancel_check=None,
-                         stats_callback=None, polisher_factory=LLMPolisher) -> dict:
+                         stats_callback=None, polisher_factory=LLMPolisher, language="zh-CN", review_dir=None) -> dict:
     """No output is published unless every candidate and final QA succeeds.
 
     Factory contract: no arguments, context manager yielding LLMPolisher (or a
@@ -187,7 +197,7 @@ def run_precision_polish(input_path: Path, output_path: Path, *, cancel_check=No
 
     try:
         check()
-        plans = _load_plans(source)
+        plans = _load_plans(source, language)
         stats.documents_scanned = len(plans)
         stats.paragraphs_scanned = sum(p.paragraphs_scanned for p in plans.values())
         stats.candidates = sum(len(p.paragraphs) for p in plans.values())
@@ -195,6 +205,7 @@ def run_precision_polish(input_path: Path, output_path: Path, *, cancel_check=No
         for plan in plans.values():
             validate_document_input_budget(plan)
         replacements = {}
+        review_edits = []
         if stats.candidates:
             with polisher_factory() as polisher:
                 polisher.cancel_check = check
@@ -208,6 +219,8 @@ def run_precision_polish(input_path: Path, output_path: Path, *, cancel_check=No
                     updated = polisher.polish_document(plan)
                     _check_document(before, updated)
                     if updated != plan.source:
+                        from .polish_review import collect_edits
+                        review_edits.extend(collect_edits(name, plan.source, updated))
                         replacements[name] = updated
                     report()
         if stats.reviewed != stats.candidates or stats.changed + stats.unchanged != stats.reviewed:
@@ -240,6 +253,9 @@ def run_precision_polish(input_path: Path, output_path: Path, *, cancel_check=No
         stats.status = "completed" if stats.candidates else "no_candidates"
         # The runner supplies an attempt-specific destination and is responsible
         # for lease-aware publication to the public download path.
+        if review_dir is not None:
+            from .polish_review import save_review
+            save_review(source, temporary, review_dir, review_edits, language)
         os.replace(temporary, destination)
         published = True
         report()

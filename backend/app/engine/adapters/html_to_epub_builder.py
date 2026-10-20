@@ -94,12 +94,17 @@ def build(html_body: str, metadata: dict, output_epub: Path, *, deterministic: b
 </package>
 """
 
+    toc_entries = metadata.get("toc") or []
+    toc_html = "\n".join(
+        '<li><a href="chapter1.xhtml#' + _html_mod.escape(item['id'], quote=True) + '">' + _html_mod.escape(item['title']) + '</a></li>'
+        for item in toc_entries
+    ) or f'<li><a href="chapter1.xhtml#chapter-start">{title}</a></li>'
     nav_xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{language}" lang="{language}">
   <head><title>Contents</title></head>
   <body><nav epub:type="toc" id="toc"><h1>Contents</h1><ol>
-    <li><a href="chapter1.xhtml#chapter-start">{title}</a></li>
+    {toc_html}
   </ol></nav></body>
 </html>
 """

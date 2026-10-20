@@ -31,7 +31,7 @@ from app.domain.input_formats import PDF_DISABLED_MESSAGE
 
 
 NORMALIZATION_VERSION = "translation-input-v1"
-_SUPPORTED = {".epub", ".docx", ".md", ".markdown"}
+_SUPPORTED = {".epub", ".docx", ".md", ".markdown", ".txt"}
 _IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/svg+xml"}
 
 
@@ -59,7 +59,7 @@ def ensure_translation_executor_available() -> None:
 def validate_translation_filename(name) -> None:
     suffix = Path(str(name or "")).suffix.lower()
     if suffix not in _SUPPORTED:
-        message = PDF_DISABLED_MESSAGE if suffix == ".pdf" else "AI 翻译仅支持 EPUB、DOCX 或 Markdown；MOBI/AZW3 请先转换为 EPUB"
+        message = PDF_DISABLED_MESSAGE if suffix == ".pdf" else "AI 翻译仅支持 EPUB、DOCX、TXT 或 Markdown；MOBI/AZW3 请先转换为 EPUB"
         raise TranslationInputError("unsupported_input", message)
 
 
@@ -268,6 +268,11 @@ def normalized_translation_input(input_path: Path, *, source_name: str | None = 
                 from app.engine.adapters.docx_adapter import docx_to_html
                 body, metadata = _adapt(docx_to_html, local)
                 adapter = "docx"
+            elif suffix == ".txt":
+                from app.engine.adapters.txt_adapter import txt_to_html
+                body, metadata = _adapt(txt_to_html, local)
+                expected_images = None
+                adapter = "txt"
             else:
                 # The existing adapter's errors='replace' must not turn damaged
                 # source bytes into silently billable replacement characters.

@@ -146,7 +146,7 @@ def create_order(local_id, amount, *, file_count=1):
     result = api("POST", "/v2/checkout/orders", request_id="create-" + local_id, body={
         "intent": "CAPTURE", "purchase_units": [{
             "reference_id": local_id, "custom_id": local_id, "invoice_id": "fixepub-" + local_id,
-            "description": f"FixEpub ebook format conversion ({file_count} file(s))",
+            "description": f"FixEpub ebook processing service ({file_count} file(s))",
             "amount": {"currency_code": "USD", "value": amount},
         }], "payment_source": {"paypal": {"experience_context": {
             "brand_name": "FixEpub", "shipping_preference": "NO_SHIPPING", "user_action": "PAY_NOW",

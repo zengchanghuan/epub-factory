@@ -57,6 +57,8 @@ def included_source(name):
     if any(part.startswith(".") for part in path.parts):
         return (len(path.parts) == 3 and path.parts[:2] == (".github", "workflows")
                 and path.suffix in {".yml", ".yaml"} and not path.name.startswith("."))
+    if name == "frontend/sitemap.xml":
+        return True
     if name in ROOT_FILES:
         return True
     if path.suffix not in SOURCE_SUFFIXES or path.name.endswith((".env", ".lock")):

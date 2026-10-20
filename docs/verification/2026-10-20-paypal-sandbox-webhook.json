@@ -1,0 +1,93 @@
+{
+  "environment": "sandbox",
+  "job_id": "0407a83a2c23",
+  "paypal_order": "0SH165921B452830B",
+  "amount": "1.95",
+  "currency": "USD",
+  "provider_status": "COMPLETED",
+  "capture_id": "04L28688J5203421F",
+  "precision_polish": {
+    "version": 1,
+    "status": "completed",
+    "order_no": "0407a83a2c23",
+    "char_count": 129,
+    "language": "en",
+    "quoted_amount": "0.96",
+    "candidates": 4,
+    "api_calls": 4,
+    "reviewed": 4,
+    "changed": 2,
+    "refund_required": false,
+    "model": "deepseek-flash",
+    "provider": "api.deepseek.com",
+    "documents_scanned": 1,
+    "paragraphs_scanned": 5,
+    "unchanged": 2,
+    "retries": 0,
+    "failed": 0,
+    "reason": "",
+    "validation_passed": true
+  },
+  "changes": [
+    {
+      "id": "0",
+      "before": "This are a short test. The reader have a blue book.",
+      "after": "This is a short test. The reader has a blue book."
+    },
+    {
+      "id": "1",
+      "before": "She go to the library every day. They enjoys reading together.",
+      "after": "She goes to the library every day. They enjoy reading together."
+    }
+  ],
+  "downloads": [
+    {
+      "file": "all-reverted.epub",
+      "bytes": 2478,
+      "sha256": "363ad0253dc6e329d728400ef2d40466bcc5ea8a34118f0ec70f0a5bf9ac2a17",
+      "epubcheck": "passed"
+    },
+    {
+      "file": "all-kept.epub",
+      "bytes": 2477,
+      "sha256": "60f7cbb2806c10ff041b77db9e91e57608cbabda329221ca3a7895b7415fc91b",
+      "epubcheck": "passed"
+    },
+    {
+      "file": "partial.epub",
+      "bytes": 2478,
+      "sha256": "4a5fb15bbb60b11270cd414272712c5fb06caefdf59cce4a19ccf49085503580",
+      "epubcheck": "passed"
+    },
+    {
+      "file": "original.epub",
+      "bytes": 2477,
+      "sha256": "60f7cbb2806c10ff041b77db9e91e57608cbabda329221ca3a7895b7415fc91b",
+      "epubcheck": "passed"
+    }
+  ],
+  "unauthorized_review": 403,
+  "original_unchanged": true,
+  "webhook_delivery_tested": true,
+  "callback_checks": {
+    "duplicate_http": 200,
+    "tampered_http": 400,
+    "no_reexecution": true,
+    "payment": {
+      "id": "0407a83a2c23",
+      "payment_entitlement_json": "{\"version\": 1, \"state\": \"paid\", \"source\": \"verified_webhook\", \"order_no\": \"0407a83a2c23\", \"amount\": \"1.95\", \"translation_model\": \"deepseek-flash\", \"translation_quality\": \"standard\", \"authorized_at\": \"2026-10-20T01:26:44.880294+00:00\", \"product\": \"conversion_precision_polish\", \"precision_polish\": {\"enabled\": true, \"version\": 1, \"language\": \"en\", \"char_count\": 129, \"amount\": \"0.96\", \"output_mode\": \"simplified\"}}",
+      "payment_resolution_json": "{\"state\": \"paid\", \"source\": \"verified_webhook\", \"amount\": \"1.95\", \"verified_at\": \"2026-10-20T01:26:44.887355+00:00\", \"updated_at\": \"2026-10-20T01:26:44.887355+00:00\"}",
+      "status": "success"
+    }
+  },
+  "first_confirmation_source": "verified_webhook",
+  "app_capture_endpoint_called": false,
+  "download_contents_verified": true,
+  "temporary_webhook_removed": true,
+  "server_credentials_deleted": true,
+  "local_credentials_deleted": true,
+  "production_configuration_changed": false,
+  "production_health": "ok",
+  "duplicate_test_method": "Exact signed event replay through public URL; no provider resend API used",
+  "oauth_credentials_verified": true
+}

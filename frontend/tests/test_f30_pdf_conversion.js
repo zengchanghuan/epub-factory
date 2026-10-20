@@ -130,7 +130,7 @@ function ui(respond = async () => response(capPayload)) {
   const nodes = new Map(), calls = [], events = [];
   const $ = id => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id); };
   $('pdfUploadCard').style.display = 'none';
-  const context = { $, window: { FixEpubPdfConversion: pdf }, API: '', FormData: FormDataStub,
+  const context = { $, window: { FixEpubPdfConversion: pdf, FixEpubI18n:{ t:(key,values)=>require("../locales/ui")[key]["en"].replace(/\{(\w+)\}/g,(_,name)=>values[name]) } }, API: '', FormData: FormDataStub,
     document: { createElement: () => new Node(), createTextNode: text => ({ textContent: text }) },
     fetch: async (url, options) => { calls.push({ url, options }); return context.respond(url, options); }, respond,
     clientHeaders: () => ({ client: 'id' }), authHeaders: () => ({ token: 'original' }),
@@ -145,7 +145,8 @@ function ui(respond = async () => response(capPayload)) {
   };
   vm.createContext(context);
   const source = html.slice(html.indexOf('    // PDF is deliberately independent'), html.indexOf('    const TRANSLATION_STRATEGY_LABELS'));
-  vm.runInContext(source, context);
+  const paymentHint = html.slice(html.indexOf("    function refreshPdfCapabilityHint()"), html.indexOf('    $("pdfPaymentMethod").addEventListener("change", refreshPdfCapabilityHint)'));
+  vm.runInContext(paymentHint + source, context);
   return { context, $, calls, events, source };
 }
 function accept(h) {
@@ -157,6 +158,10 @@ test('Actual UI starts hidden; only valid capability shows independent PDF choos
   const h = ui(); assert.equal(h.$('pdfUploadCard').style.display, 'none'); await tick();
   assert.equal(h.$('pdfUploadCard').style.display, 'block'); assert.equal(h.$('pdfFileInput').accept, '.pdf');
   assert(h.$('pdfCapabilityHint').textContent.includes('¥0.99'));
+  assert(h.$('pdfCapabilityHint').textContent.includes('20 MB / 500 pages'));
+  h.$('pdfPaymentMethod').value='paypal';h.context.refreshPdfCapabilityHint();
+  assert(h.$('pdfCapabilityHint').textContent.includes('US$0.99'));
+  assert.equal(h.calls.length,1);
   const off = ui(async () => response({})); await tick(); assert.equal(off.$('pdfUploadCard').style.display, 'none');
   assert(!off.$('pdfFileInput').accept);
 });

@@ -138,6 +138,7 @@ async def _translate_chapter_async(job_id: str, chapter_id: str, *, captured_job
         quality_mode=getattr(job, "translation_quality", "standard") or "standard",
         cache_policy=getattr(job, "cache_policy", "reuse") or "reuse",
     )
+    translator.source_lang = (job.translation_stats or {}).get("source_lang", "auto")
     translator.cancel_check = cancel_check
     tasks = [translator.translate_single_chunk_async(c["html"]) for c in chunks_spec]
     results = await asyncio.gather(*tasks, return_exceptions=True)

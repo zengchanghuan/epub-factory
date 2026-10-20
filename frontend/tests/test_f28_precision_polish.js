@@ -6,7 +6,7 @@ const html = fs.readFileSync(path.resolve(__dirname, "../index.html"), "utf8");
 const reportSource = html.slice(html.indexOf("    function renderPrecisionPolishReport(data)"),
   html.indexOf("    function renderQaReport(data)"));
 const quoteSource = html.slice(html.indexOf("    let polishQuoteRequestId = 0;"),
-  html.indexOf('    enablePrecisionPolish.addEventListener("change"'));
+  html.indexOf('    $("polishLanguage").addEventListener("change"'));
 
 function setup(fetch = async () => { throw Error("Unexpected network"); }) {
   const nodes = new Map();
@@ -84,7 +84,7 @@ test("F28-6 后发报价优先，迟到的旧响应不能覆盖", async () => {
   pending[0]({ ok: true, json: async () => ({ char_count: 100, price_cny: "3.99" }) });
   await first;
   assert.equal($("polishCharCount").textContent, 200);
-  assert.equal($("polishPrice").textContent, "5.99");
+  assert.equal($("polishPrice").textContent, "¥5.99");
 });
 
 test("F28-7 更换文件或关闭精校后忽略旧响应", async () => {
@@ -131,4 +131,30 @@ test("F28-10 选单个非EPUB不能覆盖精校不支持状态", () => {
   context.selectFiles([{ name: "book.md", size: 100 }]);
   assert.equal(context.enablePrecisionPolish.disabled, true);
   assert.equal(context.enablePrecisionPolish.checked, false);
+});
+
+test("PayPal 精校预估采用美元附加费", async () => {
+  const {context,$} = setup(async () => ({ok:true,json:async()=>({char_count:100,price_cny:"14.01",price_usd:"2.46",total_usd:"3.45"})}));
+  $("paymentMethod").value="paypal";
+  await context.estimatePolishPrice();
+  assert.equal($("polishPrice").textContent,"US$2.46");
+});
+
+
+test("五语精校选择提交给报价接口，非简中精校跳过繁简转换", async () => {
+  for (const language of ["zh-TW", "en", "ja", "ko"]) {
+    let fields;
+    const { context, $ } = setup(async (url, options) => {
+      fields = options.body.fields;
+      return {ok:true,json:async()=>({char_count:100,price_cny:"3.99",price_usd:"0.96"})};
+    });
+    $("polishLanguage").value = language;
+    $("outputMode").value = "traditional";
+    context.syncPrecisionPolishAvailability();
+    assert.equal(context.enablePrecisionPolish.disabled,false);
+    assert.equal($("conversionMode").disabled,true);
+    await context.estimatePolishPrice();
+    assert.equal(fields.polish_language, language);
+    assert.equal(fields.output_mode,"simplified");
+  }
 });

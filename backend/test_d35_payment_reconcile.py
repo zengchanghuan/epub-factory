@@ -56,7 +56,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.assertEqual(result, {"checked": 1, "paid": 1, "closed": 0, "skipped": 0})
         self.assertEqual(self.store.get(job.id).status, JobStatus.pending)
         self.query.assert_called_once_with(job.id)
-        self.email.assert_called_once_with(job.id, "1.99", "conversion", file_count=1, is_test_order=False)
+        self.email.assert_called_once_with(job.id, "1.99", "conversion", file_count=1, is_test_order=False, currency="CNY")
         self.event.assert_called_once_with(self.store, job.id, "payment_succeeded", "verified_query")
         self.dispatch.assert_called_once_with(job.id, "")
         self.assertEqual(self.run_task()["checked"], 0)
@@ -66,7 +66,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.add(enable_translation=True, expected_amount="38.98")
         self.paid(amount="38.98", status="TRADE_FINISHED")
         self.assertEqual(self.run_task()["paid"], 1)
-        self.email.assert_called_once_with("order-a", "38.98", "translation", file_count=1, is_test_order=False)
+        self.email.assert_called_once_with("order-a", "38.98", "translation", file_count=1, is_test_order=False, currency="CNY")
 
     def test_batch_is_one_receipt_at_batch_total(self):
         self.add("part-a", batch_id="bundle", batch_index=0, batch_size=2, expected_amount="3.98")
@@ -74,7 +74,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.paid("batch_bundle", "3.98")
         self.assertEqual(self.run_task()["paid"], 1)
         self.query.assert_called_once_with("batch_bundle")
-        self.email.assert_called_once_with("batch_bundle", "3.98", "batch", file_count=2, is_test_order=False)
+        self.email.assert_called_once_with("batch_bundle", "3.98", "batch", file_count=2, is_test_order=False, currency="CNY")
         self.assertEqual(self.dispatch.call_count, 2)
 
     def test_batch_missing_frozen_price_cannot_fall_back(self):
@@ -89,7 +89,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.add(expected_amount="")
         self.paid(amount="5.99")
         self.assertEqual(self.run_task()["paid"], 1)
-        self.email.assert_called_once_with("order-a", "5.99", "conversion", file_count=1, is_test_order=False)
+        self.email.assert_called_once_with("order-a", "5.99", "conversion", file_count=1, is_test_order=False, currency="CNY")
 
     def test_mismatched_unknown_or_invalid_amount_never_releases(self):
         job = self.add()
@@ -127,7 +127,7 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.add(is_test_order=True, expected_amount="0.01")
         self.paid(amount="0.01")
         self.assertEqual(self.run_task()["paid"], 1)
-        self.email.assert_called_once_with("order-a", "0.01", "conversion", file_count=1, is_test_order=True)
+        self.email.assert_called_once_with("order-a", "0.01", "conversion", file_count=1, is_test_order=True, currency="CNY")
 
     def test_existing_terminal_or_running_orders_are_not_scanned(self):
         for state in (JobStatus.success, JobStatus.failed, JobStatus.running, JobStatus.pending, JobStatus.cancelled):
@@ -153,6 +153,31 @@ class PaymentReconciliationTests(unittest.TestCase):
         self.assertEqual(self.run_task()["closed"], 1)
         self.assertEqual(self.store.get(job.id).status, JobStatus.cancelled)
         self.close.assert_called_once_with(job.id)
+        self.email.assert_not_called()
+
+    def test_paypal_recovery_uses_original_provider_and_usd_receipt(self):
+        from app.domain import paypal_checkout
+        job = self.add(expected_amount="0.99", translation_stats={"payment_method": "paypal"})
+        with patch.object(paypal_checkout, "safe_query_trade", return_value={
+            "out_trade_no": job.id, "total_amount": "0.99", "trade_status": "TRADE_SUCCESS",
+        }) as query:
+            self.assertEqual(self.run_task()["paid"], 1)
+            query.assert_called_once_with(self.store, job)
+        self.query.assert_not_called()
+        self.close.assert_not_called()
+        self.email.assert_called_once_with(job.id, "0.99", "conversion", file_count=1,
+                                           is_test_order=False, currency="USD")
+
+    def test_expired_paypal_order_never_uses_alipay_close(self):
+        from app.domain import paypal_checkout
+        job = self.add(translation_stats={"payment_method": "paypal"},
+                       created_at=datetime.now(timezone.utc) - timedelta(hours=3))
+        with patch.object(paypal_checkout, "safe_query_trade", return_value={
+            "out_trade_no": job.id, "trade_status": "WAIT_BUYER_PAY",
+        }):
+            self.assertEqual(self.run_task()["skipped"], 1)
+        self.query.assert_not_called()
+        self.close.assert_not_called()
         self.email.assert_not_called()
 
 

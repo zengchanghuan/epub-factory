@@ -15,6 +15,12 @@
       'payBox', 'payPrice', 'qrImg', 'qrPayment', 'webPayment', 'alipayLink', 'checkPaymentBtn',
       'fixStatus', 'downloadArea', 'downloadBtn', 'resetBtn', 'resetBtn2'];
     const el = Object.fromEntries(ids.map(id => [id, doc.getElementById(id)]));
+    const methodSelect = doc.getElementById("repairPaymentMethod");
+    if (methodSelect) fetcher("/api/v2/paypal/config").then(r => r.json()).then(c => {
+      const available = c.enabled === true && c.currency === "USD" && (c.products || []).includes("repair");
+      methodSelect.querySelector('[value="paypal"]').disabled = !available;
+      win.FixEpubI18n?.payments.configure(methodSelect,available);
+    }).catch(() => {});
     const minRecoveryDelay = 45000;
     const maxRecoveryChecks = 10;
     let epoch = 0;
@@ -24,16 +30,17 @@
     const endpoint = (id, action) => `/api/v2/repair/${encodeURIComponent(id)}/${action}`;
     const active = s => s && state === s && s.epoch === epoch;
     const terminal = s => ['paid', 'repaired', 'failed'].includes(s.status);
-    function text(node, value) { node.textContent = value; }
+    function text(node, value) { node.textContent = win.FixEpubI18n ? win.FixEpubI18n.text(value) : value; }
     function closePopup() {
       try { if (popup && !popup.closed) popup.close(); } catch (_) { /* browser window policy */ }
       popup = null;
     }
-    function setPrice(value) {
+    function setPrice(value, currency = 'CNY') {
       if (value == null || !/^\d+(?:\.\d{1,2})?$/.test(String(value))) return;
       const price = Number(value).toFixed(2);
-      text(el.priceLabel, '¥' + price);
-      text(el.payPrice, '¥' + price + ' / 次');
+      const symbol = currency === 'USD' ? 'US$' : '¥';
+      text(el.priceLabel, symbol + price);
+      text(el.payPrice, symbol + price + ' / 次');
     }
     function clearPayment() {
       el.payBox.classList.remove('visible');
@@ -56,11 +63,12 @@
       cancel(timer);
       timer = null;
       state = null;
+      if (methodSelect) methodSelect.disabled = false;
       closePopup();
       clearPayment();
       el.payBtn.disabled = true;
       text(el.payButtonLabel, '🔧 一键修复');
-      setPrice('2.99');
+      setPrice('0.99');
       el.reportBlock.classList.remove('visible');
       el.okBanner.style.display = 'none';
       el.issueArea.style.display = 'none';
@@ -82,6 +90,7 @@
         reading: false, hasPayment: false, recoveryChecks: 0, nextRecoveryAt: 0, mayRecover: true,
         quoteReported: false, checkResult: '', report: null, paymentStarted: false };
       state = s;
+      if (methodSelect) methodSelect.disabled = true;
       options.onTask(id);
       later.setTask({ kind: 'repair', id, filename, status: s.status }, !!preserveEmail);
       return s;
@@ -100,7 +109,7 @@
       if (!s.canPay && !s.paymentStarted) {
         text(el.fixStatus, '此文件当前无需修复或无法自动修复，不会发起付款。');
       } else if (s.checkResult === 'unavailable') {
-        text(el.fixStatus, '暂时无法可靠确认支付宝付款结果。若已付款，请勿重复支付；系统会继续核实，也可联系客服。');
+        text(el.fixStatus, '暂时无法可靠确认付款结果。若已付款，请勿重复支付；系统会继续核实，也可联系客服。');
       } else if (s.checkResult === 'manual_review_required') {
         text(el.fixStatus, '付款状态仍待核实，自动核实期限已结束。若已付款请勿重复支付，请联系客服协助核对。');
       } else if (!s.canPay) {
@@ -124,7 +133,9 @@
         s.paymentStarted = data.payment_started;
         if (!data.payment_started) s.mayRecover = false;
       }
-      if (data.price_cny != null) setPrice(data.price_cny);
+      if (data.price_cny != null) setPrice(data.price_cny, data.currency || s.currency);
+      if (data.currency) s.currency = data.currency;
+      if (data.payment_method && methodSelect) methodSelect.value = data.payment_method;
       if (typeof data.can_pay === 'boolean') s.canPay = data.can_pay;
       if (data.status) s.status = data.status;
       if (data.report) {
@@ -247,6 +258,7 @@
       text(el.diagStatus, '正在诊断文件格式…');
       const form = new win.FormData();
       form.append('file', file);
+      if (methodSelect) form.append('payment_method', methodSelect.value);
       try {
         const res = await fetcher('/api/v2/repair/diagnose', { method: 'POST', body: form });
         const data = await res.json();
@@ -288,7 +300,9 @@
           throw new Error(typeof data.detail === 'string' ? data.detail : '暂时无法生成支付入口，请稍后重试');
         }
         if (terminal(s)) return;
-        if (data.price_cny != null) setPrice(data.price_cny);
+        if (data.price_cny != null) setPrice(data.price_cny, data.currency || s.currency);
+        if (data.currency) s.currency = data.currency;
+        if (data.payment_method && methodSelect) methodSelect.value = data.payment_method;
         if (['paid', 'repaired', 'failed'].includes(data.status)) {
           applyStatus(s, data);
         } else {
@@ -301,8 +315,10 @@
             el.qrPayment.hidden = false;
           } else if (data.pay_url) {
             const url = new URL(data.pay_url);
-            if (url.protocol !== 'https:' || !(url.hostname === 'alipay.com' || url.hostname.endsWith('.alipay.com'))) throw new Error('支付链接不正确，请联系客服');
+            const validPaypal = data.payment_method === 'paypal' && url.origin === 'https://fixepub.com' && url.pathname === '/paypal-checkout.html' && url.searchParams.get('order') === 'repair_' + s.id;
+            if (url.protocol !== 'https:' || !(validPaypal || (data.payment_method !== 'paypal' && (url.hostname === 'alipay.com' || url.hostname.endsWith('.alipay.com'))))) throw new Error('支付链接不正确，请联系客服');
             el.alipayLink.href = url.href;
+            text(el.alipayLink, data.payment_method === 'paypal' ? '前往 PayPal 付款' : '前往支付宝付款');
             el.webPayment.hidden = false;
           } else { throw new Error('未取得支付入口，请稍后重试'); }
           s.hasPayment = true;

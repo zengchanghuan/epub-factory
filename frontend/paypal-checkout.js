@@ -2,7 +2,8 @@
   "use strict";
   const $ = id => document.getElementById(id);
   let localId, token, auth, info, busy = false;
-  const message = text => { $("status").textContent = text; };
+  const tr = text => window.FixEpubI18n ? window.FixEpubI18n.text(text) : text;
+  const message = text => { $("status").textContent = tr(text); };
   async function api(path, method = "GET") {
     const response = await fetch(path, { method, headers: {
       ...(token ? { "X-Job-Token": token } : {}), ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
@@ -26,21 +27,15 @@
     } catch (_) { throw new Error("无法读取订单凭证，请使用原下单浏览器从任务中心重新打开。"); }
     info = await api(`/api/v2/paypal/orders/${encodeURIComponent(localId)}`);
     if (info.local_id !== localId || info.currency !== "USD" || !/^\d+\.\d{2}$/.test(info.amount)) throw new Error("订单信息不一致，请返回任务中心。");
-    $("description").textContent = `电子书格式转换 · ${info.file_count} 本`;
+    const renderDescription = () => { $("description").textContent = `${tr(({repair:"EPUB 格式修复",translation:"电子书翻译",precision_polish:"格式转换与用词精校"})[info.product] || "电子书格式转换")} · ${info.file_count} ${tr("本")}`; };
+    renderDescription();
+    window.addEventListener("fixepub:locale", renderDescription);
     $("price").textContent = `US$${info.amount}`;
-    $("return").href = info.batch_id ? `/?batch_id=${encodeURIComponent(info.batch_id)}` : `/?job_id=${encodeURIComponent(info.job_id)}`;
+    $("return").href = info.kind === "repair" ? `/epub-repair.html?job_id=${encodeURIComponent(info.job_id)}` : info.batch_id ? `/?batch_id=${encodeURIComponent(info.batch_id)}` : `/?job_id=${encodeURIComponent(info.job_id)}`;
     if (info.status !== "pending_payment") {
       message("此订单当前无需付款，请返回任务中心查看状态。");
       return;
     }
-    const config = await api("/api/v2/paypal/config");
-    if (!config.enabled || !/^[A-Za-z0-9_-]+$/.test(config.client_id || "") || config.currency !== "USD") throw new Error("PayPal 暂不可用，请稍后重试。");
-    await new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(config.client_id)}&currency=USD&intent=capture&components=buttons&disable-funding=card,credit,paylater,venmo`;
-      script.onload = resolve; script.onerror = () => reject(new Error("PayPal 支付组件加载失败，请刷新页面。"));
-      document.head.append(script);
-    });
     async function capture() {
       if (busy) return;
       busy = true; $("recover").disabled = true;
@@ -54,6 +49,20 @@
       } finally { busy = false; $("recover").disabled = false; }
     }
     $("recover").onclick = capture;
+    // A full-page PayPal return does not invoke the SDK's onApprove callback.
+    // Never trust or forward its token: the server captures only the stored order.
+    if (new URLSearchParams(location.search).has("token")) {
+      await capture();
+      return;
+    }
+    const config = await api("/api/v2/paypal/config");
+    if (!config.enabled || !/^[A-Za-z0-9_-]+$/.test(config.client_id || "") || config.currency !== "USD") throw new Error("PayPal 暂不可用，请稍后重试。");
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(config.client_id)}&currency=USD&intent=capture&components=buttons&disable-funding=card,credit,paylater,venmo`;
+      script.onload = resolve; script.onerror = () => reject(new Error("PayPal 支付组件加载失败，请刷新页面。"));
+      document.head.append(script);
+    });
     await window.paypal.Buttons({
       style: { layout: "vertical", label: "pay", shape: "rect", color: "gold" },
       createOrder: async () => {

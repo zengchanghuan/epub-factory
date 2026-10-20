@@ -8,7 +8,7 @@ for (const page of ['index.html', 'epub-translator.html', 'vertical-to-horizonta
     const accepts = [...html.matchAll(/accept="([^"]+)"/g)].map(match => match[1]);
     if (page === 'index.html') {
       assert(accepts.length > 0);
-      assert(html.includes('lib.js?v=20261012-merged'));
+      assert(html.includes('lib.js?v=20261019-txt-review'));
     } else {
       assert.strictEqual(accepts.length, 0, 'Static tool descriptions must not duplicate uploads');
       assert(!/<input\b[^>]*type=["']file["']/i.test(html));

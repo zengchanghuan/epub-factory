@@ -170,3 +170,16 @@ test("所有普通内联脚本语法可解析", () => {
     new vm.Script(source);
   }
 });
+
+test("美元翻译报价在画像确认和续付显示原币种", () => {
+  const { context } = setup();
+  assert.equal(context.translationPricingView({currency:"USD",amount:"2.01",pricing:{reference_price_cny:"14.01"}}).amountText, "US$2.01");
+  assert.equal(context.translationPricingView({pricing:{currency:"USD",price_cny:"0.99"}}).amountText, "US$0.99");
+});
+
+test("画像确认后的 PayPal 付款按钮不误标支付宝", () => {
+  const { context, $ } = setup();
+  context.showTranslationPayment({currency:"USD",payment_method:"paypal",amount:"0.99",pay_url:"https://fixepub.com/paypal-checkout.html?order=example"});
+  assert.equal($("translationPayLink").textContent,"前往 PayPal 付款");
+  assert.equal($("translationPriceDisplay").textContent,"US$0.99");
+});

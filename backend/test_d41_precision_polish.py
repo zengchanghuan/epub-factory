@@ -95,6 +95,96 @@ class PrecisionPolishTests(unittest.TestCase):
         with self.engine.connect() as connection:
             return connection.execute(select(UsageRequest.__table__)).mappings().all()
 
+    def test_multilingual_review_changes_text_and_preserves_resources(self):
+        samples = {
+            "en": ("This are a book.", "This is a book."),
+            "ja": ("これは本でありますです。", "これは本です。"),
+            "ko": ("이것은 책 입니 다.", "이것은 책입니다."),
+            "zh-TW": ("這是是很好的書。", "這是很好的書。"),
+        }
+        for language, (original, corrected) in samples.items():
+            with self.subTest(language=language):
+                self.output.unlink(missing_ok=True)
+                content = html('<p>' + original + '<code>fixed 123</code><a href="https://example.com">link</a></p>')
+                stats = self.run_book({'one.xhtml': content}, language=language,
+                                      polisher_factory=self.factory({original: corrected}))
+                self.assertEqual(stats['status'], 'completed')
+                self.assertEqual(stats['changed'], 1)
+                with zipfile.ZipFile(self.output) as result, zipfile.ZipFile(self.source) as source:
+                    self.assertIn(corrected.encode(), result.read('OPS/one.xhtml'))
+                    self.assertIn(b'<code>fixed 123</code>', result.read('OPS/one.xhtml'))
+                    for name in source.namelist():
+                        if name != 'OPS/one.xhtml':
+                            self.assertEqual(result.read(name), source.read(name))
+                prompt = self.requests[-1]['messages'][0]['content']
+                self.assertIn(module.POLISH_LANGUAGES[language], prompt)
+                self.assertIn('Do not translate', prompt)
+
+    def test_multilingual_quote_keeps_japanese_and_traditional_text(self):
+        for language, text in [('ja', '図書館の本です。'), ('zh-TW', '這是繁體中文的書。'), ('en', 'Hello world.'), ('ko', '한국어 책입니다.')]:
+            book(self.source, {'one.xhtml': html('<p>' + text + '</p>')})
+            before = self.source.read_bytes()
+            with patch.object(service, 'validate_document_input_budget') as budget:
+                result = service.inspect_precision_polish_source(self.source, language=language)
+            self.assertGreater(result['candidates'], 0)
+            self.assertEqual(result['char_count'], sum(not c.isspace() for c in text))
+            self.assertEqual(budget.call_args[0][0].paragraphs[0].context, text)
+            self.assertEqual(self.source.read_bytes(), before)
+
+    def test_multilingual_guards_reject_numbers_markup_and_urls(self):
+        for original, replacement in [('There are 12 books.', 'There are 13 books.'),
+                                      ('A book.', '<b>A book.</b>'),
+                                      ('Visit https://example.com now.', 'Visit https://evil.test now.')]:
+            with self.subTest(original=original):
+                with self.assertRaises(module.PrecisionPolishError):
+                    self.run_book({'one.xhtml': html('<p>' + original + '</p>')}, language='en',
+                                  polisher_factory=self.factory({original: replacement}))
+                self.assertFalse(self.output.exists())
+
+    def test_multilingual_long_text_is_bounded_and_reviewed_once(self):
+        source = html('<div><p>' + 'A long sentence. ' * 90 + '</p></div>')
+        plan = module.plan_document(source, 'en')
+        self.assertGreater(len(plan.paragraphs), 1)
+        self.assertEqual(''.join(p.occurrences[0].source for p in plan.paragraphs), 'A long sentence. ' * 90)
+        self.assertTrue(all(len(p.occurrences[0].source) <= 240 for p in plan.paragraphs))
+        module.validate_document_input_budget(plan)
+        stats = self.run_book({'one.xhtml': source}, language='en', polisher_factory=self.factory())
+        self.assertEqual(stats['reviewed'], len(plan.paragraphs))
+        self.assertEqual(stats['changed'], 0)
+
+    def test_review_export_five_languages_and_immutable_original(self):
+        from app.domain.polish_review import load_review, export_selection, digest
+        cases = [('zh-CN', '机车', '摩托车', '窝心', '暖心'),
+                 ('zh-TW', '這是是書。', '這是書。', '很好很好。', '很好。'),
+                 ('en', 'This are a book.', 'This is a book.', 'She go home.', 'She goes home.'),
+                 ('ja', 'これは本でありますです。', 'これは本です。', '私はは行きます。', '私は行きます。'),
+                 ('ko', '이것은 책 입니 다.', '이것은 책입니다.', '집 에 갑니다.', '집에 갑니다.')]
+        for language, a, b, c, d in cases:
+            with self.subTest(language=language):
+                for file in [self.output, self.root/'precision-review.json', self.root/'precision-original.epub']:
+                    file.unlink(missing_ok=True)
+                self.run_book({'one.xhtml':html('<p>'+a+'</p><p>'+c+'</p>')},language=language,
+                              polisher_factory=self.factory({a:b,c:d}),review_dir=self.root)
+                data,baseline=load_review(self.output)
+                self.assertEqual(len(data['changes']),2)
+                original_digest=digest(self.output)
+                selected,temporary=export_selection(self.output,['0'],data['revision'])
+                try:
+                    self.assertTrue(temporary)
+                    with zipfile.ZipFile(selected) as archive:
+                        text=archive.read('OPS/one.xhtml').decode()
+                    self.assertIn(a,text);self.assertIn(d,text);self.assertNotIn(b,text)
+                    self.assertEqual(digest(self.output),original_digest)
+                finally:selected.unlink(missing_ok=True)
+                selected,temporary=export_selection(self.output,['0','1'],data['revision'])
+                self.assertEqual(selected,baseline);self.assertFalse(temporary)
+                selected,temporary=export_selection(self.output,[],data['revision'])
+                self.assertEqual(selected,self.output);self.assertFalse(temporary)
+                for rejected,revision in [(['unknown'],data['revision']),([], 'stale')]:
+                    with self.assertRaises(ValueError):export_selection(self.output,rejected,revision)
+                baseline.write_bytes(b'tampered')
+                with self.assertRaises(ValueError):load_review(self.output)
+
     def test_no_candidates_does_not_construct_model_and_all_members_unchanged(self):
         stats = self.run_book({'part.xhtml': html('<p>Hello world.</p>')},
                               polisher_factory=lambda: self.fail('No-candidate book constructed a model'))

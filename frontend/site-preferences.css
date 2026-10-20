@@ -1,0 +1,27 @@
+:root[data-theme="dark"] {
+  --bg:#10141b!important; --card:#181e28!important; --surface:#202836!important;
+  --border:#354052!important; --border-strong:#64748b!important; --text:#f1f5f9!important;
+  --muted:#b3becf!important; --subtle:#94a3b8!important; --primary:#f1f5f9!important;
+  --primary-hover:#cbd5e1!important; --accent:#78b0ff!important; --success:#6ee7a1!important;
+  --success-bg:#123125!important; --success-border:#276349!important;
+  --error:#fda4af!important; --error-bg:#3b1922!important; --error-border:#81334b!important;
+  --warning-bg:#392d16!important; --warning-border:#725720!important; --warning-text:#fde68a!important;
+}
+.site-preferences {display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px;padding:10px 20px;background:var(--surface,#f7f7f7);color:var(--text,#111827);border-bottom:1px solid var(--border,#e5e7eb);font:13px/1.5 system-ui,sans-serif;}
+.site-preferences label {display:flex;align-items:center;gap:8px;margin:0;}
+.site-preferences select {width:auto;min-width:105px;min-height:36px;padding:6px 10px;color:inherit;background:var(--card,#fff);border:1px solid var(--border,#d1d5db);border-radius:7px;font:inherit;}
+.site-preferences select:focus-visible {outline:2px solid var(--accent,#06f);outline-offset:2px;}
+.localized-overview {max-width:1100px;margin:32px auto;padding:24px;line-height:1.8;}
+[data-theme="dark"] body {background:var(--bg)!important;color:var(--text)!important;}
+[data-theme="dark"] :is(.card,main,.tool-card,.modal-content,.detail-panel,.pay-box,.feature-card,.task-card) {background:var(--card)!important;color:var(--text)!important;border-color:var(--border)!important;}
+[data-theme="dark"] :is(input,select,textarea) {background:var(--surface)!important;color:var(--text)!important;border-color:var(--border)!important;}
+[data-theme="dark"] :is(.btn-primary,button.primary) {background:#e2e8f0!important;color:#111827!important;}
+[data-theme="dark"] a {color:var(--accent);}
+[data-theme="dark"] .muted {color:var(--muted)!important;}
+[data-theme="dark"] :is(.dropzone,.tab,.quality-card,.strategy-card) {border-color:var(--border)!important;background:var(--surface)!important;color:var(--text)!important;}
+[hidden] {display:none!important;}
+@media(max-width:520px){.site-preferences{justify-content:space-between;padding:8px;gap:8px;}.site-preferences label{flex-direction:column;align-items:flex-start;gap:3px;}}
+[data-theme="dark"] :is(.topbar,.return-later-panel,.translation-timing-card,.diagnostic-metric,.diagnostic-chunk,.diagnostics-btn,.timing-copy-btn) {background:var(--card)!important;color:var(--text)!important;border-color:var(--border)!important;}
+[data-theme="dark"] :is(.return-later-panel>strong,.return-later-privacy,#notificationEmailHint,#returnLaterTaskList span) {color:var(--muted)!important;}
+[data-theme="dark"] .topbar-nav a.active {background:#334155!important;color:#f8fafc!important;}
+[data-theme="dark"] .stop-btn {background:var(--card)!important;color:var(--error)!important;}

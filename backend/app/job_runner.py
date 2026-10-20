@@ -217,7 +217,7 @@ def _run_precision_polish_stage(job, result, output_path, *, cancel_check, stage
     publish({"status": "running", "api_calls": 0, "reviewed": 0, "changed": 0})
     try:
         stats = run_precision_polish(output_path, polished_path, cancel_check=cancel_check,
-                                     stats_callback=publish)
+                                     stats_callback=publish, language=quote.get("language", "zh-CN"), review_dir=output_path.parent)
         if stats.get("status") == "no_candidates":
             # New quotes reject zero candidates. A historical paid order that
             # reaches this state still needs fee review, not a success claim.
@@ -479,10 +479,10 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             reason = precision_polish_entitlement_reason(job)
             if reason:
                 raise RuntimeError("AI 精校付款权益未核验或与原订单不符，已停止执行，请联系管理员核验。")
-            if Path(job.input_path).suffix.lower() != ".epub":
-                raise RuntimeError("AI 精校目前仅支持 EPUB 的普通简体转换")
+            if Path(job.input_path).suffix.lower() not in {".epub", ".txt"}:
+                raise RuntimeError("AI 精校目前仅支持 EPUB 或 TXT")
         source_name_raw = Path(job.source_filename).stem
-        source_name = _safe_output_stem(source_name_raw) if pdf_job else _convert_filename_stem_for_mode(
+        source_name = _safe_output_stem(source_name_raw) if pdf_job or Path(job.input_path).suffix.lower() == ".txt" else _convert_filename_stem_for_mode(
             source_name_raw,
             job.output_mode,
             getattr(job, "traditional_variant", "auto") or "auto",
@@ -636,11 +636,21 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                         job=job, input_path=normalized.epub_path, output_path=output_path,
                         progress_callback=on_progress, stage_callback=on_stage, cancel_check=is_cancelled,
                     )
+            elif getattr(job, "enable_precision_polish", False) and input_path.suffix.lower() == ".txt":
+                with normalized_translation_input(input_path, source_name=job.source_filename, cancel_check=is_cancelled) as normalized:
+                    language = (job.translation_stats or {}).get("precision_polish", {}).get("language", "zh-CN")
+                    result = converter.convert_file_to_horizontal(normalized.epub_path, output_path,
+                        OutputMode.simplified if language == "zh-CN" else OutputMode.original,
+                        device=job.device.value, traditional_variant=job.traditional_variant,
+                        lexicon_domains=job.lexicon_domains, enable_proper_noun=job.enable_proper_noun,
+                        progress_callback=on_progress, stage_callback=on_stage)
             else:
                 result = converter.convert_file_to_horizontal(
                     input_path,
                     output_path,
-                    job.output_mode,
+                    (OutputMode.original if getattr(job, "enable_precision_polish", False)
+                     and (job.translation_stats or {}).get("precision_polish", {}).get("language", "zh-CN") != "zh-CN"
+                     else job.output_mode),
                     enable_translation=job.enable_translation,
                     target_lang=job.target_lang,
                     device=job.device.value,

@@ -65,7 +65,7 @@ class RepairPricingTests(unittest.TestCase):
     def test_translation_minimum_uses_new_standard_floor_and_polish_is_unchanged(self):
         from app.engine.cleaners.llm_polish import calculate_polish_price
         self.assertEqual(main.CONVERSION_PRICE_CNY, '0.99')
-        self.assertEqual(main.REPAIR_PRICE_CNY, '2.99')
+        self.assertEqual(main.REPAIR_PRICE_CNY, '0.99')
         self.assertEqual(main._calc_translation_price(10), '3.99')
         self.assertEqual(main.TRANSLATION_PRICE_CNY, '5.99')
         self.assertEqual(calculate_polish_price(200000), 5.99)
@@ -150,8 +150,8 @@ class RepairPricingTests(unittest.TestCase):
         response = self.client.post('/api/v2/repair/diagnose',
             files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()['price_cny'], '2.99')
-        self.assertEqual(main._repair_job_get(response.json()['job_id'])['quoted_amount'], '2.99')
+        self.assertEqual(response.json()['price_cny'], '0.99')
+        self.assertEqual(main._repair_job_get(response.json()['job_id'])['quoted_amount'], '0.99')
 
     def test_old_batch_keeps_original_aggregate_price(self):
         batch_id = uuid.uuid4().hex[:12]
@@ -168,7 +168,7 @@ class RepairPricingTests(unittest.TestCase):
 
     def test_status_restores_frozen_price_before_payment_after_restart(self):
         cases = [
-            ({'quoted_amount': amount}, amount) for amount in ('0.99', '1.99', '5.99')
+            ({'quoted_amount': amount}, amount) for amount in ('0.99', '1.99', '2.99', '5.99')
         ] + [
             ({'quoted_amount': '0.99', 'expected_amount': amount}, amount)
             for amount in ('0.01', '1.99', '5.99')

@@ -266,6 +266,8 @@ def reduce_and_package(
         book.direction = direction
     elif hasattr(book, "set_direction"):
         book.set_direction(direction)
+    if target_lang:
+        book.set_language(target_lang)
     if book_title:
         _sync_book_title_metadata(book, book_title)
 
@@ -296,6 +298,8 @@ def reduce_and_package(
         if name in file_path_to_content:
             changed_chapter_content |= file_path_to_content[name] != item.get_content()
             item.set_content(file_path_to_content[name])
+            if target_lang:
+                item.lang = target_lang
             if BeautifulSoup(file_path_to_content[name], "html.parser").select_one(".epub-translated"):
                 bilingual_documents.append(item)
             continue

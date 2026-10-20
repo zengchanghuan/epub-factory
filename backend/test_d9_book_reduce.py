@@ -105,15 +105,18 @@ def test_reduce_and_package_overrides_chapter():
                 return replacement
             return None
 
-        ok = reduce_and_package(str(inp), str(out), get_content)
+        ok = reduce_and_package(str(inp), str(out), get_content, target_lang="ko")
         assert ok is True
         assert out.is_file()
         book_out = epub.read_epub(str(out))
+        assert "ko" in [value for value, _ in book_out.get_metadata("DC", "language")]
         for item in book_out.get_items():
             if item.get_type() == 9 and item.get_name() == "chap_01.xhtml":
                 raw = item.get_content()
                 if isinstance(raw, str):
                     raw = raw.encode("utf-8")
+                with zipfile.ZipFile(out) as archive:
+                    assert b'lang="ko"' in archive.read("EPUB/chap_01.xhtml")
                 assert b"REPLACED_BY_REDUCE" in raw
                 break
         else:

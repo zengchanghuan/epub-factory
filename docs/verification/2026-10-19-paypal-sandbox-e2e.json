@@ -1,0 +1,74 @@
+{
+  "environment": "sandbox",
+  "job_id": "1c039a7711dd",
+  "paypal_order": "3597378708464361P",
+  "amount": "1.95",
+  "currency": "USD",
+  "provider_status": "COMPLETED",
+  "capture_id": "1EJ9325681585584J",
+  "precision_polish": {
+    "version": 1,
+    "status": "completed",
+    "order_no": "1c039a7711dd",
+    "char_count": 129,
+    "language": "en",
+    "quoted_amount": "0.96",
+    "candidates": 4,
+    "api_calls": 4,
+    "reviewed": 4,
+    "changed": 2,
+    "refund_required": false,
+    "model": "deepseek-flash",
+    "provider": "api.deepseek.com",
+    "documents_scanned": 1,
+    "paragraphs_scanned": 5,
+    "unchanged": 2,
+    "retries": 0,
+    "failed": 0,
+    "reason": "",
+    "validation_passed": true
+  },
+  "changes": [
+    {
+      "id": "0",
+      "before": "This are a short test. The reader have a blue book.",
+      "after": "This is a short test. The reader has a blue book."
+    },
+    {
+      "id": "1",
+      "before": "She go to the library every day. They enjoys reading together.",
+      "after": "She goes to the library every day. They enjoy reading together."
+    }
+  ],
+  "downloads": [
+    {
+      "file": "all-reverted.epub",
+      "bytes": 2478,
+      "sha256": "04d878d77efecc096d79097ee8a33fe034e7412168c594178fe068596dbc3cd5",
+      "epubcheck": "passed"
+    },
+    {
+      "file": "all-kept.epub",
+      "bytes": 2477,
+      "sha256": "574ddf0080563afc0e73120d536226bf81884b9101a46492a3cc998d5e5b5cd6",
+      "epubcheck": "passed"
+    },
+    {
+      "file": "partial.epub",
+      "bytes": 2478,
+      "sha256": "61241befe510409f0dc4c51ab6da7f6ec8eff877e7f568cfa2ef2d1508a0040e",
+      "epubcheck": "passed"
+    },
+    {
+      "file": "original.epub",
+      "bytes": 2477,
+      "sha256": "574ddf0080563afc0e73120d536226bf81884b9101a46492a3cc998d5e5b5cd6",
+      "epubcheck": "passed"
+    }
+  ],
+  "unauthorized_review": 403,
+  "duplicate_capture": "no_reexecution",
+  "original_unchanged": true,
+  "webhook_delivery_tested": false,
+  "selection_content_verified": true
+}

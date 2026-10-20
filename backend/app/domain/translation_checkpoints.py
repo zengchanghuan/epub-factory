@@ -18,7 +18,7 @@ from typing import Any
 
 from app.domain.translation_terminology_metadata import generation_preflight
 
-CHECKPOINT_VERSION = "book-resume-v1"
+CHECKPOINT_VERSION = "book-resume-v2-multilingual"
 
 
 def fingerprint(value: Any) -> str:
@@ -33,6 +33,7 @@ def book_resume_key(job, manifest: dict) -> str:
         "enable_proper_noun", "target_lang", "bilingual", "translation_quality",
         "temperature", "translation_strategy", "glossary",
     )}
+    settings["source_lang"] = (getattr(job, "translation_stats", None) or {}).get("source_lang", "auto")
     settings["model"] = (getattr(job, "translation_model", None)
                          or os.environ.get("EPUB_DEFAULT_TRANSLATION_MODEL")
                          or os.environ.get("OPENAI_MODEL", "deepseek-flash"))

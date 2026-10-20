@@ -19,8 +19,8 @@ test("首页翻译 FAQ 结构化数据保留能力说明与原文复核提醒", 
 });
 
 test("首页可见翻译介绍保留辅助阅读定位与原文复核提醒", () => {
-  const cards = Array.from(html.matchAll(/<div class="feature-card">([\s\S]*?)<\/div>/g), match => match[1]);
-  const card = cards.find(content => /<h3>[^<]*(?:翻译|英译中)[^<]*<\/h3>/.test(content));
+  const cards = Array.from(html.matchAll(/<article class="feature-card">([\s\S]*?)<\/article>/g), match => match[1]);
+  const card = cards.find(content => /<h3>[\s\S]*(?:翻译|英译中)[\s\S]*<\/h3>/.test(content));
   assert.ok(card, "应保留可见的翻译介绍卡片");
   assertTranslationGuidance(card);
   assert.ok(card.includes("辅助阅读"), "应说明译文适用范围");

@@ -125,7 +125,7 @@ class ReleaseGateTests(unittest.TestCase):
         return result
 
     def test_source_policy_includes_code_but_excludes_credentials_books_and_runtime(self):
-        for name in ("backend/app/main.py", "backend/test_example.py", "frontend/index.html",
+        for name in ("backend/app/main.py", "backend/test_example.py", "frontend/index.html", "frontend/sitemap.xml",
                      "frontend/app.js", "scripts/check.sh", "README.md", "backend/.env.example"):
             with self.subTest(name=name):
                 self.assertTrue(gate.included_source(name))

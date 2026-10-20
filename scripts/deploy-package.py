@@ -15,6 +15,8 @@ def included(name):
     p = Path(name)
     if any(part.startswith('.') or 'secret' in part.lower() for part in p.parts):
         return False
+    if name == "frontend/sitemap.xml":
+        return True
     if name in ROOT_FILES:
         return True
     if p.suffix not in SOURCE_SUFFIXES:

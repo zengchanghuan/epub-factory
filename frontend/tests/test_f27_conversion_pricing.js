@@ -14,7 +14,7 @@ test('繁简转换和竖排改横排展示 0.99 元基础价', () => {
 test('用词精校明确作为附加费单独列示', () => {
   assert(html.includes('用词精校另计'));
   assert(html.includes('data.precision_polish_amount'));
-  assert(html.includes('基础转换 ¥${baseAmount} + 用词精校 ¥${polishAmount.toFixed(2)}'));
+  assert(html.includes('基础转换 ${paymentCurrency(data)}${baseAmount} + 用词精校 ${paymentCurrency(data)}${polishAmount.toFixed(2)}'));
   assert(html.includes('if (!isTranslationMode)'));
 });
 

@@ -61,6 +61,8 @@
     let saveDone = Promise.resolve();
     panel.className = "return-later-panel";
     panel.innerHTML = '<strong>不必一直等在这里</strong><p>付款成功后，任务会在后台继续处理，可以关闭页面。稍后或隔天用<strong>同一浏览器</strong>回到本页、刷新查看进度，完成后即可下载；请勿清理本站记录。处理时间取决于书籍大小和排队情况。</p><div class="return-later-email"><label for="notificationEmail">完成后邮件提醒（选填）</label><p id="notificationTaskLabel">将用于下一次上传创建的任务。</p><div class="return-later-email-row"><input id="notificationEmail" type="email" maxlength="254" autocomplete="email" placeholder="你的邮箱地址" aria-describedby="notificationEmailHint"><button type="button" id="saveNotificationEmail">保存邮箱</button></div><p id="notificationEmailHint" role="status" aria-live="polite">正在检查邮件通知服务…</p><p class="return-later-privacy">仅用于当前任务的结果通知，邮件中提供下载入口。留空并保存可取消通知。</p></div><p id="returnLaterStorageWarning" class="return-later-warning" hidden>浏览器未允许保存任务记录，关闭后无法保证恢复。建议先保存邮箱，收到通知后从邮件进入下载。</p><div id="returnLaterRecent" hidden><strong>本机最近任务</strong><ul id="returnLaterTaskList"></ul></div>';
+    const tr = value => root.FixEpubI18n ? root.FixEpubI18n.text(value) : value;
+    if (root.FixEpubI18n) root.FixEpubI18n.mark(panel);
     const input = panel.querySelector("#notificationEmail");
     const button = panel.querySelector("#saveNotificationEmail");
     const hint = panel.querySelector("#notificationEmailHint");
@@ -84,7 +86,7 @@
         link.href = taskLink(task);
         link.textContent = entry.filename || (task.kind === "batch" ? "批量任务" : "电子书任务");
         const labels = { pending_payment: "等待支付", pending: "等待处理", awaiting_confirmation: "待确认", queued: "排队中", running: "处理中", paid: "修复中", completed: "已完成", repaired: "已修复", success: "已完成", partial_completed: "部分完成", failed: "失败", cancelled: "已停止" };
-        status.textContent = `${labels[entry.status] || "查看最新状态"} · 查看 / 下载`;
+        status.textContent = `${tr(labels[entry.status] || "查看最新状态")} · ${tr("查看 / 下载")}`;
         link.appendChild(status);
         link.addEventListener("click", event => {
           if (options.onOpen && options.onOpen(task) !== false) event.preventDefault();
@@ -147,6 +149,7 @@
       .catch(() => { button.disabled = false; hint.textContent = "暂时无法确认邮件服务，请用同一浏览器回来查看和下载；已有通知可清空邮箱后保存取消。"; });
     button.disabled = true;
     button.addEventListener("click", save);
+    root.addEventListener?.("fixepub:locale", render);
     render();
     return { remember, setTask, render, save };
   }

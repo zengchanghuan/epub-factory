@@ -36,6 +36,9 @@ class RepairCheckoutTests(unittest.TestCase):
             'ALIPAY_APP_ID': 'app', 'ALIPAY_SELLER_ID': 'seller', 'ALIPAY_DISABLE_PRECREATE': '0'}))
         self.stack.enter_context(patch.object(socket.socket, 'connect', side_effect=AssertionError('Network forbidden')))
         self.stack.enter_context(patch.object(main, '_REPAIR_UPLOAD_DIR', Path(self.temp)))
+        # Exercise frozen historical quotes independently of today's default.
+        # New default pricing is covered by test_d33_repair_pricing.py.
+        self.stack.enter_context(patch.object(main, 'REPAIR_PRICE_CNY', '2.99'))
         self.clock = self.stack.enter_context(patch.object(main, '_repair_now', return_value=1_000_000))
         self.ready = self.stack.enter_context(patch.object(main, '_repair_gateway_available', return_value=True))
         self.repair = self.stack.enter_context(patch.object(main, '_ensure_repair_running'))

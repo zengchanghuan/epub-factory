@@ -103,7 +103,7 @@ class ExtremeCompiler:
         self.lexicon_domains = list(_lexicon_domains)
         self.enable_proper_noun = enable_proper_noun
         self._cjk_normalizer = CjkNormalizer(
-            output_mode=self.output_mode,
+            output_mode="keep" if self.enable_translation else self.output_mode,
             traditional_variant=self.traditional_variant,
             lexicon_domains=_lexicon_domains,
             enable_proper_noun=enable_proper_noun,

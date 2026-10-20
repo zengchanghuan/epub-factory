@@ -47,6 +47,12 @@ class EpubConverter:
                 lexicon_domains, enable_proper_noun, progress_callback, stage_callback,
                 adapter="docx",
             )
+        if suffix == ".txt":
+            return self._convert_via_html_to_epub(
+                input_path, output_path, OutputMode.original, enable_translation, target_lang,
+                device, bilingual, glossary, temperature, translation_model, traditional_variant,
+                lexicon_domains, enable_proper_noun, progress_callback, stage_callback, adapter="txt",
+            )
         if suffix in (".md", ".markdown"):
             return self._convert_via_html_to_epub(
                 input_path, output_path, output_mode, enable_translation, target_lang,
@@ -177,6 +183,9 @@ class EpubConverter:
         if adapter == "docx":
             from .engine.adapters.docx_adapter import docx_to_html
             return docx_to_html(input_path)
+        if adapter == "txt":
+            from .engine.adapters.txt_adapter import txt_to_html
+            return txt_to_html(input_path)
         if adapter == "markdown":
             from .engine.adapters.markdown_adapter import md_to_html
             return md_to_html(input_path)

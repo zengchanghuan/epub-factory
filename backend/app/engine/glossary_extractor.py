@@ -355,7 +355,7 @@ async def translate_glossary(
                 user_msg = json.dumps(batch, ensure_ascii=False)
                 batch_terms = {item["term"] for item in batch}
                 messages = [
-                    {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT},
+                    {"role": "system", "content": _GLOSSARY_SYSTEM_PROMPT.replace("中文", "目标语言") + f"\n所有译名必须使用 {target_lang}，不得默认输出中文。"},
                     {"role": "user", "content": f"目标语言：{target_lang}\n候选术语：{user_msg}"},
                 ]
                 def before_dispatch():

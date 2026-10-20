@@ -103,6 +103,8 @@ class PrecisionContractTests(unittest.TestCase):
         self.api.add_api_route("/jobs/{job_id}/download", main.download_result_v2, methods=["GET"])
         self.api.add_api_route("/estimate", main.estimate_polish_price, methods=["POST"])
         self.api.add_api_route("/webhook", main.alipay_webhook, methods=["POST"])
+        self.api.add_api_route("/jobs/{job_id}/polish-review", main.polish_review_v2, methods=["GET"])
+        self.api.add_api_route("/jobs/{job_id}/polish-review/download", main.download_polish_selection_v2, methods=["POST"])
         self.client = self._patch_client(TestClient(self.api))
 
     def _patch(self, patcher):
@@ -475,6 +477,73 @@ class PrecisionContractTests(unittest.TestCase):
         download = self.client.get("/jobs/" + job.id + "/download", headers={"X-Job-Token": job.access_token})
         self.assertEqual(download.status_code, 200, download.text)
         self.assertEqual(download.content, self.polished_bytes)
+
+    def test_multilingual_runner_preserves_script_and_passes_frozen_language(self):
+        from app.models import OutputMode
+        for language in ('en', 'ja', 'ko', 'zh-TW'):
+            with self.subTest(language=language):
+                job = self.authorize(self.job_from(self.create(body='<p>A sample book.</p>', polish_language=language)))
+                finished, converter, polisher = self.execute(job)
+                self.assertEqual(finished.status, self.JobStatus.success, finished.message)
+                self.assertEqual(converter.call_args.args[2], OutputMode.original)
+                self.assertEqual(polisher.call_args.kwargs['language'], language)
+                self.assertEqual(finished.translation_stats['precision_polish']['language'], language)
+                self.assertEqual(self.entitlement.precision_polish_entitlement_reason(finished), '')
+
+    def test_txt_polish_quote_and_worker_use_same_selected_language(self):
+        for language, text in [('en','This are a book.'),('ja','これは本です。'),('ko','한국어 책입니다.'),('zh-TW','這是繁體書。'),('zh-CN','他觉得很窝心。')]:
+            with self.subTest(language=language):
+                payload=text.encode()
+                quote=self.client.post('/estimate',files={'file':('book.txt',payload)},data={'polish_language':language})
+                self.assertEqual(quote.status_code,200,quote.text)
+                job=self.authorize(self.job_from(self.create(filename='book.txt',content=payload,polish_language=language)))
+                self.assertEqual(job.polish_char_count,quote.json()['char_count'])
+                # Real normalization runs before the converter boundary.
+                from app.domain import precision_polish_service
+                def convert(source,destination,*args,**kwargs):
+                    self.assertEqual(Path(source).suffix,'.epub')
+                    shutil.copyfile(source,destination)
+                    return self.ConversionResult(validation_passed=True)
+                def polish(source,destination,**kwargs):
+                    self.assertEqual(kwargs['language'],language)
+                    self.record_model_usage();shutil.copyfile(source,destination)
+                    return self.service_stats(changed=0,unchanged=1)
+                with patch.object(self.runner.converter,'convert_file_to_horizontal',side_effect=convert), patch.object(precision_polish_service,'run_precision_polish',side_effect=polish):
+                    self.runner.run_job(job.id)
+                self.assertEqual(self.store.get(job.id).status,self.JobStatus.success)
+
+    def test_invalid_txt_rejected_before_payment(self):
+        for content in [b'',b'abc\x00def',b'\xff\x80']:
+            self.assertEqual(self.create(filename='bad.txt',content=content,polish_language='en').status_code,400)
+        self.assert_no_payment_or_execution()
+
+    def test_private_review_authorization_download_and_unchanged_artifact(self):
+        from app.domain.polish_review import save_review,collect_edits,digest
+        job=self.authorize(self.job_from(self.create()))
+        def effect(source,destination,**kwargs):
+            self.record_model_usage()
+            Path(destination).write_bytes(self.polished_bytes)
+            with zipfile.ZipFile(source) as before,zipfile.ZipFile(destination) as after:
+                changes=collect_edits('EPUB/chapter.xhtml',before.read('EPUB/chapter.xhtml'),after.read('EPUB/chapter.xhtml'))
+            save_review(source,destination,kwargs['review_dir'],changes,'zh-CN')
+            return self.service_stats()
+        finished,_,_=self.execute(job,service_effect=effect)
+        self.assertEqual(finished.status,self.JobStatus.success)
+        url='/jobs/'+job.id+'/polish-review'
+        self.assertEqual(self.client.get(url,headers={'X-Job-Token':'wrong'}).status_code,403)
+        headers={'X-Job-Token':job.access_token}
+        response=self.client.get(url,headers=headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.headers['cache-control'],'no-store')
+        data=response.json();self.assertEqual(data['total'],1)
+        self.assertEqual(set(data['changes'][0]),{'id','before','after'})
+        original=digest(finished.output_path)
+        response=self.client.post(url+'/download',headers=headers,json={'revision':data['revision'],'rejected':['0']})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.content,self.converted_bytes)
+        self.assertEqual(digest(finished.output_path),original)
+        response=self.client.post(url+'/download',headers=headers,json={'revision':'stale','rejected':[]})
+        self.assertEqual(response.status_code,422)
 
     def test_running_precision_progress_is_persisted_before_service_returns(self):
         job = self.authorize(self.job_from(self.create()))

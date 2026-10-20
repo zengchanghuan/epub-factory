@@ -1,5 +1,6 @@
-"""Fixed USD conversion checkout, bound to existing authenticated job lifecycles."""
+"""USD service checkout, bound to existing authenticated job lifecycles."""
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_UP
 import json
 import re
 
@@ -29,11 +30,29 @@ def select_method(value, *, translation=False, polish=False, store=None):
     if value not in {"alipay", "paypal"}:
         raise HTTPException(400, "支付方式无效")
     if value == "paypal":
-        if translation or polish:
-            raise HTTPException(400, "PayPal 暂仅支持普通转换与 PDF 保留原文转换")
         if not paypal.enabled() or getattr(store, "_engine", None) is None:
             raise HTTPException(503, "PayPal 暂未开放，请选择支付宝")
     return value
+
+
+AI_PRICING_RULE = "usd-v2-net-div7-fee044-fixed030-min149"
+
+
+def service_usd(cny, *, base_usd="0.00"):
+    """Gross up a new AI order once. Seven CNY/USD is a fixed tariff, not live FX.
+
+    base_usd is the conversion component for combined polish orders. Existing
+    orders never call this function during approval, recovery or capture.
+    """
+    net = paypal.money(str(cny)) / Decimal("7") + Decimal(base_usd)
+    gross = (net + Decimal("0.30")) / Decimal("0.956")
+    return str(max(Decimal("1.49"), gross.quantize(Decimal("0.01"), rounding=ROUND_UP)))
+
+
+def polish_usd(cny):
+    total = service_usd(cny, base_usd="0.99")
+    return {"price_usd": f"{Decimal(total) - Decimal('0.99'):.2f}",
+            "total_usd": total, "base_usd": "0.99", "pricing_rule": AI_PRICING_RULE}
 
 
 def checkout_url(local_id):
@@ -107,7 +126,7 @@ def _rows(main, local_id, request=None):
     for row in rows:
         if request is not None:
             main._require_checkout_access(request, row)
-        if not is_paypal(row) or row.enable_translation or row.enable_precision_polish:
+        if not is_paypal(row):
             raise HTTPException(409, "订单不支持 PayPal 支付")
     paypal.money(leader.expected_amount)
     if leader.status == JobStatus.pending_payment:
@@ -118,7 +137,7 @@ def _rows(main, local_id, request=None):
 def _settle(main, rows, *, source="verified_query"):
     job = rows[0]
     local_id = "batch_" + job.batch_id if job.batch_id else job.id
-    main._record_verified_payment(local_id, job.expected_amount, "batch" if job.batch_id else "conversion",
+    main._record_verified_payment(local_id, job.expected_amount, "batch" if job.batch_id else "translation" if job.enable_translation else "conversion",
         source=source, file_count=len(rows), is_test_order=any(row.is_test_order for row in rows), currency="USD")
     if job.batch_id:
         main._release_batch(job.batch_id, source=source, amount=job.expected_amount)
@@ -157,23 +176,31 @@ def router(main):
     def config():
         available = paypal.enabled() and getattr(main.job_store, "_engine", None) is not None
         return {"enabled": available, "client_id": paypal.settings()[1] if available else None,
-                "currency": "USD", "unit_amount": "0.99", "products": ["conversion", "pdf_conversion"]}
+                "currency": "USD", "unit_amount": "0.99", "products": ["conversion", "pdf_conversion", "translation", "repair", "precision_polish"],
+                "repair_amount": "0.99", "pricing_rule": AI_PRICING_RULE, "ai_minimum_usd": "1.49"}
 
     @routes.get("/api/v2/paypal/orders/{local_id}")
     def info(local_id: str, request: Request):
         try:
+            if local_id.startswith("repair_"):
+                from . import paypal_repair
+                return paypal_repair.handle(main, local_id, 'info')
             rows = _rows(main, local_id, request)
         except (paypal.PayPalUnavailable, CheckoutUnavailable) as exc:
             raise fail(exc) from None
         job = rows[0]
         return {"local_id": local_id, "amount": job.expected_amount, "currency": "USD", "file_count": len(rows),
                 "status": main._job_to_v2_status(job), "kind": "batch" if job.batch_id else "job",
-                "job_id": job.id, "batch_id": job.batch_id or None}
+                "job_id": job.id, "batch_id": job.batch_id or None,
+                "product": "translation" if job.enable_translation else "precision_polish" if job.enable_precision_polish else "conversion"}
 
     @routes.post("/api/v2/paypal/orders/{local_id}")
     def create(local_id: str, request: Request):
         guard(request)
         try:
+            if local_id.startswith("repair_"):
+                from . import paypal_repair
+                return paypal_repair.handle(main, local_id, 'create')
             rows = _rows(main, local_id, request)
             job = rows[0]
             if any(row.status != JobStatus.pending_payment or manual_payment_guard(row) for row in rows):
@@ -200,6 +227,9 @@ def router(main):
     def capture(local_id: str, request: Request):
         guard(request)
         try:
+            if local_id.startswith("repair_"):
+                from . import paypal_repair
+                return paypal_repair.handle(main, local_id, 'capture')
             rows = _rows(main, local_id, request)
             job = rows[0]
             record = _mapping(main.job_store, local_id=local_id)
@@ -243,6 +273,10 @@ def router(main):
             paypal.identifier(order_id)
             record = _mapping(main.job_store, order_id=order_id)
             if not record:
+                return {"received": True}
+            if record["local_id"].startswith("repair_"):
+                from . import paypal_repair
+                await asyncio.to_thread(paypal_repair.settle_verified, main, record["local_id"], "verified_webhook")
                 return {"received": True}
             rows = _rows(main, record["local_id"])
             trade = await asyncio.to_thread(query_trade, main.job_store, rows[0])

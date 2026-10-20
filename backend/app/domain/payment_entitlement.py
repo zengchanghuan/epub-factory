@@ -54,7 +54,7 @@ def quote_entitlement(job, *, test_bypass=False) -> dict:
         quote = (job.translation_stats or {}).get("precision_polish") or {}
         snapshot["product"] = "conversion_precision_polish"
         snapshot["precision_polish"] = {
-            "enabled": True, "version": 1,
+            "enabled": True, "version": 1, "language": quote.get("language", "zh-CN"),
             "char_count": int(getattr(job, "polish_char_count", 0) or 0),
             "amount": str(quote.get("quoted_amount") or ""),
             "output_mode": getattr(job.output_mode, "value", job.output_mode),
@@ -140,6 +140,8 @@ def precision_polish_entitlement_reason(job) -> str:
     if (entitlement.get("product") != "conversion_precision_polish"
             or purchased.get("enabled") is not True
             or purchased.get("output_mode") != "simplified"
+            or quote.get("language", "zh-CN") not in {"zh-CN", "zh-TW", "en", "ja", "ko"}
+            or purchased.get("language", "zh-CN") != quote.get("language", "zh-CN")
             or purchased.get("char_count") != getattr(job, "polish_char_count", 0)
             or not purchased.get("char_count")
             or not same_amount(purchased.get("amount"), quote.get("quoted_amount"))):
