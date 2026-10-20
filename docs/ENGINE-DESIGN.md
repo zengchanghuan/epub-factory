@@ -240,3 +240,9 @@ CNY 0.0671 calculated usage cost (not a provider invoice).
 literal comparison. Human review is pending. Raw evidence retains the initial
 harness UTF-8 extraction issue and non-candidate seed; corrected extraction and
 supplemental execution are explicitly documented in `summary.json`.
+
+CI follow-up: static landing-page contract tests now cover the expanded six-page
+catalog, allow explanatory PayPal pricing text while still forbidding transaction
+APIs/SDK calls and non-allowlisted scripts, and check the current per-page FAQs.
+The regression-catalog count includes the PayPal checkout suite (131 total).
+These were stale test expectations; no checkout runtime change was required.

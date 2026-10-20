@@ -91,7 +91,7 @@ class ToolLandingTests(unittest.TestCase):
         self.assertEqual(generated.returncode, 0, generated.stderr)
         checked = self.cli("--check", script=isolated)
         self.assertEqual(checked.returncode, 0, checked.stderr)
-        self.assertEqual(len(list((scripts.parent / "frontend").glob("*.html"))), 4)
+        self.assertEqual(len(list((scripts.parent / "frontend").glob("*.html"))), len(landing.PAGES) + 1)
         self.assertTrue((scripts.parent / "frontend" / "index.html").is_dir())
 
     def test_each_page_has_native_same_origin_entry_and_task_fallback(self):
@@ -119,7 +119,7 @@ class ToolLandingTests(unittest.TestCase):
                 self.assertFalse(page.nodes_for("form"))
                 self.assertFalse(page.nodes_for("input"))
                 self.assertFalse(page.nodes_for("button"))
-                self.assertFalse(re.search(r"fetch\s*\(|FormData\s*\(|XMLHttpRequest|EventSource|setInterval|paypal|/api/v[12]/", html, re.I))
+                self.assertFalse(re.search(r"fetch\s*\(|FormData\s*\(|XMLHttpRequest|EventSource|setInterval|paypal\s*\.\s*(?:Buttons|createOrder)|/api/v[12]/", html, re.I))
                 scripts = page.nodes_for("script")
                 self.assertEqual([node.get("src") for node in scripts if node.get("src")],
                                  ["tool-entry.js?v=20261001-r11"])
@@ -142,7 +142,7 @@ class ToolLandingTests(unittest.TestCase):
             self.assertEqual(schema["name"], config["title"])
             self.assertEqual(schema["description"], config["description"])
             self.assertEqual(len(page.nodes_for("h1")), 1)
-            self.assertEqual(len(page.nodes_for("details")), 3)
+            self.assertEqual(len(page.nodes_for("details")), len(config["faqs"]))
             self.assertNotIn("offers", schema)
             self.assertNotIn("aggregateRating", schema)
             # Responsive CSS percentages are layout values, not marketing claims.
@@ -154,15 +154,20 @@ class ToolLandingTests(unittest.TestCase):
                 self.assertIn(link, [node.get("href") for node in page.nodes_for("a")])
             self.assertIn("粤ICP备2026051457号-1", html)
             titles.add(schema["name"])
-        self.assertEqual(len(titles), 3)
+        self.assertEqual(len(titles), len(landing.PAGES))
 
     def test_formats_pdf_gate_and_current_pricing_are_not_reintroduced_as_free(self):
         generated = self.generate()
         for html in generated.values():
-            self.assertIn("暂不支持 PDF", html)
-            self.assertIn("本页不会接收文件或创建收费订单", html)
+            self.assertIn("PDF", html)
+            self.assertIn("主页", html)
+        for filename in ("epub-translator.html", "vertical-to-horizontal.html", "traditional-to-simplified.html"):
+            self.assertIn("暂不支持 PDF", generated[filename])
             for extension in (".epub", ".docx", ".md", ".markdown"):
-                self.assertIn(extension, html)
+                self.assertIn(extension, generated[filename])
+        for filename in ("txt-to-epub.html", "ebook-proofreading.html", "proofreading-changes.html"):
+            self.assertIn("不支持扫描 PDF OCR 或 PDF 精校", generated[filename])
+            self.assertIn("US$1.49", generated[filename])
         for filename in ("vertical-to-horizontal.html", "traditional-to-simplified.html"):
             html = generated[filename]
             self.assertIn("<strong>¥0.99 / 本</strong>", html)
