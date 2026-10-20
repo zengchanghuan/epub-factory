@@ -355,8 +355,8 @@
       "task": "proofreading",
       "source_language": "zh-CN",
       "target_language": "zh-CN",
-      "input": "请使用软体查看档案，日期为 2026-10-20。",
-      "reference": "请使用软件查看文件，日期为 2026-10-20。",
+      "input": "收到朋友精心准备的生日礼物，我感到很窝心，日期是 2026-10-20。",
+      "reference": "收到朋友精心准备的生日礼物，我感到很暖心，日期是 2026-10-20。",
       "required_literals": [
         "2026-10-20"
       ],

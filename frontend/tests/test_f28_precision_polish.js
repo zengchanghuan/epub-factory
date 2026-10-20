@@ -54,7 +54,7 @@ test("F28-3 无候选状态不冒充检查完成，服务端内容不能注入HT
 });
 
 test("F28-4 只允许单本EPUB普通简体转换，切换后取消勾选", () => {
-  for (const change of [c => c.selectedFiles.push({}), c => c.selectedFile.name = "book.md",
+  for (const change of [c => c.selectedFiles.push({}), c => c.selectedFile.name = "book.mobi",
     c => c.enableTranslation.checked = true, (c, $) => $("outputMode").value = "traditional"]) {
     const { context, $ } = setup();
     context.syncPrecisionPolishAvailability();
@@ -119,7 +119,7 @@ test("F28-9 报价携带与下单一致的来源繁体与简体模式", async ()
   assert.equal(form.fields.traditional_variant, "tw");
 });
 
-test("F28-10 选单个非EPUB不能覆盖精校不支持状态", () => {
+test("F28-10 选单个MOBI不能覆盖精校不支持状态", () => {
   const { context } = setup();
   Object.assign(context, { window: {dispatchEvent() {}}, CustomEvent: class {constructor(type, options){this.type=type;this.detail=options.detail;}}, returnLater: { setTask() {} }, fileNameEl: { style: {} },
     refreshTaskModeAvailability() {}, isTranslationSupportedForSelectedFile: () => true,
@@ -128,7 +128,7 @@ test("F28-10 选单个非EPUB不能覆盖精校不支持状态", () => {
   const selection = html.slice(html.indexOf("    function selectFiles(files, fromFolder = false)"),
     html.indexOf("    function _updatePriceHint()"));
   vm.runInContext(selection, context);
-  context.selectFiles([{ name: "book.md", size: 100 }]);
+  context.selectFiles([{ name: "book.mobi", size: 100 }]);
   assert.equal(context.enablePrecisionPolish.disabled, true);
   assert.equal(context.enablePrecisionPolish.checked, false);
 });
@@ -158,3 +158,11 @@ test("五语精校选择提交给报价接口，非简中精校跳过繁简转�
     assert.equal(fields.output_mode,"simplified");
   }
 });
+
+ test("DOCX / Markdown 与 TXT 支持五语言精校入口", () => {
+ for (const ext of ["docx","md","markdown","txt","epub"]) {
+ const {context} = setup(); context.selectedFile.name="book."+ext;
+ context.syncPrecisionPolishAvailability();
+ assert.equal(context.enablePrecisionPolish.disabled,false);
+ }
+ });

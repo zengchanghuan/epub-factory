@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "status": "synthetic_seed_requires_native_review",
+  "scope": "Short synthetic smoke benchmark, not full-book quality certification. Medical wording tests negation only; it is not advice.",
+  "rubric": {
+    "meaning": "0-2; 2 preserves meaning including negation",
+    "fluency": "0-2; 2 reads naturally",
+    "terminology": "0-2; 2 preserves names and consistent terms",
+    "structure": "0-2; 2 preserves numbers, dates and formatting"
+  },
+  "acceptance": "All automatic invariants pass; human reviewer assigns 2 in every dimension. Missing reviews remain pending.",
+  "cases": [
+    {
+      "id": "polish-zh-CN",
+      "task": "proofreading",
+      "source_language": "zh-CN",
+      "target_language": "zh-CN",
+      "input": "收到朋友精心准备的生日礼物，我感到很窝心，日期是 2026-10-20。",
+      "reference": "收到朋友精心准备的生日礼物，我感到很暖心，日期是 2026-10-20。",
+      "required_literals": [
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve original language, meaning and date.",
+        "A correct sentence should remain unchanged; Chinese regional wording follows the selected language."
+      ]
+    }
+  ]
+}

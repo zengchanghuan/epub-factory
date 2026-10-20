@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "translate-zh-CN-zh-TW",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-CN-en",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-CN-ja",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-CN-ko",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-TW-zh-CN",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-TW-en",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-TW-ja",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-zh-TW-ko",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-en-zh-CN",
+      "automatic_failures": [
+        "missing_literal:5 mg",
+        "missing_literal:10 mg"
+      ],
+      "status": "failed"
+    },
+    {
+      "id": "translate-en-zh-TW",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-en-ja",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-en-ko",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ja-zh-CN",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ja-zh-TW",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ja-en",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ja-ko",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ko-zh-CN",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ko-zh-TW",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ko-en",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "translate-ko-ja",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "polish-zh-CN",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "polish-zh-TW",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "polish-en",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "polish-ja",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    },
+    {
+      "id": "polish-ko",
+      "automatic_failures": [],
+      "status": "human_review_pending"
+    }
+  ],
+  "unknown_output_ids": [],
+  "passed": false,
+  "note": "Automatic invariants do not establish semantic quality; references need native-speaker review."
+}

@@ -157,3 +157,32 @@ customer books or native-speaker-certified translations. Automated checks catch
 missing outputs, changed numeric literals and source echoes; human assessment of
 meaning, fluency, terminology and structure is still required. A passing code
 regression is not a passing model-quality evaluation.
+
+
+## 2026-10-20: DOCX / Markdown proofreading
+
+The single-file proofreading entry accepts EPUB, TXT, DOCX, `.md` and `.markdown`
+in all five languages. Select the source language, request a quote and pay through
+the existing checkout (including PayPal). This is same-language proofreading, not
+translation. DOCX / Markdown is normalized to EPUB before inspection and again
+before execution; the delivered original and selected-edit versions are EPUB,
+not DOCX / Markdown round trips. Images must be embedded/self-contained; external
+or missing resources fail before payment. The same existing pricing, entitlement,
+private comparison and authorized download rules apply. Batch proofreading, PDF,
+MOBI and AZW3 proofreading remain unsupported.
+
+The format contract covers four import extensions × five languages, real input
+normalization, matching quote/worker character counts, authorized downloads and
+wrong-token denial, with mocked payment/model boundaries. These tests do not
+represent real payments or native-speaker quality acceptance.
+
+Live synthetic evidence: `docs/verification/2026-10-20-language-quality/`.
+The 20 translation directions and five proofreading languages were exercised,
+including a supplemental Simplified-Chinese risk-word case. There were
+25 physical model requests, 24215 tokens and approximately
+CNY 0.0671 calculated usage cost (not a provider invoice).
+24/25 strict literal checks pass; English → Simplified Chinese translated
+`5 mg` / `10 mg` into `5毫克` / `10毫克`, preserving quantity but failing exact
+literal comparison. Human review is pending. Raw evidence retains the initial
+harness UTF-8 extraction issue and non-candidate seed; corrected extraction and
+supplemental execution are explicitly documented in `summary.json`.

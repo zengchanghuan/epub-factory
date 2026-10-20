@@ -99,7 +99,7 @@ def inspect_precision_polish_source(epub_path: Path, *, traditional_variant: str
     is written here; execution receives an already converted artifact and does
     not use this inspection normalization a second time.
     """
-    if Path(epub_path).suffix.lower() == ".txt":
+    if Path(epub_path).suffix.lower() in {".txt", ".docx", ".md", ".markdown"}:
         from app.domain.translation_input import normalized_translation_input
         with normalized_translation_input(Path(epub_path)) as normalized:
             return inspect_precision_polish_source(normalized.epub_path, traditional_variant=traditional_variant,

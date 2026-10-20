@@ -15,7 +15,7 @@ CONTENT = {
   'action':'打开工具并查看报价', 'contact':'联系客服',
   'sections':[
    ('五种语言互译','简体中文、繁体中文、英语、日语和韩语支持 20 个不同语言方向。翻译可上传 EPUB、TXT、DOCX、MD 或 Markdown，输出 EPUB。可选择双语对照、翻译策略和术语表；重要译文建议与原文核对。'),
-   ('同语言精校','单本 EPUB 或 TXT 支持五种语言精校。简中检查两岸风险用词；繁中、英语、日语和韩语检查拼写、语法及用词，保留原语言。精校与翻译分开处理，不会自动执行另一项服务。'),
+   ('同语言精校','单本 EPUB、TXT、DOCX 或 Markdown 支持五种语言精校。简中检查两岸风险用词；繁中、英语、日语和韩语检查拼写、语法及用词，保留原语言。精校与翻译分开处理，不会自动执行另一项服务。'),
    ('格式修复与排版','EPUB 修复先诊断包结构和资源引用。繁简转换支持台湾、港澳和通用来源；排版可选择 Kindle、Apple Books 或通用设置。普通转换支持 TXT、EPUB、MOBI、AZW3、DOCX 和 Markdown，输出 EPUB；无法解析或受保护的文件不能处理。'),
    ('PDF 的支持范围','独立 PDF → EPUB 入口支持文字型 PDF，保留原文与图片，先检查并提示版面风险。扫描件 OCR、PDF 翻译和 PDF 精校尚未开放；复杂版式可能被拒绝。'),
    ('费用与支付','基础转换与 EPUB 修复为人民币 ¥0.99 / 本或 PayPal US$0.99 / 本。翻译和精校另行报价，PayPal AI 订单最低 US$1.49，显示的美元总额含支付手续费。最终费用取决于文件与服务，付款前确认。'),
@@ -28,7 +28,7 @@ CONTENT = {
   'action':'開啟工具並查看報價','contact':'聯絡客服',
   'sections':[
    ('五種語言互譯','簡體中文、繁體中文、英語、日語與韓語支援 20 個不同語言方向。翻譯可上傳 EPUB、TXT、DOCX、MD 或 Markdown，輸出 EPUB。可選雙語對照、翻譯策略與術語表；重要譯文建議與原文核對。'),
-   ('同語言校對','單本 EPUB 或 TXT 支援五種語言校對。簡中檢查兩岸風險用詞；繁中、英語、日語與韓語檢查拼字、文法及用詞，保留原語言。校對與翻譯分開處理，不會自動執行另一項服務。'),
+   ('同語言校對','單本 EPUB、TXT、DOCX 或 Markdown 支援五種語言校對。簡中檢查兩岸風險用詞；繁中、英語、日語與韓語檢查拼字、文法及用詞，保留原語言。校對與翻譯分開處理，不會自動執行另一項服務。'),
    ('格式修復與排版','EPUB 修復先診斷套件結構與資源引用。繁簡轉換支援臺灣、港澳及通用來源；排版可選 Kindle、Apple Books 或通用設定。一般轉換支援 TXT、EPUB、MOBI、AZW3、DOCX 和 Markdown，輸出 EPUB；無法解析或受保護的檔案不能處理。'),
    ('PDF 支援範圍','獨立 PDF → EPUB 入口支援文字型 PDF，保留原文與圖片，先檢查並提示版面風險。掃描件 OCR、PDF 翻譯與校對尚未開放；複雜版式可能被拒絕。'),
    ('費用與付款','基礎轉換及 EPUB 修復為人民幣 ¥0.99 / 本或 PayPal US$0.99 / 本。翻譯及校對另行報價，PayPal AI 訂單最低 US$1.49，顯示的美元總額含付款手續費。最終費用依檔案與服務而定，付款前確認。'),
@@ -42,7 +42,7 @@ CONTENT = {
   'action':'Open the tools and get a quote','contact':'Contact support',
   'sections':[
    ('Translate between five languages','English, Japanese, Korean, Simplified Chinese and Traditional Chinese support 20 distinct translation directions. Upload EPUB, TXT, DOCX, MD or Markdown and receive an EPUB. Choose bilingual output, a translation strategy and a glossary. Review important passages against the original.'),
-   ('Proofread in the original language','Proofreading supports one EPUB or TXT at a time in all five languages. English, Japanese, Korean and Traditional Chinese review spelling, grammar and word choice without translation. Simplified Chinese reviews regional wording. Translation and proofreading are separate jobs.'),
+   ('Proofread in the original language','Proofreading supports one EPUB, TXT, DOCX or Markdown at a time in all five languages. English, Japanese, Korean and Traditional Chinese review spelling, grammar and word choice without translation. Simplified Chinese reviews regional wording. Translation and proofreading are separate jobs.'),
    ('Repair and format EPUBs','Repair begins with a diagnosis of EPUB package structure and resource references. Chinese script conversion supports Taiwan, Hong Kong/Macau and general profiles. Choose Kindle, Apple Books or generic layout settings. Basic conversion accepts TXT, EPUB, MOBI, AZW3, DOCX and Markdown and outputs EPUB; protected or unreadable files cannot be processed.'),
    ('What PDF conversion supports','The separate PDF-to-EPUB tool handles text-based PDFs, preserving original text and images after a layout-risk check. Scanned PDF OCR, PDF translation and PDF proofreading are not available. Complex layouts may be rejected.'),
    ('Pricing and PayPal','Basic conversion and EPUB repair cost CNY 0.99 per book with Alipay or US$0.99 with PayPal. Translation and proofreading are quoted separately. PayPal AI orders have a US$1.49 minimum; the displayed USD total includes payment processing fees. Review the final file-specific quote before paying.'),
@@ -56,7 +56,7 @@ CONTENT = {
   'action':'ツールを開いて見積もりを確認','contact':'サポートに連絡',
   'sections':[
    ('5言語の相互翻訳','日本語・英語・韓国語・簡体字中国語・繁体字中国語の20方向に対応します。EPUB、TXT、DOCX、MD、Markdown を入力し、EPUB を出力します。原文対訳、翻訳方針、用語集を選択できます。重要な箇所は原文と照合してください。'),
-   ('原文と同じ言語で校正','1冊の EPUB または TXT を5言語で校正できます。日本語・英語・韓国語・繁体字では綴り、文法、語句を確認し、翻訳はしません。簡体字は地域による用語の違いを確認します。翻訳と校正は別の処理です。'),
+   ('原文と同じ言語で校正','1冊の EPUB・TXT・DOCX・Markdown を5言語で校正できます。日本語・英語・韓国語・繁体字では綴り、文法、語句を確認し、翻訳はしません。簡体字は地域による用語の違いを確認します。翻訳と校正は別の処理です。'),
    ('EPUB の修復とレイアウト','修復ではパッケージ構造やリソース参照を先に診断します。中国語の繁簡変換は台湾・香港／マカオ・一般設定に対応。Kindle、Apple Books、汎用のレイアウトを選べます。基本変換は TXT、EPUB、MOBI、AZW3、DOCX、Markdown を受け付け、EPUB を出力します。保護されたファイルや解析できないファイルは処理できません。'),
    ('PDF 対応範囲','専用の PDF → EPUB ツールはテキストを含む PDF を扱い、レイアウト上の問題を確認したうえで原文と画像を保持します。スキャン PDF の OCR、PDF 翻訳、PDF 校正には未対応です。複雑なレイアウトは拒否される場合があります。'),
    ('料金と PayPal','基本変換と EPUB 修復は1冊につき Alipay で人民元0.99元、PayPal で US$0.99。翻訳と校正は別途見積もりとなります。PayPal の AI 注文は最低 US$1.49 で、表示される米ドル合計には決済手数料が含まれます。支払い前に最終金額を確認してください。'),
@@ -70,7 +70,7 @@ CONTENT = {
   'action':'도구 열기 및 견적 확인','contact':'고객 지원',
   'sections':[
    ('5개 언어 상호 번역','한국어, 영어, 일본어, 중국어 간체와 번체 사이의 20개 방향을 지원합니다. EPUB, TXT, DOCX, MD 또는 Markdown을 업로드하면 EPUB으로 출력합니다. 원문 대조, 번역 방식, 용어집을 선택할 수 있습니다. 중요한 내용은 원문과 함께 확인하세요.'),
-   ('원래 언어로 교정','EPUB 또는 TXT 한 권씩 5개 언어 교정을 지원합니다. 한국어·영어·일본어·번체는 철자, 문법, 어휘를 검토하며 번역하지 않습니다. 간체 중국어는 지역 용어 차이를 검토합니다. 번역과 교정은 별도 작업입니다.'),
+   ('원래 언어로 교정','EPUB, TXT, DOCX 또는 Markdown 한 권씩 5개 언어 교정을 지원합니다. 한국어·영어·일본어·번체는 철자, 문법, 어휘를 검토하며 번역하지 않습니다. 간체 중국어는 지역 용어 차이를 검토합니다. 번역과 교정은 별도 작업입니다.'),
    ('EPUB 복구와 서식','복구는 EPUB 패키지 구조와 리소스 참조 진단부터 시작합니다. 중국어 간체·번체 변환은 대만, 홍콩·마카오, 일반 설정을 지원합니다. Kindle, Apple Books 또는 일반 서식을 선택할 수 있습니다. 기본 변환 입력은 TXT, EPUB, MOBI, AZW3, DOCX, Markdown이며 출력은 EPUB입니다. 보호되었거나 해석할 수 없는 파일은 처리할 수 없습니다.'),
    ('PDF 지원 범위','별도 PDF → EPUB 도구는 텍스트가 포함된 PDF를 처리하며, 레이아웃 위험을 확인한 후 원문과 이미지를 유지합니다. 스캔 PDF OCR, PDF 번역 및 PDF 교정은 아직 지원하지 않습니다. 복잡한 레이아웃은 거부될 수 있습니다.'),
    ('요금 및 PayPal','기본 변환과 EPUB 복구는 권당 Alipay CNY 0.99 또는 PayPal US$0.99입니다. 번역과 교정은 별도 견적을 제공합니다. PayPal AI 주문은 최소 US$1.49이며 표시된 달러 총액에 결제 수수료가 포함됩니다. 결제 전에 파일별 최종 금액을 확인하세요.'),

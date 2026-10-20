@@ -183,11 +183,11 @@
     "ko": "AI 교정 (5개 언어)"
   },
   "ui_26": {
-    "zh-CN": "支持简中、繁中、英、日、韩 EPUB / TXT。新增语言检查拼写、语法和用词，保留原语言；简中仍检查两岸用词。",
-    "zh-TW": "支援簡中、繁中、英、日、韓 EPUB / TXT。新增語言檢查拼字、文法與用詞，保留原語言；簡中仍檢查兩岸用詞。",
-    "en": "EPUB / TXT proofreading in Traditional Chinese, English, Japanese and Korean preserves the original language. Simplified Chinese reviews regional wording.",
-    "ja": "繁体字・英語・日本語・韓国語の EPUB / TXT を同じ言語で校正します。簡体字は地域表現を確認します。",
-    "ko": "번체 중국어·영어·일본어·한국어 EPUB / TXT을 원어로 교정합니다. 간체 중국어는 지역 용어를 검토합니다."
+    "zh-CN": "支持简中、繁中、英、日、韩 EPUB / TXT / DOCX / Markdown。新增语言检查拼写、语法和用词，保留原语言；简中仍检查两岸用词。",
+    "zh-TW": "支援簡中、繁中、英、日、韓 EPUB / TXT / DOCX / Markdown。新增語言檢查拼字、文法與用詞，保留原語言；簡中仍檢查兩岸用詞。",
+    "en": "EPUB / TXT / DOCX / Markdown proofreading in Traditional Chinese, English, Japanese and Korean preserves the original language. Simplified Chinese reviews regional wording.",
+    "ja": "繁体字・英語・日本語・韓国語の EPUB / TXT / DOCX / Markdown を同じ言語で校正します。簡体字は地域表現を確認します。",
+    "ko": "번체 중국어·영어·일본어·한국어 EPUB / TXT / DOCX / Markdown을 원어로 교정합니다. 간체 중국어는 지역 용어를 검토합니다."
   },
   "ui_27": {
     "zh-CN": "用词精校为预付费服务，上传文件后自动估算字数与附加费用。系统会逐段检查上下文，任务耗时较长。",

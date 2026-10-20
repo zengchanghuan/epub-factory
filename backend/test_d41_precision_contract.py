@@ -490,13 +490,22 @@ class PrecisionContractTests(unittest.TestCase):
                 self.assertEqual(finished.translation_stats['precision_polish']['language'], language)
                 self.assertEqual(self.entitlement.precision_polish_entitlement_reason(finished), '')
 
-    def test_txt_polish_quote_and_worker_use_same_selected_language(self):
+    def test_import_formats_polish_quote_and_worker_use_same_selected_language(self):
         for language, text in [('en','This are a book.'),('ja','これは本です。'),('ko','한국어 책입니다.'),('zh-TW','這是繁體書。'),('zh-CN','他觉得很窝心。')]:
-            with self.subTest(language=language):
+            for ext in ('txt','md','markdown','docx'):
+              with self.subTest(language=language,ext=ext):
                 payload=text.encode()
-                quote=self.client.post('/estimate',files={'file':('book.txt',payload)},data={'polish_language':language})
+                if ext=='docx':
+                    import tempfile
+                    from test_d42_translation_input import make_docx
+                    from xml.sax.saxutils import escape
+                    with tempfile.TemporaryDirectory() as folder:
+                        source=Path(folder)/'book.docx'
+                        make_docx(source,extra='<w:p><w:r><w:t>'+escape(text)+'</w:t></w:r></w:p>')
+                        payload=source.read_bytes()
+                quote=self.client.post('/estimate',files={'file':('book.'+ext,payload)},data={'polish_language':language})
                 self.assertEqual(quote.status_code,200,quote.text)
-                job=self.authorize(self.job_from(self.create(filename='book.txt',content=payload,polish_language=language)))
+                job=self.authorize(self.job_from(self.create(filename='book.'+ext,content=payload,polish_language=language)))
                 self.assertEqual(job.polish_char_count,quote.json()['char_count'])
                 # Real normalization runs before the converter boundary.
                 from app.domain import precision_polish_service
@@ -511,10 +520,21 @@ class PrecisionContractTests(unittest.TestCase):
                 with patch.object(self.runner.converter,'convert_file_to_horizontal',side_effect=convert), patch.object(precision_polish_service,'run_precision_polish',side_effect=polish):
                     self.runner.run_job(job.id)
                 self.assertEqual(self.store.get(job.id).status,self.JobStatus.success)
+                downloaded=self.client.get('/jobs/'+job.id+'/download',headers={'X-Job-Token':job.access_token})
+                self.assertEqual(downloaded.status_code,200,downloaded.text if downloaded.status_code!=200 else '')
+                self.assertEqual(downloaded.content,Path(self.store.get(job.id).output_path).read_bytes())
+                self.assertEqual(self.client.get('/jobs/'+job.id+'/download',headers={'X-Job-Token':'wrong'}).status_code,403)
 
     def test_invalid_txt_rejected_before_payment(self):
         for content in [b'',b'abc\x00def',b'\xff\x80']:
             self.assertEqual(self.create(filename='bad.txt',content=content,polish_language='en').status_code,400)
+        self.assert_no_payment_or_execution()
+
+    def test_unsafe_markdown_rejected_before_payment(self):
+        for ext in ('md', 'markdown'):
+            payload=b'She go home. ![image](https://example.invalid/private.png)'
+            response=self.create(filename='bad.'+ext,content=payload,polish_language='en')
+            self.assertEqual(response.status_code,400,response.text)
         self.assert_no_payment_or_execution()
 
     def test_private_review_authorization_download_and_unchanged_artifact(self):

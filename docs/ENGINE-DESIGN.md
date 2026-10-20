@@ -205,3 +205,38 @@ Run `python scripts/test_language_quality.py` and the frontend TXT-preview suite
 Do not substitute reference outputs for actual model runs when claiming model
 quality. The seed requires native-speaker review and broader long-book, dialogue,
 footnote and domain-specific cases before making broad quality claims.
+
+
+### DOCX / Markdown proofreading and live quality evaluation
+
+`inspect_precision_polish_source` and `job_runner` use the same
+`normalized_translation_input` context manager for TXT, DOCX, MD and MARKDOWN.
+Normalized temporary EPUBs are removed at context exit. Resource integrity checks
+run while quoting and creating the job, before any checkout. The worker still
+requires the frozen precision entitlement and preserves non-Simplified-Chinese
+scripts through `OutputMode.original`. Payment and webhook state machines are
+unchanged. The existing review snapshots operate on normalized EPUB, so downloads
+remain EPUB and do not promise original DOCX layout fidelity.
+
+`scripts/run-language-quality.py --run-live --output-dir /tmp/new-quality-run`
+is an opt-in paid synthetic evaluation. Supply model credentials via environment;
+the runner never loads dotenv. It exercises `SemanticsTranslator` and `LLMPolisher`
+using the seed corpus, with fresh local cache, SQLite usage accounting, serial
+cases and an 80-request ceiling. Output directories must not already exist.
+Distributed production limiter/health state is disabled only within this isolated
+process. Outputs, per-case usage/model evidence and automatic reports are saved
+for review. Never run this from a customer worker or point its state at production.
+Native-language review remains a separate required step; automatic checks cannot
+establish fluency or semantic accuracy, and these short samples are not long-book
+or paid-delivery acceptance.
+
+Live synthetic evidence: `docs/verification/2026-10-20-language-quality/`.
+The 20 translation directions and five proofreading languages were exercised,
+including a supplemental Simplified-Chinese risk-word case. There were
+25 physical model requests, 24215 tokens and approximately
+CNY 0.0671 calculated usage cost (not a provider invoice).
+24/25 strict literal checks pass; English → Simplified Chinese translated
+`5 mg` / `10 mg` into `5毫克` / `10毫克`, preserving quantity but failing exact
+literal comparison. Human review is pending. Raw evidence retains the initial
+harness UTF-8 extraction issue and non-candidate seed; corrected extraction and
+supplemental execution are explicitly documented in `summary.json`.

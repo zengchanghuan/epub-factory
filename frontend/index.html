@@ -96,7 +96,7 @@
       "name": "哪些格式可以上传，下载是什么格式？",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "普通转换支持 TXT、EPUB、MOBI、AZW3、DOCX、MD / Markdown。翻译支持 EPUB、TXT、DOCX、Markdown；精校支持 EPUB / TXT，格式修复支持 EPUB。输出为 EPUB，不提供 MOBI、AZW3 或 DOCX 导出。受保护或无法解析的文件不能处理。"
+        "text": "普通转换支持 TXT、EPUB、MOBI、AZW3、DOCX、MD / Markdown。翻译支持 EPUB、TXT、DOCX、Markdown；精校支持 EPUB / TXT / DOCX / Markdown，格式修复支持 EPUB。输出为 EPUB，不提供 MOBI、AZW3 或 DOCX 导出。受保护或无法解析的文件不能处理。"
       }
     },
     {
@@ -1340,7 +1340,7 @@
   <script src="/qq-support.js?v=2" defer></script>
   <link rel="stylesheet" href="/return-later.css?v=20260918">
 <script src="/polish-review.js?v=20261019-txt-review2"></script>
-<script src="/locales/ui.js?v=20261020-preview2"></script>
+<script src="/locales/ui.js?v=20261020-formats1"></script>
 <script src="/site-preferences.js?v=20261019-txt-review2"></script>
 <link rel="stylesheet" href="/site-preferences.css?v=20261019-txt-review2">
 </head>
@@ -1439,7 +1439,7 @@
         <div class="toggle-row">
           <div>
             <span><span data-i18n="ui_25">AI 用词精校（五种语言）</span></span><br/>
-            <span class="hint"><span data-i18n="ui_26">支持简中、繁中、英、日、韩 EPUB / TXT。新增语言检查拼写、语法和用词，保留原语言；简中仍检查两岸用词。</span></span>
+            <span class="hint"><span data-i18n="ui_26">支持简中、繁中、英、日、韩 EPUB / TXT / DOCX / Markdown。新增语言检查拼写、语法和用词，保留原语言；简中仍检查两岸用词。</span></span>
           </div>
           <label class="toggle">
             <input type="checkbox" id="enablePrecisionPolish" />
@@ -3983,11 +3983,11 @@
     let polishQuoteRequestId = 0;
     function syncPrecisionPolishAvailability() {
       const ext = getSelectedFileExt();
-      const supported = selectedFiles.length <= 1 && (!ext || [".epub", ".txt"].includes(ext))
+      const supported = selectedFiles.length <= 1 && (!ext || [".epub", ".txt", ".docx", ".md", ".markdown"].includes(ext))
         && (ext === ".txt" || $("outputMode").value === "simplified" || ["zh-TW", "en", "ja", "ko"].includes($("polishLanguage").value)) && !enableTranslation.checked;
       $("conversionMode").disabled = ext === ".txt" || enablePrecisionPolish.checked && ["zh-TW", "en", "ja", "ko"].includes($("polishLanguage").value);
       enablePrecisionPolish.disabled = !supported;
-      enablePrecisionPolish.title = supported ? "" : "精校仅支持单本 EPUB 或 TXT，不能与翻译同时启用";
+      enablePrecisionPolish.title = supported ? "" : "精校仅支持单本 EPUB、TXT、DOCX 或 Markdown，不能与翻译同时启用";
       if (!supported) {
         enablePrecisionPolish.checked = false;
         $("precisionPolishOptions").style.display = "none";
@@ -4572,7 +4572,7 @@
         <article class="feature-card"><h3><a href="/epub-repair.html">EPUB 格式修复</a></h3><p>诊断 EPUB 包结构、资源引用等格式问题。先查看诊断与报价，再决定是否修复；无法安全修复的文件会提示原因。</p></article>
         <article class="feature-card"><h3><a href="/txt-to-epub.html">TXT 转 EPUB</a> · <a href="/ebook-proofreading.html">五语言精校</a> · <a href="/proofreading-changes.html">修改对照</a></h3><p>先预览 TXT 编码与章标题，精校完成后复核修改并下载选择版本。</p></article>
         <article class="feature-card"><h3><a href="/traditional-to-simplified.html">繁简转换</a>与<a href="/vertical-to-horizontal.html">横排排版</a></h3><p>支持台湾、港澳和通用繁体选项，提供 Kindle 与 Apple Books 排版设置。基础转换 ¥0.99 / 本，PayPal 为 US$0.99 / 本，输出 EPUB。</p></article>
-        <article class="feature-card"><h3>五语 AI 精校</h3><p>单本 EPUB 或 TXT 可选择简中、繁中、英语、日语或韩语精校。新增四种语言检查拼写、语法和用词，保留原语言；简中检查两岸风险用词。精校另行报价。</p></article>
+        <article class="feature-card"><h3>五语 AI 精校</h3><p>单本 EPUB、TXT、DOCX 或 Markdown 可选择简中、繁中、英语、日语或韩语精校。新增四种语言检查拼写、语法和用词，保留原语言；简中检查两岸风险用词。精校另行报价。</p></article>
         <article class="feature-card"><h3>文字型 PDF 转 EPUB</h3><p>独立 PDF 入口保留原文与图片，先检查版面风险，再确认付款。扫描件 OCR、PDF 翻译与精校暂未开放。</p></article>
         <article class="feature-card"><h3>先报价，后付款</h3><p>支付宝人民币或 PayPal 美元结算。翻译和精校按文件及所选服务报价，PayPal 显示含手续费金额。已有任务可从原浏览器的任务中心恢复。</p></article>
       </div>
@@ -4581,7 +4581,7 @@
   <section class="seo-section" aria-label="常见问题">
     <div class="container">
       <h2 class="seo-title">格式、价格与使用方式</h2>
-      <details class="faq-item"><summary>哪些格式可以上传，下载是什么格式？</summary><p>普通转换支持 TXT、EPUB、MOBI、AZW3、DOCX、MD / Markdown。翻译支持 EPUB、TXT、DOCX、Markdown；精校支持 EPUB / TXT，格式修复支持 EPUB。输出为 EPUB，不提供 MOBI、AZW3 或 DOCX 导出。受保护或无法解析的文件不能处理。</p></details>
+      <details class="faq-item"><summary>哪些格式可以上传，下载是什么格式？</summary><p>普通转换支持 TXT、EPUB、MOBI、AZW3、DOCX、MD / Markdown。翻译支持 EPUB、TXT、DOCX、Markdown；精校支持 EPUB / TXT / DOCX / Markdown，格式修复支持 EPUB。输出为 EPUB，不提供 MOBI、AZW3 或 DOCX 导出。受保护或无法解析的文件不能处理。</p></details>
       <details class="faq-item"><summary>五种语言都能互译吗？翻译质量如何？</summary><p>简体中文、繁体中文、英语、日语和韩语支持 20 个不同语言方向。选择源语言与目标语言，可开启双语对照；专业术语和重要内容建议结合原文复核。</p></details>
       <details class="faq-item"><summary>精校会改变书稿语言吗？</summary><p>不会。请按书稿当前语言选择精校语言。英语、日语、韩语和繁体中文精校不执行繁简转换；精校与翻译目前需要分开处理。</p></details>
       <details class="faq-item"><summary>基础转换和 AI 服务怎样收费？</summary><p>基础转换与 EPUB 修复为 ¥0.99 / 本，PayPal 为 US$0.99 / 本。AI 翻译和精校另计。标准翻译 ¥3.99 起，前 30 万字符按 ¥0.05 / 1,000 字符计费，长书超出部分自动采用更低阶梯单价；高质量、文学模式及专业版按所选档位报价。PayPal AI 订单最低 US$1.49，具体金额以文件分析后的报价为准；付款前显示总价。</p></details>

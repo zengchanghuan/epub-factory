@@ -479,8 +479,8 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
             reason = precision_polish_entitlement_reason(job)
             if reason:
                 raise RuntimeError("AI 精校付款权益未核验或与原订单不符，已停止执行，请联系管理员核验。")
-            if Path(job.input_path).suffix.lower() not in {".epub", ".txt"}:
-                raise RuntimeError("AI 精校目前仅支持 EPUB 或 TXT")
+            if Path(job.input_path).suffix.lower() not in {".epub", ".txt", ".docx", ".md", ".markdown"}:
+                raise RuntimeError("AI 精校目前仅支持 EPUB、TXT、DOCX 或 Markdown")
         source_name_raw = Path(job.source_filename).stem
         source_name = _safe_output_stem(source_name_raw) if pdf_job or Path(job.input_path).suffix.lower() == ".txt" else _convert_filename_stem_for_mode(
             source_name_raw,
@@ -636,7 +636,7 @@ def _execute_admitted_job(job, attempt_id: str, translation_stats, lease) -> Non
                         job=job, input_path=normalized.epub_path, output_path=output_path,
                         progress_callback=on_progress, stage_callback=on_stage, cancel_check=is_cancelled,
                     )
-            elif getattr(job, "enable_precision_polish", False) and input_path.suffix.lower() == ".txt":
+            elif getattr(job, "enable_precision_polish", False) and input_path.suffix.lower() in {".txt", ".docx", ".md", ".markdown"}:
                 with normalized_translation_input(input_path, source_name=job.source_filename, cancel_check=is_cancelled) as normalized:
                     language = (job.translation_stats or {}).get("precision_polish", {}).get("language", "zh-CN")
                     result = converter.convert_file_to_horizontal(normalized.epub_path, output_path,

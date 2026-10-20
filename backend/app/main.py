@@ -1691,8 +1691,8 @@ async def create_job_v2(
     if polish_order_no:
         raise HTTPException(status_code=400, detail="精校与转换使用同一订单，不允许客户端自带精校订单号")
     if enable_precision_polish and (enable_translation or output_mode != OutputMode.simplified
-            or Path(file.filename or "").suffix.lower() not in {".epub", ".txt"}):
-        raise HTTPException(status_code=400, detail="AI 精校支持单本 EPUB 或 TXT；请选择精校语言，不可同时启用翻译或繁简转换")
+            or Path(file.filename or "").suffix.lower() not in {".epub", ".txt", ".docx", ".md", ".markdown"}):
+        raise HTTPException(status_code=400, detail="AI 精校支持单本 EPUB、TXT、DOCX 或 Markdown；请选择精校语言，不可同时启用翻译或繁简转换")
     source_warnings = await asyncio.to_thread(_validate_upload_format, file)
 
     # 免费配额已关闭，所有转换均走付费流程
@@ -2736,8 +2736,8 @@ async def estimate_polish_price(
     from .domain.precision_polish_service import inspect_precision_polish_source
     import tempfile
 
-    if not (file.filename and Path(file.filename).suffix.lower() in {".epub", ".txt"}):
-        raise HTTPException(status_code=400, detail="AI 精校仅支持 .epub 或 .txt 文件")
+    if not (file.filename and Path(file.filename).suffix.lower() in {".epub", ".txt", ".docx", ".md", ".markdown"}):
+        raise HTTPException(status_code=400, detail="AI 精校仅支持 .epub、.txt、.docx、.md 或 .markdown 文件")
     from .engine.cleaners.llm_polish import POLISH_LANGUAGES
     polish_language = polish_language if isinstance(polish_language, str) else "zh-CN"
     if polish_language not in POLISH_LANGUAGES:

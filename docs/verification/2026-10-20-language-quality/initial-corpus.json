@@ -1,0 +1,429 @@
+{
+  "version": 1,
+  "status": "synthetic_seed_requires_native_review",
+  "scope": "Short synthetic smoke benchmark, not full-book quality certification. Medical wording tests negation only; it is not advice.",
+  "rubric": {
+    "meaning": "0-2; 2 preserves meaning including negation",
+    "fluency": "0-2; 2 reads naturally",
+    "terminology": "0-2; 2 preserves names and consistent terms",
+    "structure": "0-2; 2 preserves numbers, dates and formatting"
+  },
+  "acceptance": "All automatic invariants pass; human reviewer assigns 2 in every dimension. Missing reviews remain pending.",
+  "cases": [
+    {
+      "id": "translate-zh-CN-zh-TW",
+      "task": "translation",
+      "source_language": "zh-CN",
+      "target_language": "zh-TW",
+      "input": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "reference": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-CN-en",
+      "task": "translation",
+      "source_language": "zh-CN",
+      "target_language": "en",
+      "input": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "reference": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-CN-ja",
+      "task": "translation",
+      "source_language": "zh-CN",
+      "target_language": "ja",
+      "input": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "reference": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-CN-ko",
+      "task": "translation",
+      "source_language": "zh-CN",
+      "target_language": "ko",
+      "input": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "reference": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-TW-zh-CN",
+      "task": "translation",
+      "source_language": "zh-TW",
+      "target_language": "zh-CN",
+      "input": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "reference": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-TW-en",
+      "task": "translation",
+      "source_language": "zh-TW",
+      "target_language": "en",
+      "input": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "reference": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-TW-ja",
+      "task": "translation",
+      "source_language": "zh-TW",
+      "target_language": "ja",
+      "input": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "reference": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-zh-TW-ko",
+      "task": "translation",
+      "source_language": "zh-TW",
+      "target_language": "ko",
+      "input": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "reference": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-en-zh-CN",
+      "task": "translation",
+      "source_language": "en",
+      "target_language": "zh-CN",
+      "input": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "reference": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-en-zh-TW",
+      "task": "translation",
+      "source_language": "en",
+      "target_language": "zh-TW",
+      "input": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "reference": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-en-ja",
+      "task": "translation",
+      "source_language": "en",
+      "target_language": "ja",
+      "input": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "reference": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-en-ko",
+      "task": "translation",
+      "source_language": "en",
+      "target_language": "ko",
+      "input": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "reference": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ja-zh-CN",
+      "task": "translation",
+      "source_language": "ja",
+      "target_language": "zh-CN",
+      "input": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "reference": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ja-zh-TW",
+      "task": "translation",
+      "source_language": "ja",
+      "target_language": "zh-TW",
+      "input": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "reference": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ja-en",
+      "task": "translation",
+      "source_language": "ja",
+      "target_language": "en",
+      "input": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "reference": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ja-ko",
+      "task": "translation",
+      "source_language": "ja",
+      "target_language": "ko",
+      "input": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "reference": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ko-zh-CN",
+      "task": "translation",
+      "source_language": "ko",
+      "target_language": "zh-CN",
+      "input": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "reference": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ko-zh-TW",
+      "task": "translation",
+      "source_language": "ko",
+      "target_language": "zh-TW",
+      "input": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "reference": "林醫師說：「不要把劑量從 5 mg 增加到 10 mg。」回診日期是 2026-10-20。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ko-en",
+      "task": "translation",
+      "source_language": "ko",
+      "target_language": "en",
+      "input": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "reference": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "translate-ko-ja",
+      "task": "translation",
+      "source_language": "ko",
+      "target_language": "ja",
+      "input": "린 의사는 “용량을 5 mg에서 10 mg으로 늘리지 마세요”라고 말했습니다. 재진 날짜는 2026-10-20입니다.",
+      "reference": "林医師は「用量を 5 mg から 10 mg に増やさないでください」と言いました。再診日は 2026-10-20 です。",
+      "required_literals": [
+        "5 mg",
+        "10 mg",
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve the prohibition, attribution to Dr. Lin, doses and date.",
+        "Accept natural equivalents; reference is not an exact-match requirement."
+      ]
+    },
+    {
+      "id": "polish-zh-CN",
+      "task": "proofreading",
+      "source_language": "zh-CN",
+      "target_language": "zh-CN",
+      "input": "请使用软体查看档案，日期为 2026-10-20。",
+      "reference": "请使用软件查看文件，日期为 2026-10-20。",
+      "required_literals": [
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve original language, meaning and date.",
+        "A correct sentence should remain unchanged; Chinese regional wording follows the selected language."
+      ]
+    },
+    {
+      "id": "polish-zh-TW",
+      "task": "proofreading",
+      "source_language": "zh-TW",
+      "target_language": "zh-TW",
+      "input": "請使用軟體查看檔案，日期為 2026-10-20。",
+      "reference": "請使用軟體查看檔案，日期為 2026-10-20。",
+      "required_literals": [
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve original language, meaning and date.",
+        "A correct sentence should remain unchanged; Chinese regional wording follows the selected language."
+      ]
+    },
+    {
+      "id": "polish-en",
+      "task": "proofreading",
+      "source_language": "en",
+      "target_language": "en",
+      "input": "She go to the library on 2026-10-20.",
+      "reference": "She goes to the library on 2026-10-20.",
+      "required_literals": [
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve original language, meaning and date.",
+        "A correct sentence should remain unchanged; Chinese regional wording follows the selected language."
+      ]
+    },
+    {
+      "id": "polish-ja",
+      "task": "proofreading",
+      "source_language": "ja",
+      "target_language": "ja",
+      "input": "私は本を読みます。日付は 2026-10-20 です。",
+      "reference": "私は本を読みます。日付は 2026-10-20 です。",
+      "required_literals": [
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve original language, meaning and date.",
+        "A correct sentence should remain unchanged; Chinese regional wording follows the selected language."
+      ]
+    },
+    {
+      "id": "polish-ko",
+      "task": "proofreading",
+      "source_language": "ko",
+      "target_language": "ko",
+      "input": "저는 책을 읽습니다. 날짜는 2026-10-20입니다.",
+      "reference": "저는 책을 읽습니다. 날짜는 2026-10-20입니다.",
+      "required_literals": [
+        "2026-10-20"
+      ],
+      "review": [
+        "Preserve original language, meaning and date.",
+        "A correct sentence should remain unchanged; Chinese regional wording follows the selected language."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "scope": "Synthetic production translator/polisher evaluation; no live payment or customer jobs",
+  "model": "deepseek-flash",
+  "model_requests": 25,
+  "tokens": 24215,
+  "calculated_cost_cny": 0.0671272,
+  "automatic_checks": "24/25 strict literal cases pass; en→zh-CN renders 5 mg/10 mg as 5毫克/10毫克",
+  "human_review": "pending; no native-language acceptance claimed",
+  "corrections": [
+    "Initial HTML extraction decoded four UTF-8 proofreading byte results as Latin-1. outputs.json reverses only that reversible decoding error; initial-raw-outputs.json retained. Runner now parses XML bytes and regression covers all five scripts.",
+    "Initial zh-CN seed had no risk-word candidates and made no model request. Replaced with contextual 窝心 seed and ran supplemental real-model case; output 暖心. Initial corpus and supplemental evidence retained."
+  ],
+  "payment": "No orders, captures, webhooks or customer models invoked."
+}

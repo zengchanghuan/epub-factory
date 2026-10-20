@@ -1,7 +1,7 @@
-"""One deterministic, local-only input boundary for paid translation.
+"""Deterministic, local-only input normalization for paid translation and proofreading.
 
-Normal conversion never enters this module. No CJK or model work occurs here;
-the shared fast executor owns those stages and all selected translation options.
+No CJK or model work occurs here. Translation and non-EPUB proofreading
+use this same boundary for inspection and execution; their workers own later stages.
 Inline SVG is limited to a static, self-contained subset, not full SVG support.
 """
 from __future__ import annotations

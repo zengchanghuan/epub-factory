@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-10-20T03:51:35.777853+00:00",
+  "cases": [
+    {
+      "id": "polish-zh-CN",
+      "task": "proofreading",
+      "model": "deepseek-flash",
+      "stats": {
+        "version": 1,
+        "status": "running",
+        "model": "deepseek-flash",
+        "provider": "api.deepseek.com",
+        "documents_scanned": 0,
+        "paragraphs_scanned": 0,
+        "candidates": 0,
+        "reviewed": 1,
+        "changed": 1,
+        "unchanged": 0,
+        "api_calls": 1,
+        "retries": 0,
+        "failed": 0,
+        "reason": "",
+        "refund_required": false,
+        "validation_passed": false
+      },
+      "status": "completed",
+      "billing": {
+        "source": "request_ledger",
+        "scope": "recorded_requests_so_far",
+        "coverage": "complete",
+        "requests": 1,
+        "priced_requests": 1,
+        "pending_requests": 0,
+        "historical_untracked_attempts": 0,
+        "tracked_attempts": 1,
+        "calculated_totals": {
+          "CNY": "0.00304"
+        },
+        "bill_imported_totals": {},
+        "bill_matched_requests": 0,
+        "prompt_tokens": 300,
+        "completion_tokens": 305,
+        "cache_hit_tokens": 0,
+        "cache_miss_tokens": 300,
+        "tokens_complete": true,
+        "cache_tokens_complete": true,
+        "pending_reasons": {},
+        "stages": {
+          "precision_polish": {
+            "requests": 1,
+            "priced_requests": 1,
+            "total_tokens": 605
+          }
+        },
+        "note": "截至当前按逐请求实际 usage 与留存价目计算，含前期分析、失败响应及历次重译；运行中仍会增加，不是供应商实际扣款。待核实请求和未记录历史不按 0 元处理，不同币种不相加。账单导入值需另行核验供应商原始账单。"
+      }
+    }
+  ]
+}
