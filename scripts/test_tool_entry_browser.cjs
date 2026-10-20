@@ -45,6 +45,7 @@ async function serve(req, res) {
     return json(res, { ...detail(job), access_token: job.token, amount: '0.99', qr_code: 'offline-fixture' });
   }
   if (url.pathname === '/api/v2/jobs') return json(res, { items: [...jobs.values()].map(detail) });
+  if (url.pathname === '/api/v2/paypal/config' && req.method === 'GET') return json(res, { enabled: false });
   if (url.pathname === '/api/v2/email-capabilities') return json(res, { available: false });
   if (url.pathname === '/api/v2/track/pv') return json(res, {});
   if (url.pathname.startsWith('/api/v2/batches/historybatch')) {
@@ -340,7 +341,7 @@ async function main() {
   pass('unverifiable QR continuation clears the previously rendered code');
   assert.equal(confirms, 1);
   assert.deepEqual(exceptions, []);
-  assert(requests.every(request => !/paypal|create-order|capture-order/.test(request.path)));
+  assert(requests.every(request => (request.method === 'GET' && request.path === '/api/v2/paypal/config') || !/paypal|create-order|capture-order/.test(request.path)));
   assert(requests.filter(request => /\/recover$/.test(request.path)).every(request => request.token));
   console.log(JSON.stringify({ passed, creates, confirms, continues, jsExceptions: exceptions.length, blockedExternalPageRequests: denied.length, runtime }, null, 2));
 }

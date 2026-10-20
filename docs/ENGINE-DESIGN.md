@@ -246,3 +246,10 @@ catalog, allow explanatory PayPal pricing text while still forbidding transactio
 APIs/SDK calls and non-allowlisted scripts, and check the current per-page FAQs.
 The regression-catalog count includes the PayPal checkout suite (131 total).
 These were stale test expectations; no checkout runtime change was required.
+
+Task restoration fix: mount the precision-review controller before the synchronous
+`initFromQuery` call. Restoring an existing task calls `setStatus` immediately;
+the previous order could throw a temporal-dead-zone ReferenceError and leave
+progress/download recovery stuck before its API poll. The existing isolated
+Chrome gate reproduced the issue using a synthetic task deep link and covers
+pending/running/completed refresh and authorized downloads after the fix.

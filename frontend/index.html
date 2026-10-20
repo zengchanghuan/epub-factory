@@ -3505,6 +3505,9 @@
       if (currentJobId) openJobDetail(currentJobId);
     });
 
+    // Restoring an existing task calls setStatus synchronously.
+    const polishReview = window.FixEpubPolishReview.mount({doc:document,api:API,headers:authHeaders,translate:key=>window.FixEpubI18n.t(key)});
+
     (function initFromQuery() {
       const params = new URLSearchParams(location.search);
       // 管理员测试模式：URL 带 admin_key 时存入 localStorage/sessionStorage
@@ -4399,7 +4402,6 @@
       $("resultActions").classList.add("visible");
     }
 
-    const polishReview = window.FixEpubPolishReview.mount({doc:document,api:API,headers:authHeaders,translate:key=>window.FixEpubI18n.t(key)});
     const previewModal = $("previewModal");
     const previewController = new BookPreviewController({
       async fetchChapter(jobId, chapter, signal) {

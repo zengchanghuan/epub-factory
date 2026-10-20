@@ -200,3 +200,11 @@ Offline verification passed 42 frontend suites, 33 precision-contract tests
 Both SEO generators passed consistency checks. Backup:
 `/home/ubuntu/epub-factory/deploy-backups/20261020T035234Z-1057658`.
 No new real payment was initiated or claimed as accepted by this release.
+
+Final browser follow-up: the task-link refresh initialization defect is fixed.
+All 25 isolated Chrome scenarios passed with zero JavaScript exceptions, including
+restoring pending/running/completed tasks, authorized download hashes, terminal
+non-delivery, explicit checkout continuation and stale QR clearing. The browser
+fixture allows only the read-only PayPal config query and forbids PayPal order
+creation/capture. These four synthetic fixture jobs are loopback-only, not live
+orders. All 42 frontend suites, seven landing-page tests and 20 catalog tests pass.
