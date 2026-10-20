@@ -22,5 +22,36 @@
     "No real payments, captures or paid model calls.",
     "Funnel counts only attributed orders after launch; visits are sessions and download response is not proof of saving."
   ],
-  "deployment": "pending"
+  "deployment": {
+    "code_commit": "54042709fa047853d47018b3f2a63a3ba5bdbac2",
+    "status": "healthy",
+    "backup": "/home/ubuntu/epub-factory/deploy-backups/20261020T063041Z-1094267",
+    "payment_config_unchanged": true,
+    "paypal_mode": "live",
+    "verification": {
+      "checked_at_utc": "2026-10-20T06:31:14Z",
+      "asset_hashes": {
+        "index.html": "matched",
+        "examples.html": "matched",
+        "examples.js": "matched",
+        "examples-data.json": "matched",
+        "funnel-admin.html": "matched",
+        "funnel-admin.js": "matched",
+        "growth-analytics.js": "matched",
+        "growth-locales.js": "matched",
+        "growth.css": "matched",
+        "repair-checkout.js": "matched"
+      },
+      "unauthenticated_funnel_status": 401,
+      "verification_visit_excluded": true,
+      "paypal_public_config": {
+        "enabled": true,
+        "currency": "USD",
+        "unit_amount": "0.99"
+      }
+    }
+  },
+  "landing_tests": 7,
+  "catalog_tests": 20,
+  "ci_at_verification": "in progress; local and isolated server results above are complete"
 }

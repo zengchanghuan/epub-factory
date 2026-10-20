@@ -226,3 +226,10 @@ The isolated server run with real EPUBCheck passed 11 D91 tests; one optional
 private-original case was skipped. D49's 14 private-history cases were unavailable
 and are not claimed as covered. Seven landing-page and 20 catalog tests passed.
 See `docs/verification/2026-10-20-growth-funnel.json` for release evidence.
+
+Deployed code `5404270`; public health, ten asset hashes, unauthenticated funnel
+401 and DNT test-visit exclusion verified. The pre/post payment-configuration
+digest is unchanged; PayPal remains live and enabled. Backup:
+`/home/ubuntu/epub-factory/deploy-backups/20261020T063041Z-1094267`.
+Analytics begins with newly attributed visits; no real-payment acceptance is
+claimed. GitHub CI was still running when this release evidence was recorded.
