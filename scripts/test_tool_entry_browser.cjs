@@ -35,6 +35,7 @@ function json(res, data, status = 200) {
 async function serve(req, res) {
   const url = new URL(req.url, origin);
   requests.push({ method: req.method, path: url.pathname, token: req.headers['x-job-token'] });
+  if (url.pathname === '/api/admin/funnel') return json(res, {detail:'Login required'}, 401);
   if (url.pathname === '/api/v2/jobs' && req.method === 'POST') {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const form = await new Request(origin, { method: 'POST', headers: req.headers, body: Buffer.concat(chunks) }).formData();
@@ -171,6 +172,23 @@ async function main() {
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `window.EPUB_FACTORY_API = ${JSON.stringify(origin)};` });
   await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: runtime });
+
+  const growthLabels = require('../frontend/growth-locales');
+  for (const language of ['zh-CN','zh-TW','en','ja','ko']) {
+    await navigate('/examples.html?lang='+language);
+    await until('document.querySelectorAll("#examples article").length === 2');
+    assert.equal(await evaluate('document.querySelector("h1").textContent'), growthLabels.g_title[language]);
+    assert.equal(await evaluate('document.querySelectorAll("#examples pre").length'), 4);
+    assert.equal(await evaluate('document.querySelector("[data-i18n=g_upload]").search'), '?lang='+language);
+    await navigate('/funnel-admin.html?lang='+language);
+    await until('document.getElementById("state").textContent === '+JSON.stringify(growthLabels.g_login[language]));
+    assert.equal(await evaluate('document.getElementById("metrics").children.length'),0);
+    pass('five-language public comparison and unauthenticated funnel: '+language);
+  }
+  await navigate('/?lang=en');
+  assert.equal(await evaluate('document.querySelector("[data-i18n=g_total]").textContent'),growthLabels.g_total.en);
+  await evaluate('document.getElementById("uiLocale").value="zh-CN";document.getElementById("uiLocale").dispatchEvent(new Event("change"))');
+  pass('quote explanation translated without changing payment inputs');
 
   for (const [page, tool] of [['', ''], ['epub-translator.html', 'translate'], ['vertical-to-horizontal.html', 'horizontal'], ['traditional-to-simplified.html', 'simplified']]) {
     const before = creates;

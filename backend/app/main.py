@@ -1365,6 +1365,8 @@ def download_result(
         raise HTTPException(status_code=404, detail="结果文件不存在")
     _validate_pdf_download(job, output_path)
     _verify_download_artifact(job)
+    from .growth import downloaded
+    downloaded(job)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
@@ -2711,6 +2713,9 @@ def download_batch_v2(batch_id: str, request: Request, exp: Optional[int] = None
                     suffix += 1
                 used_names.add(name)
                 archive.write(output, arcname=name)
+        from .growth import downloaded_order
+        if not any(job.is_test_order for job in jobs):
+            downloaded_order('batch_'+batch_id)
         return TemporaryFileResponse(zip_path, filename=f"fixepub-batch-{batch_id}.zip", media_type="application/zip")
     except BaseException:
         zip_path.unlink(missing_ok=True)
@@ -2877,6 +2882,8 @@ def download_result_v2(
         raise HTTPException(status_code=404, detail="结果文件不存在")
     _validate_pdf_download(job, output_path)
     _verify_download_artifact(job)
+    from .growth import downloaded
+    downloaded(job)
     return FileResponse(path=output_path, filename=output_path.name, media_type="application/epub+zip")
 
 
@@ -2929,6 +2936,8 @@ async def download_polish_selection_v2(job_id: str, request: Request):
         raise HTTPException(404, "此任务没有修改对照记录") from None
     except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile):
         raise HTTPException(422, "无法生成所选版本，请重新打开对照或联系客服") from None
+    from .growth import downloaded
+    downloaded(job)
     return FileResponse(path, filename='proofread-selection.epub', media_type='application/epub+zip',
         headers={'Cache-Control':'no-store', 'X-Robots-Tag':'noindex'},
         background=BackgroundTask(path.unlink, missing_ok=True) if temporary else None)
@@ -4892,11 +4901,15 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
 
 @app.post("/api/v2/repair/{job_id}/checkout-events")
 def repair_checkout_event(job_id: str, body: BrowserEvent):
-    if not _repair_job_get(job_id):
+    repair_job = _repair_job_get(job_id)
+    if not repair_job:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     recorded = record_event(job_store, f"repair_{job_id}", body.event, "browser")
     if not recorded:
         raise HTTPException(status_code=503, detail="记录暂时不可用")
+    from .growth import bind
+    if not repair_job.get("is_test_order"):
+        bind("repair_"+job_id, body.funnel_session)
     return {"recorded": True}
 
 
@@ -4948,6 +4961,9 @@ async def repair_download(job_id: str):
     import urllib.parse
     download_name = job.get("download_filename") or fixed_file.name
     encoded_name = urllib.parse.quote(download_name)
+    from .growth import downloaded_order
+    if not job.get("is_test_order"):
+        downloaded_order("repair_"+job_id)
     return FileResponse(
         str(fixed_file),
         media_type="application/epub+zip",
@@ -4982,8 +4998,10 @@ def _favicon():
     return Response(status_code=204)
 
 from .admin.router import make_router as make_admin_router
-app.include_router(make_admin_router(job_store, UPLOAD_DIR, OUTPUT_DIR, _enqueue_conversion))
+app.include_router(make_admin_router(job_store, UPLOAD_DIR, OUTPUT_DIR, _enqueue_conversion, repair_lookup=_repair_job_get))
 app.include_router(make_event_router(job_store, _authorize_job_access))
+from .growth import router as make_growth_router
+app.include_router(make_growth_router())
 
 from .domain.completion_email_router import make_completion_email_router
 from .domain.completion_email_worker import CompletionEmailWorker

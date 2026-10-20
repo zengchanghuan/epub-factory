@@ -1,0 +1,62 @@
+{
+  "zh-CN": {
+    "translation": {
+      "before": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "after": "林医生说：“不要将剂量从5毫克增加到10毫克。”随访日期是2026-10-20。",
+      "source_language": "en"
+    },
+    "proofreading": {
+      "before": "收到朋友精心准备的生日礼物，我感到很窝心，日期是 2026-10-20。",
+      "after": "收到朋友精心准备的生日礼物，我感到很暖心，日期是 2026-10-20。",
+      "source_language": "zh-CN"
+    }
+  },
+  "zh-TW": {
+    "translation": {
+      "before": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "after": "林醫師說：「請勿將劑量從 5 mg 增加至 10 mg。」後續追蹤日期為 2026-10-20。",
+      "source_language": "en"
+    },
+    "proofreading": {
+      "before": "請使用軟體查看檔案，日期為 2026-10-20。",
+      "after": "請使用軟體查看檔案，日期為 2026-10-20。",
+      "source_language": "zh-TW"
+    }
+  },
+  "en": {
+    "translation": {
+      "before": "林医生说：“不要把剂量从 5 mg 增加到 10 mg。”复诊日期是 2026-10-20。",
+      "after": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "source_language": "zh-CN"
+    },
+    "proofreading": {
+      "before": "She go to the library on 2026-10-20.",
+      "after": "She goes to the library on 2026-10-20.",
+      "source_language": "en"
+    }
+  },
+  "ja": {
+    "translation": {
+      "before": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "after": "林医師は「用量を5 mgから10 mgに増やしてはいけない」と言った。フォローアップ日は2026-10-20です。",
+      "source_language": "en"
+    },
+    "proofreading": {
+      "before": "私は本を読みます。日付は 2026-10-20 です。",
+      "after": "私は本を読みます。日付は 2026-10-20 です。",
+      "source_language": "ja"
+    }
+  },
+  "ko": {
+    "translation": {
+      "before": "Dr. Lin said, “Do not increase the dose from 5 mg to 10 mg.” The follow-up date is 2026-10-20.",
+      "after": "린 박사는 “용량을 5 mg에서 10 mg으로 늘리지 마십시오.”라고 말했습니다. 추적 관찰 날짜는 2026-10-20입니다.",
+      "source_language": "en"
+    },
+    "proofreading": {
+      "before": "저는 책을 읽습니다. 날짜는 2026-10-20입니다.",
+      "after": "저는 책을 읽습니다. 날짜는 2026-10-20입니다.",
+      "source_language": "ko"
+    }
+  }
+}

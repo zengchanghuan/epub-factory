@@ -72,3 +72,6 @@ test_测试用例书/
 
 # Private authenticated filing-portal captures (historical documentation review).
 /artifacts/beian-20260929/
+
+# Optional first-party analytics runtime state
+backend/growth.sqlite*

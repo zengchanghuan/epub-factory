@@ -253,3 +253,43 @@ the previous order could throw a temporal-dead-zone ReferenceError and leave
 progress/download recovery stuck before its API poll. The existing isolated
 Chrome gate reproduced the issue using a synthetic task deep link and covers
 pending/running/completed refresh and authorized downloads after the fix.
+
+## 2026-10-20 — Optional first-party payment funnel
+
+`app/growth.py` writes separate `backend/growth.sqlite` (override with
+`FUNNEL_DB_PATH`), excluded from Git and the source-only deployment package.
+No production jobs/payment schema migration is added. Visits store only a random
+32-hex session, first timestamp, five-language enum, device/source enums and a
+file-selected flag. Bindings associate an already-authorized checkout with that
+session; first attribution wins. Downloads record only internal order number and
+time after existing authorization, payment/delivery checks and artifact checks.
+An authorized batch ZIP or child download counts as one batch download response.
+
+`POST /api/v2/analytics/events` accepts only visit/file_selected and strict fields,
+rejects cross-site browser requests and skips DNT/common bots. Browser collection
+also skips loopback and configured admin-key sessions. SessionStorage IDs expire
+on the next page load after 30 minutes. Visit writes remove records outside the
+90-day retention window; no independent cleanup scheduler is added. Visits are
+bounded at 100,000 rows. SQLite timeout is 200 ms; telemetry failures are swallowed
+and must never change prices, grant entitlement, initiate capture or prevent
+existing checkout/download responses. Monitoring storage is optional, not a ledger.
+
+`GET /api/admin/funnel` uses the existing administrator cookie authorization and
+`Cache-Control: no-store`, validated filters and aggregate-only output. It reads
+the first-visit cohort, joins existing order milestones and PayPal mappings, and
+counts payments only from verified_webhook/verified_query/verified_capture.
+Sandbox and is_test_order orders are excluded. Repair metadata is read through
+an injected lookup; conversion/PDF/translation/proofreading and batch metadata use
+the existing job store. Missing telemetry yields empty/null rates; database read
+failure yields 503, never fabricated zero conversion. UI clears stale results on
+failure and uses generation guards for overlapping requests.
+
+`growth-locales.js`, `growth-analytics.js`, `examples*`, `funnel-admin*` and
+`growth.css` supply five-language UI and synthetic public examples. Samples are
+rendered with textContent; no customer data or new model request is involved.
+The public examples page is in the sitemap; the administrator page is noindex.
+Frontend checks cover all language labels, source sanitization, DNT/loopback and
+file-event privacy. `test_growth_funnel.py` covers access control, strict payloads,
+verified-only payment counts, test/sandbox exclusion, batch deduplication,
+repair/PDF grouping, cohort filters, retention, first attribution and fail-open
+optional telemetry. Existing PayPal and delivery regressions remain release gates.

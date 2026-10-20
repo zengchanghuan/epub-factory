@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from .storage_db import OrderEventRecord
 
@@ -35,6 +35,7 @@ def milestones(store, number):
 
 class BrowserEvent(BaseModel):
     event: Literal['quote_shown','payment_clicked']
+    funnel_session: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
 def make_event_router(store, authorize):
@@ -50,5 +51,8 @@ def make_event_router(store, authorize):
         number=f'batch_{job.batch_id}' if job.batch_id else job.id
         if not record_event(store,number,body.event,'browser'):
             raise HTTPException(503,'记录暂时不可用')
+        if not getattr(job, 'is_test_order', False):
+            from .growth import bind
+            bind(number, body.funnel_session)
         return {'ok':True}
     return router

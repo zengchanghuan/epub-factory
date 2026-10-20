@@ -50,7 +50,7 @@ class ReviewBody(BaseModel):
     acknowledge_cost: bool = False
 
 
-def make_router(store, upload_dir, output_dir, enqueue):
+def make_router(store, upload_dir, output_dir, enqueue, repair_lookup=None):
     router = APIRouter(prefix="/api/admin", tags=["admin-orders"])
     engine = getattr(store, "_engine", None)
     if engine is not None:
@@ -223,6 +223,19 @@ def make_router(store, upload_dir, output_dir, enqueue):
             conn.execute(delete(AdminSession).where(AdminSession.token == digest_token(token)))
         response.delete_cookie(COOKIE, path="/api/admin", secure=True, httponly=True, samesite="strict")
         return {"ok": True}
+
+    @router.get("/funnel")
+    def funnel(request: Request, response: Response, days: int = Query(7, ge=1, le=90),
+               language: Literal['all','zh-CN','zh-TW','en','ja','ko']='all',
+               source: Literal['all','direct','search','community','social','campaign','other']='all',
+               device: Literal['all','mobile','desktop']='all'):
+        authorize(request)
+        response.headers['Cache-Control']='no-store'
+        from ..growth import report
+        try:
+            return report(store, days, language, source, device, repair_lookup=repair_lookup)
+        except Exception:
+            raise HTTPException(503, 'Funnel report unavailable') from None
 
     @router.get("/orders")
     def orders(request: Request, response: Response, q: str = Query("", max_length=200), status: JobStatus | None = None,

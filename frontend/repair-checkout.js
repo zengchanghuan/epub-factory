@@ -100,7 +100,7 @@
       try {
         await fetcher(endpoint(s.id, 'checkout-events'), {
           method: 'POST', headers: { ...headers(s.id), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ event }),
+          body: JSON.stringify({ event, funnel_session: win.FixEpubGrowth?.session || undefined }),
         });
       } catch (_) { /* analytics must never block payment */ }
     }

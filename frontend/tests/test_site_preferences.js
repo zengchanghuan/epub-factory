@@ -1,8 +1,8 @@
 const fs=require('fs'),path=require('path');
 const preferences=require('../site-preferences');
-const messages=require('../locales/ui');
+const messages={...require('../locales/ui'),...require('../growth-locales')};
 test('五种界面语言覆盖所有已标记文案',()=>{
-  for(const file of ['index.html','epub-repair.html','paypal-checkout.html']){
+  for(const file of ['index.html','epub-repair.html','paypal-checkout.html','examples.html','funnel-admin.html']){
     const html=fs.readFileSync(path.join(__dirname,'..',file),'utf8');
     for(const [,key] of html.matchAll(/data-i18n="([^"]+)"/g)){
       for(const locale of ['zh-CN','zh-TW','en','ja','ko']) assert(messages[key]?.[locale],`${file}: ${key}/${locale}`);

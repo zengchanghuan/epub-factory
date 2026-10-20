@@ -69,6 +69,7 @@ jobs:
               python ../scripts/test_release_runtime.py || fail=1
               python ../scripts/test_release_gate.py || fail=1
               python ../scripts/test_language_quality.py || fail=1
+              python test_growth_funnel.py || fail=1
               python test_txt_import.py || fail=1
               python test_multilingual_checkout.py || fail=1
               python test_e3_seo.py || fail=1

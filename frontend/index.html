@@ -1341,6 +1341,7 @@
   <link rel="stylesheet" href="/return-later.css?v=20260918">
 <script src="/polish-review.js?v=20261019-txt-review2"></script>
 <script src="/locales/ui.js?v=20261020-formats1"></script>
+<script src="/growth-locales.js?v=20261020"></script>
 <script src="/site-preferences.js?v=20261019-txt-review2"></script>
 <link rel="stylesheet" href="/site-preferences.css?v=20261019-txt-review2">
 </head>
@@ -1659,6 +1660,11 @@
         <select id="paymentMethod"><option value="alipay" data-i18n="ui_88">支付宝 · 人民币</option><option value="paypal" data-i18n="ui_89">PayPal · 美元</option></select>
         <p style="font-size:12px;color:var(--muted);"><span data-i18n="ui_90">PayPal：基础转换 US$0.99/本；AI 翻译、精校整单最低 US$1.49，报价已含支付手续费，付款前显示总价。</span></p>
       </div>
+      <details class="quote-notes" open style="margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:8px;">
+        <summary data-i18n="g_quote">付款前请确认</summary>
+        <p data-i18n="g_total"></p><p data-i18n="g_deliver"></p><p data-i18n="g_wait"></p><p data-i18n="g_failure"></p>
+        <a href="/examples.html" data-i18n="g_examples">查看处理效果</a> · <a href="/refund.html" data-i18n="g_refund">退款政策</a>
+      </details>
       <button class="submit-btn" id="submitBtn" disabled><span data-i18n="ui_91">开始转换</span></button>
 
       <!-- 格式转换扫码支付区 -->
@@ -1894,6 +1900,7 @@
   <script src="pdf-conversion.js?v=20261018-paypal"></script>
   <script src="return-later.js?v=20261019-multilingual"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
+  <script src="/growth-analytics.js?v=20261020" defer></script>
   <script src="/txt-preview.js?v=20261020"></script>
   <script src="tool-entry.js?v=20261001-r11"></script>
   <script>
@@ -2424,7 +2431,7 @@
       fetch(`${API}/api/v2/jobs/${encodeURIComponent(jobId)}/checkout-events`, {
         method: "POST", keepalive: true,
         headers: { ...authHeaders(jobId), "Content-Type": "application/json" },
-        body: JSON.stringify({ event }),
+        body: JSON.stringify({ event, funnel_session: window.FixEpubGrowth?.session || undefined }),
       }).catch(() => {}); // Telemetry must never block payment.
     }
 
@@ -2591,6 +2598,7 @@
         $("continuePaymentMessage").textContent = `原订单可继续付款${amountText}。` + (hasQr
           ? "请使用支付宝扫描二维码完成支付。" : `请点击付款链接，在${paymentProvider(data)}页面完成支付。`);
         renderTranslationQuoteSummary(data);
+        reportCheckoutEvent("quote_shown");
         resumePaymentPolling(target.kind, target.id);
       } catch (error) {
         if (!isCurrent()) return;

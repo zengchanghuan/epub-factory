@@ -117,7 +117,7 @@ class AdminTests(unittest.TestCase):
         with patch('app.domain.payment_email_service.queue_paid_order_email') as notify:
             response = self.client.post('/api/admin/orders/a/payment', json={})
             self.assertEqual(response.status_code, 200)
-            notify.assert_called_once_with('a', '5.99', 'translation', file_count=1, is_test_order=False)
+            notify.assert_called_once_with('a', '5.99', 'translation', file_count=1, is_test_order=False, currency='CNY')
         self.assertEqual(self.store.get('a').status, JobStatus.pending_payment)
 
     def test_refresh_of_historical_or_wrong_amount_order_does_not_send_sale_mail(self):

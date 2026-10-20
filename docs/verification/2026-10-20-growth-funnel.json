@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-20",
+  "scope": "five-language funnel, public synthetic comparisons, quote explanations; prices unchanged",
+  "frontend_suites": 43,
+  "browser_scenarios": 31,
+  "browser_js_exceptions": 0,
+  "backend": {
+    "growth": 7,
+    "paypal_checkout": 28,
+    "precision_contract": 33,
+    "admin": 22,
+    "repair_contract": 18,
+    "batch_conversion": 6,
+    "real_epubcheck_delivery": {
+      "passed": 11,
+      "skipped_private_originals": 1
+    }
+  },
+  "limitations": [
+    "Historical private D49 fixtures unavailable: 14 skipped, not claimed as covered.",
+    "Local EPUBCheck missing; D91 rerun successfully in isolated server /tmp with synthetic orders, blocked external APIs and real EPUBCheck.",
+    "No real payments, captures or paid model calls.",
+    "Funnel counts only attributed orders after launch; visits are sessions and download response is not proof of saving."
+  ],
+  "deployment": "pending"
+}

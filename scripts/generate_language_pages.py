@@ -118,7 +118,7 @@ def render(language):
 def generate(check=False):
     output = ROOT / 'frontend'
     expected = {name:render(lang) for lang,(name,_) in LANGUAGES.items()}
-    pages = ['txt-to-epub.html','ebook-proofreading.html','proofreading-changes.html', '', 'epub-translator.html','epub-repair.html','traditional-to-simplified.html','vertical-to-horizontal.html',*expected,
+    pages = ['examples.html','txt-to-epub.html','ebook-proofreading.html','proofreading-changes.html', '', 'epub-translator.html','epub-repair.html','traditional-to-simplified.html','vertical-to-horizontal.html',*expected,
              'about.html','contact.html','privacy.html','terms.html','refund.html','contact-en.html','privacy-en.html','terms-en.html','refund-en.html']
     expected['sitemap.xml'] = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + ''.join(f'  <url><loc>https://fixepub.com/{name}</loc></url>\n' for name in pages) + '</urlset>\n'
     for name,content in expected.items():

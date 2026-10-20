@@ -208,3 +208,21 @@ non-delivery, explicit checkout continuation and stale QR clearing. The browser
 fixture allows only the read-only PayPal config query and forbids PayPal order
 creation/capture. These four synthetic fixture jobs are loopback-only, not live
 orders. All 42 frontend suites, seven landing-page tests and 20 catalog tests pass.
+
+## 2026-10-20 — 付费漏斗、公开效果对照与报价说明
+
+- `/examples.html`：简体中文、繁体中文、英语、日语、韩语各有翻译与精校的前后对照，跟随界面语言和 light/dark 设置。样本来自 `docs/verification/2026-10-20-language-quality/outputs.json` 的合成短文真实模型结果；不是客户文件或整本书质量承诺。正确文本未改动时照实显示，不制造修改。
+- 首页提交前显示总额/币种、PayPal 已计入手续费、EPUB 交付、任务恢复、失败联系与退款政策说明，并链接公开对照。原有报价、最低金额、支付选择和支付校验不变。
+- 管理员从 `/orders-admin.html` 登录后访问 `/funnel-admin.html`。支持五语言、7/30/90 天、首次访问语言、来源类别和设备类别筛选。
+- 访问和选文件按 30 分钟浏览器会话去重；报价、付款点击、已核验到账和下载响应按关联订单去重。批量按整批一单，服务分为转换、翻译、精校、修复、PDF、批量。报价到付款与付款到下载使用订单分母；无分母显示 `—`，不会把无数据表示成 0%。
+- 仅统计上线后关联成功的订单，不回填历史、不等于全站收入。到账需服务器已核验事件；创建/APPROVED/浏览器上报都不算到账。订单阶段排除已标记测试及 Sandbox；会话数不是独立人数，机器人过滤不保证完整。
+- 扫码行为不可直接观测，付款点击缺失不代表未操作。下载表示已授权并准备返回文件，不能证明客户端保存成功；批量响应也不代表每个子文件均完成。跨浏览器、禁用存储、DNT、网络丢报或恢复未关联的旧任务可能缺少归因。
+- 不收集书名、正文、完整来源网址或支付凭据；仅保存随机会话、类别、内部订单关联及下载时间。隐私政策已同步说明。不新增第三方追踪，不提供免费模型试跑，不自动发消息或重新付款。
+
+Validation for this release: 43 frontend suites, 31 isolated Chrome scenarios
+(zero JavaScript exceptions), seven funnel tests, 28 PayPal tests, 33 precision
+contract tests, 22 administrator tests, 18 repair tests and six batch tests passed.
+The isolated server run with real EPUBCheck passed 11 D91 tests; one optional
+private-original case was skipped. D49's 14 private-history cases were unavailable
+and are not claimed as covered. Seven landing-page and 20 catalog tests passed.
+See `docs/verification/2026-10-20-growth-funnel.json` for release evidence.
