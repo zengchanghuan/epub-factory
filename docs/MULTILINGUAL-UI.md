@@ -186,3 +186,17 @@ CNY 0.0671 calculated usage cost (not a provider invoice).
 literal comparison. Human review is pending. Raw evidence retains the initial
 harness UTF-8 extraction issue and non-candidate seed; corrected extraction and
 supplemental execution are explicitly documented in `summary.json`.
+
+Deployment verification: application commit `22409a7` was pushed and deployed;
+public health returned 200, seven frontend resources matched source hashes, and
+15 live estimate requests (DOCX / MD / MARKDOWN × five languages) all returned
+valid quotes. These estimates create no order or model call. PayPal remained
+live/enabled and the before/after payment configuration fingerprint matched.
+Evidence: `docs/verification/2026-10-20-polish-formats-live.json`.
+Offline verification passed 42 frontend suites, 33 precision-contract tests
+(including 20 import-format/language combinations and authorized downloads),
+31 polisher safety tests, 25 input integrity tests, 25 translation-contract tests,
+28 PayPal tests, nine multilingual tests, four TXT tests and five quality-tool tests.
+Both SEO generators passed consistency checks. Backup:
+`/home/ubuntu/epub-factory/deploy-backups/20261020T035234Z-1057658`.
+No new real payment was initiated or claimed as accepted by this release.

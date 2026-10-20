@@ -1,0 +1,114 @@
+{
+  "health": 200,
+  "public_hashes": "matched",
+  "quotes": [
+    {
+      "language": "zh-CN",
+      "format": "md",
+      "status": 200,
+      "char_count": 9,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "zh-CN",
+      "format": "markdown",
+      "status": 200,
+      "char_count": 9,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "zh-CN",
+      "format": "docx",
+      "status": 200,
+      "char_count": 9,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "zh-TW",
+      "format": "md",
+      "status": 200,
+      "char_count": 6,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "zh-TW",
+      "format": "markdown",
+      "status": 200,
+      "char_count": 6,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "zh-TW",
+      "format": "docx",
+      "status": 200,
+      "char_count": 6,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "en",
+      "format": "md",
+      "status": 200,
+      "char_count": 14,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "en",
+      "format": "markdown",
+      "status": 200,
+      "char_count": 14,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "en",
+      "format": "docx",
+      "status": 200,
+      "char_count": 14,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "ja",
+      "format": "md",
+      "status": 200,
+      "char_count": 7,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "ja",
+      "format": "markdown",
+      "status": 200,
+      "char_count": 7,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "ja",
+      "format": "docx",
+      "status": 200,
+      "char_count": 7,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "ko",
+      "format": "md",
+      "status": 200,
+      "char_count": 8,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "ko",
+      "format": "markdown",
+      "status": 200,
+      "char_count": 8,
+      "price_usd": "0.96"
+    },
+    {
+      "language": "ko",
+      "format": "docx",
+      "status": 200,
+      "char_count": 8,
+      "price_usd": "0.96"
+    }
+  ],
+  "paypal_enabled": true,
+  "created_orders": 0,
+  "model_calls": 0
+}
