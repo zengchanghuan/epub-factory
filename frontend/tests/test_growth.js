@@ -27,3 +27,23 @@ test('DNT 和本机测试不记录事件',()=>{
  assert.equal(harness({navigator:{doNotTrack:'1'}}).sent.length,0);
  assert.equal(harness({location:{hostname:'127.0.0.1'}}).sent.length,0);
 });
+test('排除标记跨重载生效，当前页面停止发事件和归因，不改付款数据',()=>{
+ let excluded=true;
+ const storage={getItem:k=>k==='fixepub_analytics_excluded'&&excluded?'1':null};
+ assert.equal(harness({localStorage:storage}).sent.length,0);
+ excluded=false;
+ const h=harness({localStorage:storage});assert.equal(h.sent.length,1);assert(h.root.FixEpubGrowth.session);
+ excluded=true;
+ h.listeners['fixepub:files-selected']({detail:[{name:'private.epub'}]});
+ assert.equal(h.sent.length,1);assert.equal(h.root.FixEpubGrowth.session,undefined);
+});
+test('设置页开关可持久保存并撤销，存储失败明确提示',()=>{
+ const values=new Map(),handlers={},box={checked:false,addEventListener:(n,fn)=>handlers[n]=fn},state={};
+ let blocked=false;
+ const local={getItem:k=>values.get(k),setItem:(k,v)=>{if(blocked)throw Error();values.set(k,v);},removeItem:k=>values.delete(k)};
+ const doc={getElementById:id=>id==='excludeVisits'?box:state};
+ vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../analytics-preferences.js'),'utf8'),{document:doc,localStorage:local,sessionStorage:{removeItem:()=>{}},window:{FixEpubI18n:{t:k=>k},addEventListener:()=>{}}});
+ assert.equal(state.textContent,'g_exclude_off');box.checked=true;handlers.change();assert.equal(state.textContent,'g_exclude_on');assert.equal(values.get('fixepub_analytics_excluded'),'1');
+ box.checked=false;handlers.change();assert.equal(state.textContent,'g_exclude_off');assert(!values.has('fixepub_analytics_excluded'));
+ blocked=true;box.checked=true;handlers.change();assert.equal(state.textContent,'g_exclude_error');assert.equal(box.checked,false);
+});

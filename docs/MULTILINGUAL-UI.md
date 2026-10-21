@@ -233,3 +233,12 @@ digest is unchanged; PayPal remains live and enabled. Backup:
 `/home/ubuntu/epub-factory/deploy-backups/20261020T063041Z-1094267`.
 Analytics begins with newly attributed visits; no real-payment acceptance is
 claimed. GitHub CI was still running when this release evidence was recorded.
+
+## 2026-10-21 — 排除本人访问
+
+访问 `/analytics-preferences.html` 开启“排除我的访问”，两台 Mac 的每个常用
+浏览器配置文件各设置一次。五语言设置页本身不发送漏斗事件；设置保存在本站
+localStorage，换网络后仍生效，清除站点数据、换浏览器或无痕窗口需重新设置。
+开启后停止后续访问/选文件上报和新的会话归因；当前旧页面请刷新，以加载新版
+脚本。历史访问、已经关联的订单及真实成交记录不删除，付款和下载权限不变。
+看板提供设置入口。统计仍按浏览器会话计数，不能解释为独立新用户人数。

@@ -349,5 +349,54 @@
     "en": "Proofreading",
     "ja": "校正",
     "ko": "교정"
+  },
+  "g_exclude_title": {
+    "zh-CN": "排除我的访问",
+    "zh-TW": "排除我的造訪",
+    "en": "Exclude my visits",
+    "ja": "自分のアクセスを除外",
+    "ko": "내 방문 제외"
+  },
+  "g_exclude_help": {
+    "zh-CN": "在两台 Mac 的常用浏览器分别开启。设置只对当前浏览器配置文件生效，不受换网络影响；其他浏览器、无痕窗口或清除网站数据后需重新设置。",
+    "zh-TW": "請在兩台 Mac 的常用瀏覽器分別開啟。設定只對目前瀏覽器設定檔生效，不受更換網路影響；其他瀏覽器、無痕視窗或清除網站資料後須重新設定。",
+    "en": "Enable this in each browser profile you use on both Macs. It survives network changes. Other browsers, private windows or cleared site data require a separate setting.",
+    "ja": "両方の Mac で使う各ブラウザプロファイルで有効にしてください。ネットワークが変わっても維持されます。別のブラウザ、プライベートウィンドウ、サイトデータ削除後は再設定が必要です。",
+    "ko": "두 Mac에서 사용하는 각 브라우저 프로필에서 켜세요. 네트워크가 바뀌어도 유지됩니다. 다른 브라우저, 시크릿 창 또는 사이트 데이터 삭제 후에는 별도로 설정해야 합니다."
+  },
+  "g_exclude_label": {
+    "zh-CN": "不将此浏览器的后续访问计入付费漏斗",
+    "zh-TW": "不將此瀏覽器後續造訪計入付費漏斗",
+    "en": "Exclude future visits from this browser from the payment funnel",
+    "ja": "このブラウザの今後の訪問を決済ファネルから除外",
+    "ko": "이 브라우저의 이후 방문을 결제 퍼널에서 제외"
+  },
+  "g_exclude_on": {
+    "zh-CN": "已开启：此浏览器后续访问不计入漏斗。",
+    "zh-TW": "已開啟：此瀏覽器後續造訪不計入漏斗。",
+    "en": "Enabled: future visits from this browser are excluded.",
+    "ja": "有効：このブラウザの今後の訪問は除外されます。",
+    "ko": "켜짐: 이 브라우저의 이후 방문은 제외됩니다."
+  },
+  "g_exclude_off": {
+    "zh-CN": "未开启：此浏览器允许记录访问。",
+    "zh-TW": "未開啟：此瀏覽器允許記錄造訪。",
+    "en": "Disabled: this browser allows visit recording.",
+    "ja": "無効：このブラウザの訪問は記録対象です。",
+    "ko": "꺼짐: 이 브라우저의 방문을 기록할 수 있습니다."
+  },
+  "g_exclude_error": {
+    "zh-CN": "无法保存设置，请允许本站使用浏览器存储后重试。",
+    "zh-TW": "無法儲存設定，請允許本站使用瀏覽器儲存空間後重試。",
+    "en": "Could not save. Allow browser storage for this site and try again.",
+    "ja": "保存できません。サイトのブラウザストレージを許可して再試行してください。",
+    "ko": "저장하지 못했습니다. 이 사이트의 브라우저 저장소를 허용하고 다시 시도하세요."
+  },
+  "g_exclude_note": {
+    "zh-CN": "不改动付款、订单或下载权限，不删除历史访问，也不会自动删除真实成交记录。本页本身不发送访问统计。开启前已打开的旧页面请刷新。",
+    "zh-TW": "不更動付款、訂單或下載權限，不刪除歷史造訪，也不會自動刪除真實成交紀錄。本頁本身不傳送造訪統計。開啟前已開啟的舊頁面請重新整理。",
+    "en": "Payments, orders and downloads are unchanged. Past visits and real payment records are not deleted. This page sends no visit telemetry. Refresh older pages opened before enabling.",
+    "ja": "支払い、注文、ダウンロード権限は変わりません。過去の訪問や実際の決済記録は削除しません。このページは訪問統計を送信しません。有効化前から開いている古いページは再読み込みしてください。",
+    "ko": "결제, 주문 및 다운로드 권한은 바뀌지 않습니다. 과거 방문이나 실제 결제 기록은 삭제하지 않습니다. 이 페이지는 방문 통계를 보내지 않습니다. 설정 전에 열었던 이전 페이지는 새로고침하세요."
   }
 }; if(typeof module==="object"&&module.exports)module.exports=messages;else Object.assign(root.FixEpubMessages,messages);})(typeof window!=="undefined"?window:globalThis);

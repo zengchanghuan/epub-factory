@@ -293,3 +293,13 @@ file-event privacy. `test_growth_funnel.py` covers access control, strict payloa
 verified-only payment counts, test/sandbox exclusion, batch deduplication,
 repair/PDF grouping, cohort filters, retention, first attribution and fail-open
 optional telemetry. Existing PayPal and delivery regressions remain release gates.
+
+### Browser traffic exclusion (2026-10-21)
+
+`analytics-preferences.html/js` stores `fixepub_analytics_excluded=1` in first-party
+localStorage. The settings page emits no analytics requests. The collector checks
+this flag before initialization and each event; its session getter returns
+undefined while excluded so checkout requests cannot add a new session binding.
+Existing bound orders and verified payment facts are deliberately retained.
+This is per browser profile, not fingerprint/IP identification, and clearing site
+data removes it. No server, payment, pricing or authorization changes are involved.
