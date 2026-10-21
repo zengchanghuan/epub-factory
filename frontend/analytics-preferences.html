@@ -1,1 +1,43 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>访问统计设置 · FixEpub</title><link rel="stylesheet" href="/site-preferences.css"><link rel="stylesheet" href="/growth.css"><script src="/locales/ui.js"></script><script src="/growth-locales.js?v=20261021"></script><script src="/site-preferences.js"></script><script src="/analytics-preferences.js" defer></script></head><body><main><a href="/">FixEpub</a><h1 data-i18n="g_exclude_title"></h1><p data-i18n="g_exclude_help"></p><label><input id="excludeVisits" type="checkbox"><span data-i18n="g_exclude_label"></span></label><p id="preferenceState" role="status"></p><p data-i18n="g_exclude_note"></p><a href="/funnel-admin.html" data-i18n="g_funnel"></a></main></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>访问统计设置 · FixEpub</title>
+  <link rel="stylesheet" href="/site-preferences.css">
+  <link rel="stylesheet" href="/analytics-preferences.css?v=20261021-ui">
+  <script src="/locales/ui.js"></script>
+  <script src="/growth-locales.js?v=20261021-ui"></script>
+  <script src="/site-preferences.js"></script>
+  <script src="/analytics-preferences.js?v=20261021-ui" defer></script>
+</head>
+<body>
+  <main>
+    <nav class="pref-nav"><a class="brand" href="/">FixEpub<span aria-hidden="true"> / </span></a><span data-i18n="g_pref_settings"></span></nav>
+    <header class="pref-header">
+      <div class="pref-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="3" width="16" height="12" rx="2"/><path d="M2 19h20M9 8l2 2 4-4"/></svg></div>
+      <h1 data-i18n="g_exclude_title"></h1>
+      <p data-i18n="g_pref_intro"></p>
+    </header>
+    <section class="pref-card" aria-labelledby="browserHeading">
+      <div class="pref-card-heading"><span class="pref-dot" aria-hidden="true"></span><h2 id="browserHeading" data-i18n="g_pref_browser"></h2></div>
+      <label class="pref-toggle" for="excludeVisits">
+        <span data-i18n="g_exclude_label"></span>
+        <input id="excludeVisits" type="checkbox" role="switch" aria-describedby="preferenceState">
+      </label>
+      <p id="preferenceState" class="pref-state" role="status" aria-live="polite"></p>
+      <p class="pref-save" data-i18n="g_pref_save"></p>
+    </section>
+    <section class="pref-steps" aria-labelledby="stepsHeading">
+      <h2 id="stepsHeading" data-i18n="g_pref_two"></h2>
+      <ol>
+        <li><span class="step-number" aria-hidden="true">1</span><div><h3 data-i18n="g_pref_step1"></h3><p data-i18n="g_pref_step1_body"></p></div></li>
+        <li><span class="step-number" aria-hidden="true">2</span><div><h3 data-i18n="g_pref_step2"></h3><p data-i18n="g_pref_step2_body"></p></div></li>
+      </ol>
+    </section>
+    <details class="pref-details"><summary data-i18n="g_pref_details"></summary><p data-i18n="g_exclude_help"></p><p data-i18n="g_exclude_note"></p></details>
+    <nav class="pref-footer"><a href="/" data-i18n="g_pref_home"></a><a href="/funnel-admin.html" data-i18n="g_funnel"></a></nav>
+  </main>
+</body>
+</html>

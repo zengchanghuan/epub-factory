@@ -398,5 +398,82 @@
     "en": "Payments, orders and downloads are unchanged. Past visits and real payment records are not deleted. This page sends no visit telemetry. Refresh older pages opened before enabling.",
     "ja": "支払い、注文、ダウンロード権限は変わりません。過去の訪問や実際の決済記録は削除しません。このページは訪問統計を送信しません。有効化前から開いている古いページは再読み込みしてください。",
     "ko": "결제, 주문 및 다운로드 권한은 바뀌지 않습니다. 과거 방문이나 실제 결제 기록은 삭제하지 않습니다. 이 페이지는 방문 통계를 보내지 않습니다. 설정 전에 열었던 이전 페이지는 새로고침하세요."
+  },
+  "g_pref_settings": {
+    "zh-CN": "访问统计设置",
+    "zh-TW": "造訪統計設定",
+    "en": "Traffic preferences",
+    "ja": "アクセス統計の設定",
+    "ko": "방문 통계 설정"
+  },
+  "g_pref_intro": {
+    "zh-CN": "让统计更接近真实访客。从这台 Mac 的浏览器开始设置。",
+    "zh-TW": "讓統計更接近真實訪客。從這台 Mac 的瀏覽器開始設定。",
+    "en": "Keep your own visits out of visitor counts. Start with this browser on this Mac.",
+    "ja": "自分の訪問を統計から除外します。この Mac のブラウザから設定しましょう。",
+    "ko": "내 방문을 통계에서 제외하세요. 이 Mac의 브라우저부터 설정하세요."
+  },
+  "g_pref_browser": {
+    "zh-CN": "当前浏览器",
+    "zh-TW": "目前瀏覽器",
+    "en": "This browser",
+    "ja": "このブラウザ",
+    "ko": "현재 브라우저"
+  },
+  "g_pref_save": {
+    "zh-CN": "更改后自动保存，无需登录。",
+    "zh-TW": "變更後自動儲存，無需登入。",
+    "en": "Changes save automatically. No sign-in needed.",
+    "ja": "変更は自動保存されます。ログインは不要です。",
+    "ko": "변경사항은 자동 저장됩니다. 로그인은 필요하지 않습니다."
+  },
+  "g_pref_two": {
+    "zh-CN": "两台 Mac，分别设置",
+    "zh-TW": "兩台 Mac，分別設定",
+    "en": "Two Macs, two setups",
+    "ja": "2 台の Mac でそれぞれ設定",
+    "ko": "두 Mac에서 각각 설정"
+  },
+  "g_pref_step1": {
+    "zh-CN": "在这台 Mac 开启",
+    "zh-TW": "在這台 Mac 開啟",
+    "en": "Enable on this Mac",
+    "ja": "この Mac で有効にする",
+    "ko": "이 Mac에서 켜기"
+  },
+  "g_pref_step1_body": {
+    "zh-CN": "打开上方开关，然后刷新已打开的网站页面。",
+    "zh-TW": "開啟上方開關，然後重新整理已開啟的網站頁面。",
+    "en": "Turn on the switch above, then refresh any open FixEpub pages.",
+    "ja": "上のスイッチをオンにして、開いている FixEpub のページを再読み込みします。",
+    "ko": "위 스위치를 켠 다음 열려 있는 FixEpub 페이지를 새로고침하세요."
+  },
+  "g_pref_step2": {
+    "zh-CN": "在另一台 Mac 重复一次",
+    "zh-TW": "在另一台 Mac 重複一次",
+    "en": "Repeat on your other Mac",
+    "ja": "もう 1 台の Mac でも設定する",
+    "ko": "다른 Mac에서도 반복하기"
+  },
+  "g_pref_step2_body": {
+    "zh-CN": "用常用浏览器打开本页，开启同一个开关。",
+    "zh-TW": "用常用瀏覽器開啟本頁，啟用同一個開關。",
+    "en": "Open this page in your usual browser and turn on the same switch.",
+    "ja": "普段使うブラウザでこのページを開き、同じスイッチをオンにします。",
+    "ko": "주로 쓰는 브라우저에서 이 페이지를 열고 같은 스위치를 켜세요."
+  },
+  "g_pref_details": {
+    "zh-CN": "生效范围与注意事项",
+    "zh-TW": "生效範圍與注意事項",
+    "en": "Scope and details",
+    "ja": "適用範囲と注意点",
+    "ko": "적용 범위 및 안내"
+  },
+  "g_pref_home": {
+    "zh-CN": "返回首页",
+    "zh-TW": "返回首頁",
+    "en": "Back to home",
+    "ja": "ホームへ戻る",
+    "ko": "홈으로 돌아가기"
   }
 }; if(typeof module==="object"&&module.exports)module.exports=messages;else Object.assign(root.FixEpubMessages,messages);})(typeof window!=="undefined"?window:globalThis);

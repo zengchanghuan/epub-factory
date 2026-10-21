@@ -242,3 +242,11 @@ localStorage，换网络后仍生效，清除站点数据、换浏览器或无�
 开启后停止后续访问/选文件上报和新的会话归因；当前旧页面请刷新，以加载新版
 脚本。历史访问、已经关联的订单及真实成交记录不删除，付款和下载权限不变。
 看板提供设置入口。统计仍按浏览器会话计数，不能解释为独立新用户人数。
+
+UI follow-up: the traffic-exclusion page now has a focused settings card, native
+keyboard-operable switch, explicit saved/error state, two-Mac setup steps and
+collapsible scope notes. Dedicated styles support narrow screens, dark mode and
+reduced motion without changing storage or payment behavior. All 43 frontend
+suites and ten isolated browser cases (five languages × desktop light/mobile dark,
+including switch persistence) passed with zero JavaScript exceptions. The page
+emits no analytics events.
