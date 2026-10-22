@@ -13,6 +13,7 @@
     }catch(_){return 'other';}
   }
   if(typeof module==='object'&&module.exports){module.exports={source};return;}
+  if(root.location.hostname.toLowerCase().replace(/\.$/,'')==='tv.fixepub.com')return;
   if(root.navigator.doNotTrack==='1'||root.location.hostname==='localhost'||root.location.hostname==='127.0.0.1')return;
   function excluded(){
     try{return root.localStorage.getItem('fixepub_analytics_excluded')==='1';}catch(_){return true;}

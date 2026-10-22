@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
+from urllib.parse import urlsplit
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,6 +21,21 @@ class Visit(BaseModel):
     language: Literal['zh-CN','zh-TW','en','ja','ko'] = 'zh-CN'
     device: Literal['mobile','desktop'] = 'desktop'
     source: Literal['direct','search','community','social','campaign','other'] = 'direct'
+
+
+def excluded_traffic(request):
+    """Exclude TV-origin telemetry, never payment facts or website access."""
+    def is_tv(value):
+        try:
+            return (urlsplit(value).hostname or '').lower().rstrip('.') == 'tv.fixepub.com'
+        except ValueError:
+            return False
+    if is_tv('https://' + request.headers.get('host', '')):
+        return True
+    origin = request.headers.get('origin')
+    if origin and origin != 'null':
+        return is_tv(origin)
+    return is_tv(request.headers.get('referer', ''))
 
 
 def path():
@@ -124,6 +140,7 @@ def router():
     routes=APIRouter()
     @routes.post('/api/v2/analytics/events')
     def event(body: Visit, request: Request):
+        if excluded_traffic(request):return {'recorded':False}
         ua=request.headers.get('user-agent','').lower()
         if any(word in ua for word in ('bot','spider','crawl','headless')) or request.headers.get('dnt')=='1':return {'recorded':False}
         if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'Cross-site telemetry rejected')

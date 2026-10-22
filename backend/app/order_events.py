@@ -48,6 +48,9 @@ def make_event_router(store, authorize):
             raise HTTPException(404,'任务不存在')
         if not authorize(request,job):
             raise HTTPException(403,'无权访问该任务')
+        from .growth import excluded_traffic
+        if excluded_traffic(request):
+            return {'ok': True, 'recorded': False}
         number=f'batch_{job.batch_id}' if job.batch_id else job.id
         if not record_event(store,number,body.event,'browser'):
             raise HTTPException(503,'记录暂时不可用')

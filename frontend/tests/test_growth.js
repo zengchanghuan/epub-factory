@@ -47,3 +47,8 @@ test('设置页开关可持久保存并撤销，存储失败明确提示',()=>{
  box.checked=false;handlers.change();assert.equal(state.textContent,'g_exclude_off');assert(!values.has('fixepub_analytics_excluded'));
  blocked=true;box.checked=true;handlers.change();assert.equal(state.textContent,'g_exclude_error');assert.equal(box.checked,false);
 });
+test('TV 子域名不创建漏斗会话或发送访问，主站不受影响',()=>{
+ const h=harness({location:{hostname:'tv.fixepub.com',search:''}});
+ assert.equal(h.sent.length,0);assert.equal(h.root.FixEpubGrowth,undefined);
+ assert.equal(harness().sent.length,1);
+});

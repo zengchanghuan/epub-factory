@@ -303,3 +303,13 @@ undefined while excluded so checkout requests cannot add a new session binding.
 Existing bound orders and verified payment facts are deliberately retained.
 This is per browser profile, not fingerprint/IP identification, and clearing site
 data removes it. No server, payment, pricing or authorization changes are involved.
+
+### TV telemetry isolation (2026-10-22)
+
+`growth.excluded_traffic` parses exact hostnames from Host and Origin, falling back
+to Referer when Origin is absent/null. It matches tv.fixepub.com case-insensitively
+with optional port/trailing dot. It is used only on analytics/PV and authorized
+browser checkout-event routes (including repair). The browser collector exits
+before creating a session on TV. Payment webhooks, capture, settlement and delivery
+are unchanged. Historical records have no domain field and are not retroactively
+classified. A main-site Origin following a TV link is legitimate main-site traffic.

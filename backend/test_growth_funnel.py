@@ -73,6 +73,25 @@ class FunnelTests(unittest.TestCase):
         r=growth.report(self.store)
         self.assertEqual(r['counts']['visits'],2);self.assertEqual(r['counts']['quoted'],0)
 
+    def test_tv_traffic_and_order_attribution_are_excluded(self):
+        payload={'session':'a'*32,'event':'visit'}
+        for headers in [{'origin':'https://tv.fixepub.com'}, {'referer':'https://tv.fixepub.com/watch'}, {'host':'tv.fixepub.com'}, {'origin':'https://TV.FIXEPUB.COM.:443'}]:
+            r=self.client.post('/api/v2/analytics/events',json=payload,headers=headers)
+            self.assertEqual(r.status_code,200);self.assertFalse(r.json()['recorded'])
+        self.assertEqual(growth.report(self.store)['counts']['visits'],0)
+        # A real main-site visit after following a TV link is still main-site traffic.
+        r=self.client.post('/api/v2/analytics/events',json=payload,headers={'origin':'https://fixepub.com','referer':'https://tv.fixepub.com/'})
+        self.assertTrue(r.json()['recorded'])
+        job=self.job('tv-attribution')
+        r=self.client.post('/api/v2/jobs/tv-attribution/checkout-events',json={'event':'quote_shown','funnel_session':'a'*32},headers={'X-Job-Token':job.access_token,'origin':'https://tv.fixepub.com'})
+        self.assertEqual(r.status_code,200);self.assertFalse(r.json()['recorded'])
+        record_event(self.store,job.id,'payment_succeeded','verified_webhook')
+        self.assertEqual(growth.report(self.store)['counts']['quoted'],0)
+        self.assertEqual(growth.report(self.store)['counts']['paid'],0)
+        from app.order_events import milestones
+        self.assertIsNotNone(milestones(self.store,job.id)['payment_succeeded'])
+        self.trade.assert_not_called()
+
     def test_private_readonly_report_no_secrets_or_zero_rate(self):
         self.assertEqual(self.client.get('/api/admin/funnel').status_code,401)
         self.login();r=self.client.get('/api/admin/funnel');self.assertEqual(r.status_code,200,r.text)

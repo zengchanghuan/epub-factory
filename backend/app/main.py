@@ -4275,6 +4275,9 @@ async def alipay_webhook(request: Request):
 @app.post("/api/v2/track/pv", include_in_schema=False)
 async def track_pv(request: Request):
     """记录页面访问（PV）。"""
+    from .growth import excluded_traffic
+    if excluded_traffic(request):
+        return {"ok": True, "recorded": False}
     import json as _json
     from datetime import datetime, timezone
     
@@ -4900,10 +4903,13 @@ async def repair_pay(job_id: str, admin_key: Optional[str] = Form(None)):
 
 
 @app.post("/api/v2/repair/{job_id}/checkout-events")
-def repair_checkout_event(job_id: str, body: BrowserEvent):
+def repair_checkout_event(job_id: str, body: BrowserEvent, request: Request):
     repair_job = _repair_job_get(job_id)
     if not repair_job:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    from .growth import excluded_traffic
+    if excluded_traffic(request):
+        return {"recorded": False}
     recorded = record_event(job_store, f"repair_{job_id}", body.event, "browser")
     if not recorded:
         raise HTTPException(status_code=503, detail="记录暂时不可用")

@@ -250,3 +250,11 @@ reduced motion without changing storage or payment behavior. All 43 frontend
 suites and ten isolated browser cases (five languages × desktop light/mobile dark,
 including switch persistence) passed with zero JavaScript exceptions. The page
 emits no analytics events.
+
+## 2026-10-22 — TV 子域名统计隔离
+
+`tv.fixepub.com` 不采集 FixEpub 漏斗会话；服务端跳过 TV Host/Origin 的访问、
+旧 PV 上报和浏览器报价/付款点击归因，无 Origin 时检查 Referer。主站 Origin
+优先于上一页 Referer，因此从 TV 跳到主站后的正常使用仍属于主站业务。
+不关闭 TV、不修改付款核验、不删除真实成交记录。历史统计未保存域名，不推测
+或批量删除历史会话。看板成交仍只统计已关联的主站会话订单。
