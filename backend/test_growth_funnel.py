@@ -92,6 +92,61 @@ class FunnelTests(unittest.TestCase):
         self.assertIsNotNone(milestones(self.store,job.id)['payment_succeeded'])
         self.trade.assert_not_called()
 
+    def test_location_is_first_session_only_and_no_ip_is_persisted(self):
+        region={'country_code':'CN','country':{'en':'China','zh-CN':'中国'},'region':{'en':'Guangdong'},'city':{'en':'Shenzhen'}}
+        with patch('app.geo_location.lookup',return_value=region) as lookup:
+            self.visit();self.visit()
+            self.assertEqual(lookup.call_count,1)
+        self.visit('b'*32)
+        r=growth.report(self.store)
+        self.assertEqual(sum(x['sessions'] for x in r['geography']),2)
+        self.assertIn(dict(region,sessions=1),r['geography'])
+        self.assertIn({'sessions':1},r['geography'])
+        self.assertEqual(growth.report(self.store,language='ja')['geography'],[])
+        import sqlite3
+        with sqlite3.connect(growth.path()) as db:
+            stored=db.execute('SELECT data FROM visit_regions').fetchall()
+            self.assertNotIn('testclient',str(stored))
+            self.assertNotIn('latitude',str(stored))
+
+    def test_legacy_analytics_without_location_table_remains_readable(self):
+        self.visit()
+        import sqlite3
+        with sqlite3.connect(growth.path()) as db:
+            db.execute('DROP TABLE visit_regions')
+        report=growth.report(self.store)
+        self.assertEqual(report['geography'],[{'sessions':1}])
+        self.assertEqual(report['counts']['visits'],1)
+        self.visit()
+        self.assertEqual(growth.report(self.store)['geography'],[{'sessions':1}])
+
+    def test_geo_is_offline_sanitized_and_optional(self):
+        from app import geo_location as geo
+        fake={'country':{'iso_code':'US','names':{'en':'United States','secret':'omit'}},'subdivisions':[{'names':{'en':'California'}}],'city':{'names':{'en':'Example'}},'location':{'latitude':37,'longitude':-122},'ip':'8.8.8.8'}
+        with patch.object(geo,'reader') as reader:
+            reader.return_value.get.return_value=fake
+            r=geo.lookup('8.8.8.8')
+            self.assertEqual(r['country'],{'en':'United States'})
+            self.assertEqual(set(r),{'country_code','country','region','city'})
+            reader.reset_mock()
+            for address in ['127.0.0.1','10.1.2.3','::1','invalid']:
+                self.assertEqual(geo.lookup(address),{})
+            reader.assert_not_called()
+        with patch.object(geo,'reader',side_effect=OSError('missing')):
+            self.assertEqual(geo.lookup('8.8.8.8'),{})
+            self.assertFalse(geo.status()['available'])
+
+    def test_geo_trusts_only_existing_proxy_boundary_and_skips_tv_dnt(self):
+        from app.infra.rate_limiter import get_real_ip
+        from starlette.requests import Request
+        def request(peer):return Request({'type':'http','client':(peer,123),'headers':[(b'x-real-ip',b'8.8.8.8')]})
+        self.assertEqual(get_real_ip(request('1.1.1.1')),'1.1.1.1')
+        self.assertEqual(get_real_ip(request('127.0.0.1')),'8.8.8.8')
+        with patch('app.geo_location.lookup') as lookup:
+            for headers in [{'origin':'https://tv.fixepub.com'},{'DNT':'1'},{'user-agent':'Googlebot'}]:
+                self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':'visit'},headers=headers)
+            lookup.assert_not_called()
+
     def test_private_readonly_report_no_secrets_or_zero_rate(self):
         self.assertEqual(self.client.get('/api/admin/funnel').status_code,401)
         self.login();r=self.client.get('/api/admin/funnel');self.assertEqual(r.status_code,200,r.text)

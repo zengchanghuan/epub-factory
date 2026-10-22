@@ -313,3 +313,26 @@ browser checkout-event routes (including repair). The browser collector exits
 before creating a session on TV. Payment webhooks, capture, settlement and delivery
 are unchanged. Historical records have no domain field and are not retroactively
 classified. A main-site Origin following a TV link is legitimate main-site traffic.
+
+### Offline visitor geography (2026-10-22)
+
+`geo_location.py` reads DB-IP City Lite MMDB through pinned maxminddb 2.8.2.
+Default runtime path: `backend/geoip/dbip-city-lite.mmdb`; override with
+`FUNNEL_GEO_DB`. The binary is excluded from Git/source packages. Install the
+October 2026 file from https://download.db-ip.com/free/dbip-city-lite-2026-10.mmdb.gz;
+verify the decompressed SHA1 `df17bd24390108ed1d24dcb7718dc60f6b9abd4f` against
+https://db-ip.com/db/download/ip-to-city-lite before atomic replacement. Data is
+CC BY 4.0; the dashboard links DB-IP and its license. Review future monthly
+releases and replace manually; no automatic update job is installed. Restart the
+API after replacing the database to release old memory-mapped readers.
+
+Geolocation runs only after TV/DNT/bot filters and only on initial session insert.
+It uses the existing trusted-proxy `get_real_ip` boundary, never arbitrary client
+payloads. Non-public/invalid IPs or any lookup failure return unknown. Reader
+handles are cached, not IP results. Only allowlisted localized country, region,
+city names and two-letter country code are stored in the new optional analytics
+`visit_regions(session,data)` table. No change to payment/jobs schemas. Region
+rows expire with visits. Old databases without this table remain readable and
+report unknown history. The admin-only report aggregates locations under the same
+visit cohort filters, exposes database availability/build epoch, and no raw IP.
+Frontend renders names with textContent and clears results on auth/network failure.

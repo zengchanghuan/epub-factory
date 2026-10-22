@@ -1,5 +1,8 @@
 """Optional first-party funnel analytics. Never authorizes or initiates payment."""
 import logging
+import json
+from collections import Counter
+from . import geo_location
 import os
 from pathlib import Path
 import sqlite3
@@ -48,6 +51,7 @@ def write(callback):
             db.executescript('''CREATE TABLE IF NOT EXISTS visits(session TEXT PRIMARY KEY, started REAL NOT NULL, language TEXT NOT NULL, device TEXT NOT NULL, source TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS bindings(order_no TEXT PRIMARY KEY, session TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS downloads(order_no TEXT PRIMARY KEY, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS visit_regions(session TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS visits_started ON visits(started);
 CREATE INDEX IF NOT EXISTS bindings_session ON bindings(session);''')
             callback(db)
@@ -57,15 +61,18 @@ CREATE INDEX IF NOT EXISTS bindings_session ON bindings(session);''')
         return False
 
 
-def record_visit(body):
+def record_visit(body, address=None):
     def save(db):
         cutoff=time.time()-90*86400
         db.execute('DELETE FROM bindings WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
+        db.execute('DELETE FROM visit_regions WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
         db.execute('DELETE FROM visits WHERE started < ?',(cutoff,))
         db.execute('DELETE FROM downloads WHERE at < ?',(cutoff,))
         if db.execute('SELECT count(*) FROM visits').fetchone()[0] >= 100000 and not db.execute('SELECT 1 FROM visits WHERE session=?',(body.session,)).fetchone():
             raise ValueError('Analytics capacity reached')
-        db.execute('INSERT OR IGNORE INTO visits VALUES(?,?,?,?,?,0)', (body.session,time.time(),body.language,body.device,body.source))
+        inserted = db.execute('INSERT OR IGNORE INTO visits VALUES(?,?,?,?,?,0)', (body.session,time.time(),body.language,body.device,body.source)).rowcount
+        if inserted:
+            db.execute('INSERT OR IGNORE INTO visit_regions VALUES(?,?)', (body.session, json.dumps(geo_location.lookup(address), ensure_ascii=False)))
         if body.event == 'file_selected':
             db.execute('UPDATE visits SET selected=1 WHERE session=?', (body.session,))
     return write(save)
@@ -89,7 +96,7 @@ def downloaded_order(number):
 def report(store, days=7, language='all', source='all', device='all', repair_lookup=None):
     counts=dict(visits=0,selected=0,quoted=0,clicked=0,paid=0,downloaded=0)
     breakdown={k:dict(quoted=0,paid=0) for k in ('conversion','translation','proofreading','repair','pdf','batch')}
-    result={'days':days,'counts':counts,'services':breakdown,'quote_to_paid':None,'paid_to_download':None,'scope':'attributed_orders','started_at':None}
+    result={'days':days,'counts':counts,'services':breakdown,'quote_to_paid':None,'paid_to_download':None,'scope':'attributed_orders','started_at':None,'geography':[],'geo_database':geo_location.status()}
     if not path().exists(): return result
     with sqlite3.connect('file:'+str(path())+'?mode=ro',uri=True,timeout=.2) as db:
         args=[time.time()-days*86400];where='started>=?'
@@ -98,8 +105,11 @@ def report(store, days=7, language='all', source='all', device='all', repair_loo
         visits=db.execute('SELECT session,selected FROM visits WHERE '+where,args).fetchall()
         bindings=dict(db.execute('SELECT order_no,session FROM bindings'))
         downloads={r[0] for r in db.execute('SELECT order_no FROM downloads')}
+        region_rows = dict(db.execute('SELECT session,data FROM visit_regions')) if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='visit_regions'").fetchone() else {}
         result['started_at']=db.execute('SELECT MIN(started) FROM visits').fetchone()[0]
     sessions={row[0] for row in visits}
+    regions = Counter(region_rows.get(sid, '{}') for sid in sessions)
+    result['geography'] = [dict(json.loads(data), sessions=count) for data,count in regions.most_common()]
     counts['visits']=len(sessions);counts['selected']=sum(row[1] for row in visits)
     ids=[key for key,value in bindings.items() if value in sessions]
     with store._Session() as db:
@@ -144,5 +154,6 @@ def router():
         ua=request.headers.get('user-agent','').lower()
         if any(word in ua for word in ('bot','spider','crawl','headless')) or request.headers.get('dnt')=='1':return {'recorded':False}
         if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'Cross-site telemetry rejected')
-        return {'recorded':record_visit(body)}
+        from .infra.rate_limiter import get_real_ip
+        return {'recorded':record_visit(body, get_real_ip(request))}
     return routes

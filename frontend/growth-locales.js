@@ -475,5 +475,54 @@
     "en": "Back to home",
     "ja": "ホームへ戻る",
     "ko": "홈으로 돌아가기"
+  },
+  "g_geo": {
+    "zh-CN": "访客地区",
+    "zh-TW": "訪客地區",
+    "en": "Visitor locations",
+    "ja": "訪問者の地域",
+    "ko": "방문자 지역"
+  },
+  "g_country": {
+    "zh-CN": "国家／地区",
+    "zh-TW": "國家／地區",
+    "en": "Country / territory",
+    "ja": "国・地域",
+    "ko": "국가 / 지역"
+  },
+  "g_region": {
+    "zh-CN": "省份／州",
+    "zh-TW": "省份／州",
+    "en": "Province / state",
+    "ja": "都道府県・州",
+    "ko": "시·도 / 주"
+  },
+  "g_city": {
+    "zh-CN": "城市",
+    "zh-TW": "城市",
+    "en": "City",
+    "ja": "市区町村",
+    "ko": "도시"
+  },
+  "g_unknown": {
+    "zh-CN": "未知",
+    "zh-TW": "未知",
+    "en": "Unknown",
+    "ja": "不明",
+    "ko": "알 수 없음"
+  },
+  "g_geo_note": {
+    "zh-CN": "按访问会话去重，仅统计新增定位结果。IP 地区为近似位置，VPN／代理可能造成偏差；不是住址或用户身份。历史及无法定位的访问显示未知。",
+    "zh-TW": "依造訪工作階段去重，僅統計新增定位結果。IP 地區為近似位置，VPN／代理可能造成偏差；不是住址或使用者身分。歷史與無法定位的造訪顯示未知。",
+    "en": "Counts visit sessions with newly collected location results. IP location is approximate; VPNs and proxies may distort it. It is not an address or identity. Historical and unlocated visits show Unknown.",
+    "ja": "新たに取得した地域情報を訪問セッション単位で集計します。IP の位置は概算で、VPN・プロキシによりずれることがあります。住所や本人情報ではありません。過去や判定できない訪問は不明と表示します。",
+    "ko": "새로 수집한 위치를 방문 세션 단위로 집계합니다. IP 위치는 대략적이며 VPN·프록시로 달라질 수 있습니다. 주소나 신원 정보가 아닙니다. 과거 또는 확인할 수 없는 방문은 알 수 없음으로 표시됩니다."
+  },
+  "g_geo_unavailable": {
+    "zh-CN": "地区数据库暂不可用，新访问仍正常统计，地区记为未知。",
+    "zh-TW": "地區資料庫暫不可用，新造訪仍正常統計，地區記為未知。",
+    "en": "Location database unavailable. Visits are still counted with Unknown location.",
+    "ja": "地域データベースを利用できません。訪問は引き続き集計し、地域を不明とします。",
+    "ko": "위치 데이터베이스를 사용할 수 없습니다. 방문은 계속 집계되며 지역은 알 수 없음으로 표시됩니다."
   }
 }; if(typeof module==="object"&&module.exports)module.exports=messages;else Object.assign(root.FixEpubMessages,messages);})(typeof window!=="undefined"?window:globalThis);

@@ -258,3 +258,21 @@ emits no analytics events.
 优先于上一页 Referer，因此从 TV 跳到主站后的正常使用仍属于主站业务。
 不关闭 TV、不修改付款核验、不删除真实成交记录。历史统计未保存域名，不推测
 或批量删除历史会话。看板成交仍只统计已关联的主站会话订单。
+
+## 2026-10-22 — 访客地区分布
+
+付费漏斗看板新增国家／地区、省份／州、城市和会话数表，跟随既有日期、语言、
+来源和设备筛选，支持五语言标签及数据库有提供的地名翻译（缺失时回退英语）。
+地区是 IP 的近似位置，可能受 VPN、代理或运营商影响，不能用来确定住址或身份。
+只定位新增会话，历史数据和无法定位的记录显示“未知”，不回填或猜测。
+继续排除本人浏览器、TV 子域名、DNT 和常见机器人；订单与收款行为不变。
+离线库在服务器本地查询，漏斗仅存地区名称与国家代码，不存完整 IP、经纬度或
+邮编，不向第三方定位 API 发送访客 IP。沿用 90 天窗口及后续写入清理机制。
+数据库不可用时仍统计访问，地区记为未知，看板明确提示。现有安全访问日志
+属于另一用途；本改动不宣称全系统完全不记录 IP。
+
+Validation: 43 frontend suites, 37 isolated browser scenarios (zero JS exceptions),
+12 funnel/geography tests, 28 PayPal tests, 33 precision-contract tests and 22 admin
+tests passed. Geolocation tests cover no-IP persistence, private/invalid addresses,
+unavailable database, session deduplication, old schema compatibility, trusted
+proxy boundaries and exclusions before lookup. Browser cases use synthetic locations.

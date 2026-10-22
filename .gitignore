@@ -75,3 +75,6 @@ test_测试用例书/
 
 # Optional first-party analytics runtime state
 backend/growth.sqlite*
+
+# Downloaded offline geolocation data, never a source artifact
+backend/geoip/

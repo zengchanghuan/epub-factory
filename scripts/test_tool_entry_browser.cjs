@@ -16,6 +16,7 @@ const chromeBin = process.env.CHROME_BIN || (process.platform === 'darwin'
 const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'fixepub-r11-browser-'));
 const artifact = Buffer.from('R11 browser fixture; real historical EPUB validation is D49.');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+let geoFixture = false;
 const requests = [], jobs = new Map(), exceptions = [], denied = [];
 let creates = 0, confirms = 0, continues = 0, cdp, chrome, server, origin, passed = 0;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -35,7 +36,10 @@ function json(res, data, status = 200) {
 async function serve(req, res) {
   const url = new URL(req.url, origin);
   requests.push({ method: req.method, path: url.pathname, token: req.headers['x-job-token'] });
-  if (url.pathname === '/api/admin/funnel') return json(res, {detail:'Login required'}, 401);
+  if (url.pathname === '/api/admin/funnel') return geoFixture ? json(res, {
+    counts:{visits:3,selected:0,quoted:0,clicked:0,paid:0,downloaded:0}, services:{},quote_to_paid:null,paid_to_download:null,
+    geo_database:{available:true},geography:[{country:{en:'China','zh-CN':'中国'},region:{en:'Guangdong'},city:{en:'<script>fixture</script>'},sessions:2},{sessions:1}]
+  }) : json(res, {detail:'Login required'}, 401);
   if (url.pathname === '/api/v2/jobs' && req.method === 'POST') {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const form = await new Request(origin, { method: 'POST', headers: req.headers, body: Buffer.concat(chunks) }).formData();
@@ -189,6 +193,22 @@ async function main() {
   assert.equal(await evaluate('document.querySelector("[data-i18n=g_total]").textContent'),growthLabels.g_total.en);
   await evaluate('document.getElementById("uiLocale").value="zh-CN";document.getElementById("uiLocale").dispatchEvent(new Event("change"))');
   pass('quote explanation translated without changing payment inputs');
+
+  geoFixture=true;
+  for(const language of ['zh-CN','zh-TW','en','ja','ko']){
+    await navigate('/funnel-admin.html?lang='+language);
+    await until('document.querySelectorAll("#geography tr").length === 3');
+    assert.equal(await evaluate('document.querySelector("#geoTitle").textContent'),growthLabels.g_geo[language]);
+    assert.equal(await evaluate('document.querySelectorAll("#geography script").length'),0);
+    assert((await evaluate('document.getElementById("geography").textContent')).includes(growthLabels.g_unknown[language]));
+    pass('location table, unknown history and safe text: '+language);
+  }
+  geoFixture=false;
+  await evaluate('document.getElementById("filters").requestSubmit()');
+  await until('document.getElementById("state").textContent === '+JSON.stringify(growthLabels.g_login.ko));
+  assert.equal(await evaluate('document.getElementById("geography").children.length'),0);
+  pass('authorization loss clears old geography');
+  await navigate('/?lang=zh-CN');
 
   for (const [page, tool] of [['', ''], ['epub-translator.html', 'translate'], ['vertical-to-horizontal.html', 'horizontal'], ['traditional-to-simplified.html', 'simplified']]) {
     const before = creates;
