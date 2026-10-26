@@ -1,11 +1,22 @@
 {
   "date": "2026-10-26",
   "scope": "Translation entry preservation, explicit language direction, localized confirmation and quote UI, static samples, corrected service/landing attribution",
-  "frontend": {"suites": 44, "passed": 373, "failed": 0},
+  "frontend": {
+    "suites": 44,
+    "passed": 373,
+    "failed": 0
+  },
   "backend": {
     "isolated_temporary_directory": true,
     "passed": 93,
-    "suites": {"growth_funnel":15,"multilingual_checkout":9,"translation_quote":18,"paypal_checkout":28,"order_admin":22,"checkout_webhook":1},
+    "suites": {
+      "growth_funnel": 15,
+      "multilingual_checkout": 9,
+      "translation_quote": 18,
+      "paypal_checkout": 28,
+      "order_admin": 22,
+      "checkout_webhook": 1
+    },
     "payment_provider": "mocked",
     "live_model_calls": false
   },
@@ -21,7 +32,32 @@
   "production_preflight": "No queued/running jobs or persisted active repairs",
   "limitations": [
     "No real payment or new paid-model evaluation",
-    "Published samples are synthetic short passages; chapter/layout illustration is not whole-book acceptance",
-    "Main-site Search Console access pending; current Google account only exposes latex.fixepub.com"
-  ]
+    "Published samples are synthetic short passages; chapter/layout illustration is not whole-book acceptance"
+  ],
+  "deployment": {
+    "source_revision": "0ef057fbba10acafd2d4ffca6426055f8c819d47",
+    "public_health": "ok",
+    "public_assets_checked": 10,
+    "all_assets_match_source": true,
+    "payment_and_price_keys_compared": 25,
+    "payment_and_price_config_unchanged": true,
+    "tv_telemetry_recorded": false
+  },
+  "search_console": {
+    "domain_ownership_verified": true,
+    "main_site_url_prefix_verified": true,
+    "main_site_property": "https://fixepub.com/",
+    "dns_type": "TXT",
+    "dns_host": "@",
+    "ttl_seconds": 600,
+    "existing_a_records_unchanged": 5,
+    "sitemap_submission": "success",
+    "report_selected_range": "3 months",
+    "web_clicks": 45,
+    "web_impressions": 470,
+    "repair_page_clicks": 27,
+    "home_page_clicks": 18,
+    "translation_pages_in_report": 0,
+    "note": "Historical report, not today and not order counts; sitemap submission is not indexing confirmation."
+  }
 }
