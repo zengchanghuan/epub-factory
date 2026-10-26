@@ -14,7 +14,7 @@ PAGES = (
     {
         "filename": "epub-translator.html", "tool": "translate",
         "title": "EPUB 电子书翻译与双语对照 – FixEpub",
-        "heading": "电子书翻译与双语对照",
+        "heading": "EPUB 电子书翻译与双语对照",
         "description": "EPUB、TXT、DOCX、Markdown 支持简中、繁中、英、日、韩五语互译与双语对照。前往主页统一上传、确认报价、付款并查看结果；暂不支持 PDF。",
         "intro": "简体中文、繁体中文、英语、日语、韩语两两互译，可生成原文与译文对照版本。上传、翻译选项、当前报价、支付和任务结果均在主页统一管理。",
         "action": "前往主页开始翻译",
@@ -142,7 +142,16 @@ def render_page(page, template):
                   # Only fixed generator configuration contains price markup.
                   pricing=page["pricing"],
                   schema=json.dumps(schema, ensure_ascii=False, indent=2).replace("<", "\\u003c"))
-    return Template(template).substitute(values)
+    rendered = Template(template).substitute(values)
+    if page['tool'] == 'translate':
+        from generate_translation_pages import alternates, navigation
+        rendered = rendered.replace('</head>', alternates() + '\n<script src="/growth-analytics.js?v=20261026-seo" defer></script>\n</head>')
+        rendered = rendered.replace('<main>', '<main><nav aria-label="Language">'+navigation()+'</nav>')
+        rendered = rendered.replace('data-entry-link="upload"', 'data-entry-link="upload" data-growth-service="translation"')
+        rendered = rendered.replace('tool-entry.js?v=20261001-r11', 'tool-entry.js?v=20261026-seo')
+        rendered = rendered.replace('本页不收款，也不创建任务。', 'PayPal AI 订单最低 US$1.49，显示的美元总额包含支付手续费；这不是固定每本翻译价。本页不收款，也不创建任务。')
+        rendered = rendered.replace('<h2 id="features-title">', '<p><a href="/examples.html?lang=zh-CN">查看五语言翻译效果示例</a></p><h2 id="features-title">')
+    return rendered
 
 
 def generate_seo_pages(*, check=False, output_dir=None):

@@ -85,6 +85,7 @@ class ToolLandingTests(unittest.TestCase):
         isolated = scripts / "generate_seo_pages.py"
         shutil.copyfile(landing.__file__, isolated)
         shutil.copyfile(landing.TEMPLATE_PATH, scripts / "templates" / "tool-landing.html")
+        shutil.copyfile(Path(landing.__file__).with_name('generate_translation_pages.py'), scripts / 'generate_translation_pages.py')
         # Deliberately unreadable as a file: copying the application must fail.
         (scripts.parent / "frontend" / "index.html").mkdir(parents=True)
         generated = self.cli(script=isolated)
@@ -122,7 +123,7 @@ class ToolLandingTests(unittest.TestCase):
                 self.assertFalse(re.search(r"fetch\s*\(|FormData\s*\(|XMLHttpRequest|EventSource|setInterval|paypal\s*\.\s*(?:Buttons|createOrder)|/api/v[12]/", html, re.I))
                 scripts = page.nodes_for("script")
                 self.assertEqual([node.get("src") for node in scripts if node.get("src")],
-                                 ["tool-entry.js?v=20261001-r11"])
+                                 ["tool-entry.js?v=20261026-seo", "/growth-analytics.js?v=20261026-seo"] if name=='epub-translator.html' else ["tool-entry.js?v=20261001-r11"])
                 self.assertTrue(all(node.get("type") == "application/ld+json" or
                                     (node.get("src") and "defer" in node) for node in scripts))
                 self.assertNotIn("lib.js", html)

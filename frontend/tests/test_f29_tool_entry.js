@@ -131,6 +131,14 @@ test('R11 restricted browser history does not abort preset or recovery initializ
   assert.equal(mode, 'translate');
 });
 
+test('Localized translation CTA preserves page language and translation mode', () => {
+  for (const lang of ['zh-CN','zh-TW','en','ja','ko']) {
+    const link={dataset:{entryLink:'upload'}};
+    entry.mountLanding({location:new URL('https://example.test/epub-translator-en.html'),document:{documentElement:{lang},body:{dataset:{toolEntry:'translate'}},querySelectorAll:()=>[link]}});
+    const target=new URL(link.href);assert.equal(target.searchParams.get('lang'),lang);assert.equal(target.searchParams.get('tool'),'translate');assert.equal(target.pathname,'/');
+  }
+});
+
 test('R11 actual homepage bootstrap orders token import/recovery before final one-shot preset', () => {
   const captureAt = html.indexOf('const toolEntry =');
   const importAt = html.indexOf('FixEpubReturnLater.importFragment(');

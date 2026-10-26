@@ -35,7 +35,10 @@
     const tool = doc.body && doc.body.dataset.toolEntry;
     if (!TOOLS.includes(tool)) return;
     doc.querySelectorAll("[data-entry-link]").forEach(link => {
-      link.href = buildTarget(tool, host.location, link.dataset.entryLink === "tasks");
+      const target = new URL(buildTarget(tool, host.location, link.dataset.entryLink === "tasks"));
+      const language = doc.documentElement && doc.documentElement.lang;
+      if (["zh-CN", "zh-TW", "en", "ja", "ko"].includes(language)) target.searchParams.set("lang", language);
+      link.href = target.href;
     });
     if (readIntent(host.location.search).restoring) {
       host.location.replace(buildTarget(tool, host.location, false));
