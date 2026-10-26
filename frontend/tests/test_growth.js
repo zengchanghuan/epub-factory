@@ -21,7 +21,7 @@ function harness(extra={}){
 test('真实选文件事件仅发送分类和随机标识，不发送文件名或内容',()=>{
  const h=harness();h.listeners['fixepub:files-selected']({detail:[{name:'private-book.txt',content:'SECRET'}]});
  assert.equal(h.sent.length,2);assert.equal(h.sent[1].body.event,'file_selected');
- assert.deepEqual(Object.keys(h.sent[1].body).sort(),['device','event','language','session','source']);assert(!JSON.stringify(h.sent).includes('private-book'));assert(!JSON.stringify(h.sent).includes('SECRET'));
+ assert.deepEqual(Object.keys(h.sent[1].body).sort(),['device','event','language','service','session','source']);assert(!JSON.stringify(h.sent).includes('private-book'));assert(!JSON.stringify(h.sent).includes('SECRET'));
 });
 test('DNT 和本机测试不记录事件',()=>{
  assert.equal(harness({navigator:{doNotTrack:'1'}}).sent.length,0);
@@ -51,4 +51,13 @@ test('TV 子域名不创建漏斗会话或发送访问，主站不受影响',()=
  const h=harness({location:{hostname:'tv.fixepub.com',search:''}});
  assert.equal(h.sent.length,0);assert.equal(h.root.FixEpubGrowth,undefined);
  assert.equal(harness().sent.length,1);
+});
+
+test('服务事件只发送允许的类别，并遵守退出设置',()=>{const h=harness();h.root.FixEpubGrowth.track('upload_succeeded','translation');assert.equal(h.sent.at(-1).body.service,'translation');assert.equal(h.sent.at(-1).body.event,'upload_succeeded');h.root.localStorage.getItem=()=> '1';const n=h.sent.length;h.root.FixEpubGrowth.track('service_clicked','translation');assert.equal(h.sent.length,n);});
+test('Exposure waits for half-visible entry; clicks retain service attribution',()=>{
+ let callback;const events={};const node={dataset:{},addEventListener:(n,f)=>events[n]=f};
+ const h=harness({IntersectionObserver:class{constructor(fn){callback=fn;}observe(){}unobserve(){}},document:{readyState:'complete',referrer:'',querySelectorAll:s=>s==='#translationModeCard'?[node]:[]}});
+ callback([{target:node,isIntersecting:true,intersectionRatio:0.1}]);assert.equal(h.sent.length,1);
+ callback([{target:node,isIntersecting:true,intersectionRatio:0.5}]);assert.equal(h.sent.at(-1).body.event,'service_exposed');assert.equal(h.sent.at(-1).body.service,'translation');
+ events.click();assert.equal(h.sent.at(-1).body.event,'service_clicked');
 });

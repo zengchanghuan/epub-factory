@@ -251,6 +251,7 @@
         text(el.diagStatus, file.size > 60 * 1024 * 1024 ? '文件超过 60MB 限制' : '请选择 .epub 文件');
         return;
       }
+      win.FixEpubGrowth?.track('file_selected','repair');
       const uploadEpoch = begin();
       later.setTask(null, true);
       options.onClear();
@@ -264,6 +265,7 @@
         const data = await res.json();
         if (epoch !== uploadEpoch) return;
         if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '请稍后重试');
+        win.FixEpubGrowth?.track('upload_succeeded','repair');
         const s = activate(data.job_id, file.name, true);
         text(el.diagStatus, '');
         // The server owns eligibility and the frozen quote. Never infer a cheaper admin price locally.

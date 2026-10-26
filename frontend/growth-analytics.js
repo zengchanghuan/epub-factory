@@ -26,12 +26,22 @@
     session=info.id;
   }catch(_){return;}
   root.FixEpubGrowth={get session(){return excluded()?undefined:session;}};
-  function send(event){
+  function send(event,service){
     if(excluded())return;
     try {if(root.localStorage.getItem('admin_key')||root.sessionStorage.getItem('admin_key'))return;}catch(_){return;}
     const language=root.FixEpubI18n?.locale||'zh-CN';
-    root.fetch('/api/v2/analytics/events',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({session,event,language,source:info.source,device:root.matchMedia('(max-width: 767px)').matches?'mobile':'desktop'})}).catch(()=>{});
+    root.fetch('/api/v2/analytics/events',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({session,event,...(service?{service}:{}),language,source:info.source,device:root.matchMedia('(max-width: 767px)').matches?'mobile':'desktop'})}).catch(()=>{});
   }
-  function start(){send('visit');root.document.addEventListener?.('change',e=>{if(e.target?.type==='file'&&e.target.files?.length)send('file_selected');});root.addEventListener('fixepub:files-selected',e=>{if(e.detail?.length)send('file_selected');});}
+  function currentService(){
+    if(root.location.pathname==='/epub-repair.html')return 'repair';
+    if(root.document.querySelector?.('input[name="taskMode"]:checked')?.value==='translate')return 'translation';
+    return root.document.getElementById?.('enablePrecisionPolish')?.checked?'proofreading':'conversion';
+  }
+  root.FixEpubGrowth.track=(event,service)=>{try{send(event,service);}catch(_){}};
+  function start(){send('visit');
+    const selectors=[['#translationModeCard','translation'],['#taskModeGrid .mode-card:first-child','conversion'],['#enablePrecisionPolish','proofreading'],['a[href="/epub-repair.html"]','repair'],['#pdfUploadBtn','pdf'],['#dropzone','repair']];
+    const observer=root.IntersectionObserver?new root.IntersectionObserver(entries=>{for(const e of entries)if(e.isIntersecting&&e.intersectionRatio>=0.5){send('service_exposed',e.target.dataset.funnelService);observer.unobserve(e.target);}},{threshold:0.5}):null;
+    for(const [selector,service] of selectors)for(const node of root.document.querySelectorAll?.(selector)||[]){node.dataset.funnelService=service;observer?.observe(node);node.addEventListener('click',()=>send('service_clicked',service));}
+root.document.addEventListener?.('change',e=>{if(e.target?.type==='file'&&e.target.files?.length)send('file_selected',e.target?.id==='pdfFileInput'?'pdf':currentService());});root.addEventListener('fixepub:files-selected',e=>{if(e.detail?.length)send('file_selected',currentService());});}
   if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })(typeof window!=='undefined'?window:globalThis);

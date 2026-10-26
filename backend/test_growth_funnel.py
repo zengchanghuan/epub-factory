@@ -25,6 +25,17 @@ class FunnelTests(unittest.TestCase):
         return self.client.post('/api/v2/analytics/events',json=dict(session=sid,event='visit',language='en',device='mobile',source='search',**kwargs))
     def linked(self,id,**kwargs):
         job=self.job(id,**kwargs);growth.bind(id,'a'*32);return job
+    def test_service_steps_dedup_filter_and_no_payment_authority(self):
+        for event in ('service_exposed','service_clicked','file_selected','upload_succeeded'):
+            for _ in range(2):
+                self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':event,'service':'translation','language':'ja'})
+        r=growth.report(self.store)
+        self.assertEqual(r['services']['translation'],dict(exposed=1,clicked=1,selected=1,uploaded=1,quoted=0,paid=0))
+        self.assertEqual(growth.report(self.store,language='en')['services']['translation']['uploaded'],0)
+        self.assertEqual(self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':'payment_succeeded','service':'translation'}).status_code,422)
+        self.assertEqual(self.client.post('/api/v2/analytics/events',json={'session':'b'*32,'event':'service_clicked','service':'translation'},headers={'origin':'https://tv.fixepub.com'}).json(),{'recorded':False})
+        self.trade.assert_not_called()
+
     def test_server_paid_fact_dedup_and_test_sandbox_exclusion(self):
         self.visit();self.visit()
         self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':'file_selected'})
@@ -57,7 +68,7 @@ class FunnelTests(unittest.TestCase):
         self.assertEqual(r['counts']['paid'],3)
         self.assertEqual(r['counts']['downloaded'],3)
         for key in ('batch','pdf','repair'):
-            self.assertEqual(r['services'][key],{'quoted':1,'paid':1})
+            self.assertEqual(r['services'][key],dict(exposed=0,clicked=0,selected=0,uploaded=0,quoted=1,paid=1))
         self.trade.assert_not_called();self.assertFalse(self.queued)
 
     def test_expired_sessions_are_removed_and_first_attribution_wins(self):

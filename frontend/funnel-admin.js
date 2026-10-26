@@ -8,8 +8,8 @@
       const card=document.createElement('section'),label=document.createElement('h2'),number=document.createElement('p');card.className='metric';label.textContent=t('g_'+key);number.textContent=value===null?'—':key.includes('_to_')?(value*100).toFixed(1)+'%':String(value);card.append(label,number);$('metrics').append(card);
     }
     const table=document.createElement('table'),head=document.createElement('tr');
-    for(const key of ['service','quoted','paid']){const th=document.createElement('th');th.textContent=t('g_'+key);head.append(th);}table.append(head);
-    for(const [key,counts] of Object.entries(data.services)){const row=document.createElement('tr');for(const value of [t('g_'+(['translation','proofreading'].includes(key)?key+'_service':key)),counts.quoted,counts.paid]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}table.append(row);}$('services').append(table);
+    for(const key of ['service','exposed','clicked','selected','uploaded','quoted','paid']){const th=document.createElement('th');th.textContent=t('g_'+(key==='clicked'?'entry_clicked':key));head.append(th);}table.append(head);
+    for(const [key,counts] of Object.entries(data.services)){const row=document.createElement('tr');for(const value of [t('g_'+(['translation','proofreading'].includes(key)?key+'_service':key)),counts.exposed||0,counts.clicked||0,counts.selected||0,counts.uploaded||0,counts.quoted,counts.paid]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}table.append(row);}$('services').append(table);
     const geoTable=document.createElement('table'),geoHead=document.createElement('tr');
     for(const key of ['country','region','city','visits']){const cell=document.createElement('th');cell.textContent=t('g_'+key);geoHead.append(cell);}geoTable.append(geoHead);
     const locale=window.FixEpubI18n.locale;

@@ -1900,7 +1900,7 @@
   <script src="pdf-conversion.js?v=20261018-paypal"></script>
   <script src="return-later.js?v=20261019-multilingual"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
-  <script src="/growth-analytics.js?v=20261022" defer></script>
+  <script src="/growth-analytics.js?v=20261026" defer></script>
   <script src="/txt-preview.js?v=20261020"></script>
   <script src="tool-entry.js?v=20261001-r11"></script>
   <script>
@@ -2152,6 +2152,7 @@
       try {
         const data = await pdfClient.create($("pdfFileInput").files, pdfCapabilities);
         if (typeof data.job_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(data.job_id)) throw new Error("任务创建结果无效，请查看任务中心。");
+        window.FixEpubGrowth?.track('upload_succeeded','pdf');
         if (data.access_token) saveJobToken(data.job_id, data.access_token);
         returnLater.remember({ kind: "job", id: data.job_id, filename: data.source_filename, status: data.status });
         loadTaskList();
@@ -4262,6 +4263,7 @@
       form.append("device", $("device").value);
       form.append("enable_precision_polish", !isTranslationMode && enablePrecisionPolish.checked);
       form.append("enable_translation", isTranslationMode);
+      window.FixEpubGrowth?.track("file_selected",isTranslationMode?"translation":enablePrecisionPolish.checked?"proofreading":"conversion");
       form.append("payment_method", $("paymentMethod").value);
       if (isTranslationMode) {
         form.append("target_lang", $("targetLang").value);
@@ -4311,6 +4313,7 @@
         }
         const data = await res.json();
 
+        window.FixEpubGrowth?.track('upload_succeeded',isTranslationMode?'translation':enablePrecisionPolish.checked?'proofreading':'conversion');
         currentBatchId = isBatchMode ? data.batch_id : null;
         currentJobId = isBatchMode ? ((data.jobs || [])[0] || {}).job_id : data.job_id;
         if (data.access_token) {

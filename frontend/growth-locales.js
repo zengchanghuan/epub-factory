@@ -1,5 +1,5 @@
 /* Authored product and analytics labels; no user content. */
-(function(root){const messages={
+(function(root){const messages={"g_steps_note":{"zh-CN": "曝光、入口点击、选文件和上传按服务与会话去重；报价和成交按订单计数，不能直接相除。新增步骤从上线后记录，历史空缺不代表无人操作。", "zh-TW": "曝光、入口點擊、選檔及上傳按服務與工作階段去重；報價與成交按訂單計數。新步驟只記錄上線後資料。", "en": "Entry exposure, entry clicks, selection and uploads count sessions per service; quotes and payments count orders. New steps are recorded only after launch; missing history is not zero activity.", "ja": "表示・入口クリック・選択・アップロードはサービス別セッション数、見積もり・支払いは注文数です。新項目は公開後のみ記録します。", "ko": "노출·입구 클릭·파일 선택·업로드는 서비스별 세션 수이며 견적·결제는 주문 수입니다. 새 단계는 출시 이후만 기록합니다."},"g_entry_clicked":{"zh-CN": "入口点击会话", "zh-TW": "入口點擊工作階段", "en": "Entry click sessions", "ja": "入口クリックセッション", "ko": "입구 클릭 세션"},"g_exposed":{"zh-CN": "入口曝光会话", "zh-TW": "入口曝光工作階段", "en": "Entry exposure sessions", "ja": "入口表示セッション", "ko": "입구 노출 세션"},"g_uploaded":{"zh-CN": "上传成功会话", "zh-TW": "上傳成功工作階段", "en": "Successful upload sessions", "ja": "アップロード成功セッション", "ko": "업로드 성공 세션"},
   "g_examples": {
     "zh-CN": "查看处理效果",
     "zh-TW": "查看處理效果",
