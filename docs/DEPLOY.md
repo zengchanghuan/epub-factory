@@ -8,7 +8,11 @@ title: 腾讯云部署
 
 ## 从本机部署
 
-已提交的 `main` 分支可以一键推送并部署：`bash push.sh`。脚本要求工作区干净且 origin 推送地址为 `git@github.com:zengchanghuan/epub-factory.git`；Git 推送成功后才执行免密部署。部署失败时推送仍已完成，解决原因后运行 `bash deploy.sh` 即可。普通 `git push` 仍只推送代码；此入口不是 GitHub Actions 自动部署，也不会等待远端 CI。
+已提交的 `main` 分支使用 `bash push.sh` 推送后进入部署检查。脚本要求工作区干净且 origin 推送地址为 `git@github.com:zengchanghuan/epub-factory.git`。`deploy.sh` 在打包和联系服务器前，要求本地 HEAD 等于 GitHub main，且该提交最新一次 push CI 已成功完成；检查 frontend、regression 两个 job 和浏览器、容器回归、实际 Redis 6/7 等必需步骤，跳过也不能放行。GitHub Pages 成功不代替 CI。
+
+刚推送后 CI 通常还在排队或运行，入口会明确拒绝部署，不隐式等待或绕过。等该提交的 CI 全绿后执行 `bash deploy.sh`。API 不可用、未登录、失败、取消、缺失结果均拒绝发布，Git 推送本身仍已完成。普通 `git push` 只推代码；此入口不是 GitHub Actions 自动部署。`--check` 只做生产预检，`--package-only` 只做本地打包，都不表示已通过发布门槛。
+
+发布包还会逐项核对 Git 提交中的文件集合、内容 SHA-256 和 manifest，防止未提交修改或其他提交的包混入。门槛实现见 `scripts/check-deploy-ci.py`，离线防回归见 `scripts/test_deploy_ci.py`；普通测试可使用未提交源码打包，但正式发布必须匹配已通过 CI 的干净提交。本机还需要已登录的 GitHub CLI（`gh`）。
 
 ```bash
 # 首次安装部署公钥，需要在本机终端输入一次服务器密码。
@@ -101,10 +105,12 @@ python3 scripts/prepare-worker-services.py \
 Chrome 已登录腾讯云时，可只在本机生成部署包：
 
 ```bash
+REVISION=$(python3 scripts/check-deploy-ci.py)
 bash deploy.sh --package-only
+python3 scripts/check-deploy-ci.py --package epub-factory-deploy.zip --revision "$REVISION"
 ```
 
-包生成于工程根目录 `epub-factory-deploy.zip`。通过 OrcaTerm 文件管理器上传到服务器 `/tmp/epub-factory-deploy.zip`，然后在服务器终端执行：
+上述三步全部成功后，包生成于工程根目录 `epub-factory-deploy.zip`。手工服务器入口不自行访问 GitHub，操作者须先完成本机 CI 与包核对；不能用手工入口绕过失败的 CI。通过 OrcaTerm 文件管理器上传同一包到服务器 `/tmp/epub-factory-deploy.zip`，然后在服务器终端执行：
 
 ```bash
 sudo -v
@@ -143,7 +149,7 @@ curl -fsS https://fixepub.com/api/healthz
 
 腾讯 TokenHub 备用通道已移除，旧的 `TOKENHUB_BASE_URL` 和 `TOKENHUB_API_KEY` 不再读取，服务器 `.env` 中残留这两项也不会启用该通道。翻译继续使用 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`；若曾手动把 TokenHub 地址填入 `OPENAI_BASE_URL` 或 `OPENAI_BASE_URL_FALLBACKS`，需将其改为仍可用的服务地址并配置对应密钥。发布包不包含任何 API 密钥。
 
-2026-09-20 非 AI 格式转换默认价降为 **0.99 元/本**，覆盖繁简转换、竖排改横排和阅读器适配，批量转换按本数相乘；AI 精校仍按正文有效字数以 **3.99 元起**另行加价。独立 EPUB 格式修复默认价更新为 **2.99 元/本**（2026-09-22）。标准 Flash AI 翻译为 **3.99 元起**的字符阶梯价：前 30 万字符 ¥0.05/千字符、30-100 万字符超出部分 ¥0.035/千字符、100 万字符以上超出部分 ¥0.025/千字符；高质量、文学和 Pro 分别使用 1.5、2 和 3.4 倍率。部署在完成 `.env`/数据库备份后，只迁移未设置/空值或精确匹配旧默认值的价格配置，保留其他显式自定义价和 `TRANSLATION_PRICE_CNY` 固定价覆盖。其中修复价将旧默认值 `0.99`、`1.99`、`5.99` 迁移为 `2.99`。已有转换、翻译、批量与修复订单继续按下单时持久化的 `expected_amount` 或保存的冻结报价验款，均不重写历史金额。
+2026-09-20 非 AI 格式转换默认价降为 **0.99 元/本**，覆盖繁简转换、竖排改横排和阅读器适配，批量转换按本数相乘；AI 精校仍按正文有效字数以 **3.99 元起**另行加价。独立 EPUB 格式修复当前默认价为 **0.99 元/本**。标准 Flash AI 翻译为 **3.99 元起**的字符阶梯价：前 30 万字符 ¥0.05/千字符、30-100 万字符超出部分 ¥0.035/千字符、100 万字符以上超出部分 ¥0.025/千字符；高质量、文学和 Pro 分别使用 1.5、2 和 3.4 倍率。部署在完成 `.env`/数据库备份后，只迁移未设置/空值或精确匹配旧默认值的价格配置，保留其他显式自定义价和 `TRANSLATION_PRICE_CNY` 固定价覆盖。其中修复价将未设置、空值或旧默认值 `1.99`、`2.99`、`5.99` 迁移为 `0.99`；既有 `0.99` 保持不变。已有转换、翻译、批量与修复订单继续按下单时持久化的 `expected_amount` 或保存的冻结报价验款，均不重写历史金额。
 
 独立修复的新订单将报价、支付金额、诊断和状态原子保存到 `REPAIR_UPLOAD_DIR/<job_id>/order.json`（0600）。R10 本地代码改为每次读取最新状态、跨进程文件事务，不改历史金额。后台线程恢复已确认付款的修复，并仅对有 `checkout_started_at` 的待付款任务限速补查；无需保持浏览器打开。旧订单仅有商户订单号不代表已发起付款，不会因此自动查单；`POST /recover` 支持显式核实。
 
@@ -157,7 +163,7 @@ R10 的执行上限由 `REPAIR_CONCURRENCY` 控制，默认 1、允许 1–4。�
 
 对于已确认不是测试单、旧运行价格确为 5.99 元的单笔在内存中的待付款修复订单，可使用上面的专用发布选项。它在同一部署锁内校验发布包，暂时停止 Nginx 并保持旧 API 运行；`migrate-legacy-repair.py` 核验固定的已审旧版源码哈希、单进程和本地监听、进程与文件配置、其他活跃旧任务、源文件和最终只读状态后，排他写入 0600 的 `order.json`。它只延续服务器的 `pending_payment` 状态、原价和原商户订单号，不声称支付宝尚未付款，也不调用支付或模型。源文件保持不变，迁移证据仅保存到服务器私有备份目录。
 
-此专用选项同时声明操作者已核实启动后未修改旧修复价格；邮件配置等与价格无关的更新可以晚于进程启动。未知金额、测试单、其他旧版本、多进程、其他活跃旧内存任务、正在处理、已有元数据或不明确的文件均需单独处理，脚本会拒绝迁移。新的状态接口返回冻结金额，旧任务页面刷新后仍显示原价，新任务使用 2.99 元。
+此专用选项同时声明操作者已核实启动后未修改旧修复价格；邮件配置等与价格无关的更新可以晚于进程启动。未知金额、测试单、其他旧版本、多进程、其他活跃旧内存任务、正在处理、已有元数据或不明确的文件均需单独处理，脚本会拒绝迁移。新的状态接口返回冻结金额，旧任务页面刷新后仍显示原价，新任务使用 0.99 元。
 
 专用发布完成后，只有同一旧任务仍可通过 API 读取时才恢复 Nginx。若旧 API 已停止且新 API 无法读取迁移任务，会保留维护状态，不能无条件恢复旧版代码后开放入口：旧版代码本身不读取 `order.json`。应保留源文件、元数据和私有快照，先恢复支持持久化读取的 API。工具默认预览不写文件；传入 `--apply` 才写入，不覆盖已有元数据。相关离线检查为 `scripts/test_migrate_legacy_repair.py` 和 `scripts/test_deploy_legacy_gate.py`。
 

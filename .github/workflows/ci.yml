@@ -18,6 +18,11 @@ jobs:
           for test in frontend/tests/test_*.js; do
             node frontend/tests/runner.js "$(basename "$test")" || exit 1
           done
+      - name: Verify deployment CI gate
+        run: |
+          python3 scripts/test_deploy_ci.py
+          python3 scripts/test_deploy_package.py
+          python3 scripts/test_deploy_portability.py
       - name: Check static tool pages cannot regenerate checkout copies
         run: |
           python3 scripts/test_tool_landing.py

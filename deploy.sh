@@ -13,7 +13,7 @@ case "$MODE" in
   --help|-h)
     cat <<'HELP'
 Usage: bash deploy.sh [--package-only | --check | --preserve-legacy-repair JOB_ID | --help]
-  default         Package, upload, back up server code, deploy and verify services.
+  default         Require successful CI for clean main, then package and deploy.
   --package-only  Build epub-factory-deploy.zip without connecting to the server.
   --check         Check SSH, server prerequisites and active jobs; do not deploy.
   --preserve-legacy-repair JOB_ID
@@ -38,6 +38,9 @@ esac
 [[ "$PORT" =~ ^[0-9]+$ ]] || { echo 'Invalid DEPLOY_PORT' >&2; exit 2; }
 [[ "$HOST" != -* && "$HOST" != *[[:space:]]* ]] || { echo 'Invalid DEPLOY_HOST' >&2; exit 2; }
 [[ "$REMOTE_DIR" =~ ^/[a-zA-Z0-9_./-]+$ && "$REMOTE_DIR" != / ]] || { echo 'Invalid DEPLOY_REMOTE_DIR' >&2; exit 2; }
+if [[ "$MODE" == deploy ]]; then
+  REVISION=$("$PYTHON" "$ROOT/scripts/check-deploy-ci.py" --root "$ROOT")
+fi
 if [[ "$MODE" != --check ]]; then
   "$PYTHON" "$ROOT/scripts/deploy-package.py" "$ROOT" "$PACKAGE"
   if [[ "$MODE" == --package-only ]]; then
@@ -45,6 +48,7 @@ if [[ "$MODE" != --check ]]; then
     echo 'See docs/DEPLOY.md for deployment through the Tencent Cloud terminal.'
     exit 0
   fi
+  "$PYTHON" "$ROOT/scripts/check-deploy-ci.py" --root "$ROOT" --package "$PACKAGE" --revision "$REVISION"
 fi
 command -v ssh >/dev/null
 command -v scp >/dev/null

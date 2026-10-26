@@ -18,7 +18,7 @@ EXPECTED_REMOTE='git@github.com:zengchanghuan/epub-factory.git'
 }
 REVISION=$(git rev-parse HEAD)
 git push origin main
-echo "Pushed $REVISION. Starting deployment."
+echo "Pushed $REVISION. Deployment requires completed successful CI for this commit."
 # Deployment failure does not roll back the Git push. After resolving it,
 # run bash deploy.sh again; no force push or history rewrite is needed.
 bash "$ROOT/deploy.sh"

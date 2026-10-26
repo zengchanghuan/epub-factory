@@ -63,14 +63,24 @@ class TestApiV2Skeleton(unittest.TestCase):
         self.assertIn("items", data)
         self.assertIsInstance(data["items"], list)
 
-    def test_v2_create_reject_non_epub(self):
-        """POST /api/v2/jobs 非 epub/pdf 返回 400。"""
+    def test_v2_create_reject_unsupported_file(self):
+        """Unsupported extensions stay rejected after TXT import was added."""
         res = self.client.post(
             "/api/v2/jobs",
-            files={"file": ("bad.txt", b"x", "text/plain")},
+            files={"file": ("bad.exe", b"x", "application/octet-stream")},
             data={"output_mode": "simplified"},
         )
         self.assertEqual(res.status_code, 400)
+
+    def test_v2_create_accepts_txt(self):
+        res = self.client.post(
+            "/api/v2/jobs",
+            files={"file": ("chapter.txt", b"Chapter 1\n\nA synthetic text fixture.", "text/plain")},
+            data={"output_mode": "simplified"},
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()['source_filename'], 'chapter.txt')
+        self.assertIn('job_id', res.json())
 
     def test_v2_create_returns_queued(self):
         """POST /api/v2/jobs 合法文件名返回 v2 形状且 status=queued。"""

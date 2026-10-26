@@ -24,6 +24,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function detail(job) {
   return {
     job_id: job.id, source_filename: 'browser-fixture.epub', status: job.status,
+    source_lang: job.fields.source_lang, target_lang: job.fields.target_lang,
     enable_translation: job.translate, output_mode: 'simplified', message: job.status, amount: job.translate ? '3.99' : '0.99',
     ...(job.status === 'awaiting_confirmation' ? { translation_preflight: { resolved_strategy: 'neutral_faithful', glossary: {}, chapters: [] } } : {}),
     ...(job.status === 'completed' ? { download_url: '/fixture-download/' + job.id + '?sig=current' } : {}),
@@ -226,8 +227,19 @@ async function main() {
     assert.equal(creates, before);
     assert.equal(await evaluate('document.querySelector("input[name=taskMode]:checked").value'), tool === 'translate' ? 'translate' : 'convert');
     assert.equal(await evaluate('document.getElementById("conversionMode").value'), tool === 'simplified' ? 'simplified|auto' : 'simplified|tw');
-    assert.equal(await evaluate('location.search'), '');
-    await evaluate(`(() => { const files = new DataTransfer(); files.items.add(new File(['synthetic browser upload'], 'browser-fixture.epub', {type:'application/epub+zip'})); const input = document.getElementById('fileInput'); input.files = files.files; input.dispatchEvent(new Event('change', {bubbles:true})); document.getElementById('submitBtn').click(); })()`);
+    assert.equal(await evaluate('location.search'), page ? '?lang=zh-CN' : '');
+    assert.equal(await evaluate('document.documentElement.lang'), 'zh-CN');
+    await evaluate(`(() => { const files = new DataTransfer(); files.items.add(new File(['synthetic browser upload'], 'browser-fixture.epub', {type:'application/epub+zip'})); const input = document.getElementById('fileInput'); input.files = files.files; input.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+    if (tool === 'translate') {
+      // An explicit direction is required; a missing target must not create an order.
+      assert.equal(await evaluate('document.getElementById("targetLang").value'), '');
+      assert.equal(await evaluate('document.getElementById("submitBtn").disabled'), true);
+      await evaluate('document.getElementById("submitBtn").click()');
+      assert.equal(creates, before);
+      await evaluate(`for (const [id, value] of [['sourceLang','en'],['targetLang','zh-CN']]) { const input=document.getElementById(id); input.value=value; input.dispatchEvent(new Event('change',{bubbles:true})); }`);
+      assert.equal(await evaluate('document.getElementById("submitBtn").disabled'), false);
+    }
+    await evaluate('document.getElementById("submitBtn").click()');
     await until('location.search.includes("job_id=")');
     const id = await evaluate('new URLSearchParams(location.search).get("job_id")');
     const job = jobs.get(id);
@@ -236,6 +248,8 @@ async function main() {
     assert.equal(job.fields.traditional_variant, tool === 'simplified' ? 'auto' : 'tw');
     assert.equal(job.fields.enable_precision_polish, 'false');
     if (tool === 'translate') {
+      assert.equal(job.fields.source_lang, 'en');
+      assert.equal(job.fields.target_lang, 'zh-CN');
       await until('document.getElementById("translationPreflightPanel").style.display === "block"');
       assert.equal(job.fields.translation_model, 'deepseek-flash');
       assert.equal(job.fields.profile_confirmation, 'true');

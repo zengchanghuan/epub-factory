@@ -31,6 +31,7 @@
   ],
   "production_preflight": "No queued/running jobs or persisted active repairs",
   "limitations": [
+    "Correction: the original delivery verified only the listed subset. Full CI at main 3def1b5 failed (run 40279635616); deployment health was not full regression acceptance.",
     "No real payment or new paid-model evaluation",
     "Published samples are synthetic short passages; chapter/layout illustration is not whole-book acceptance"
   ],

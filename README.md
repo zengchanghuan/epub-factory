@@ -102,7 +102,7 @@ CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
 
 当设置 `REDIS_URL` 或 `CELERY_BROKER_URL` 时，新建任务会入队到 Celery，由 Worker 执行整本转换（任务名 `jobs.run_conversion`）。使用 Celery 时请同时配置 `DATABASE_URL`，否则 Worker 无法通过 `job_id` 加载任务。
 
-**线上部署（腾讯云生产服务）**：统一使用项目根目录的 `deploy.sh`，说明见 [docs/DEPLOY.md](docs/DEPLOY.md)。
+**线上部署（腾讯云生产服务）**：统一使用项目根目录的 `deploy.sh`，说明见 [docs/DEPLOY.md](docs/DEPLOY.md)。 发布前强制检查干净 main 的同一提交完整 CI 成功，并核对部署包内容；服务健康、Pages 成功或部分测试通过均不能代替该检查。
 
 ### 1.1) 启动分队列 Worker
 
