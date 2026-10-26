@@ -1341,8 +1341,9 @@
   <link rel="stylesheet" href="/return-later.css?v=20260918">
 <script src="/polish-review.js?v=20261019-txt-review2"></script>
 <script src="/locales/ui.js?v=20261020-formats1"></script>
-<script src="/growth-locales.js?v=20261021"></script>
-<script src="/site-preferences.js?v=20261019-txt-review2"></script>
+<script src="/growth-locales.js?v=20261026-r2"></script>
+<script src="/translation-ux.js?v=20261026-r2"></script>
+<script src="/site-preferences.js?v=20261026-r2"></script>
 <link rel="stylesheet" href="/site-preferences.css?v=20261019-txt-review2">
 </head>
 <body>
@@ -1368,7 +1369,7 @@
       </nav>
     </header>
 
-    <section id="returnLaterPanel" aria-label="稍后下载与邮件通知"></section>
+
 
     <!-- Upload Card -->
     <div class="card" id="uploadCard">
@@ -1484,14 +1485,27 @@
               </select>
               <label for="targetLang"><span data-i18n="ui_35">目标语言</span></label>
               <select id="targetLang">
+                <option value="" selected data-i18n="tx_target">请选择目标语言</option>
                 <option value="en" data-i18n="ui_39">英语</option>
-                <option value="zh-CN" selected data-i18n="ui_37">简体中文</option>
+                <option value="zh-CN" data-i18n="ui_37">简体中文</option>
                 <option value="zh-TW" data-i18n="ui_38">繁体中文</option>
                 <option value="ja" data-i18n="ui_40">日语</option>
                 <option value="ko" data-i18n="ui_41">韩语</option>
               </select>
             </div>
 
+            <div class="toggle-row">
+              <div>
+                <span><span data-i18n="ui_67">双语并排</span></span><br/>
+                <span class="hint"><span data-i18n="ui_68">原文 + 译文上下对照，便于校对</span></span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="enableBilingual" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+<details id="translationAdvanced"><summary data-i18n="tx_advanced">高级翻译设置（可选）</summary>
             <div class="form-group" style="margin-top: 12px;">
               <label><span data-i18n="ui_42">翻译策略</span> <span class="hint"><span data-i18n="ui_43">（自动分析全书，也可人工锁定）</span></span></label>
               <select id="translationStrategy">
@@ -1578,17 +1592,6 @@
               <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.3" style="width:80px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);" />
             </div>
 
-            <div class="toggle-row">
-              <div>
-                <span><span data-i18n="ui_67">双语并排</span></span><br/>
-                <span class="hint"><span data-i18n="ui_68">原文 + 译文上下对照，便于校对</span></span>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="enableBilingual" />
-                <span class="slider"></span>
-              </label>
-            </div>
-
             <div class="form-group" style="margin-top: 12px;">
               <label><span data-i18n="ui_69">术语对照表</span> <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);"><span data-i18n="ui_70">（可选，每行一条）</span></span></label>
               <textarea id="glossaryInput" placeholder="Harry Potter = 哈利·波特&#10;Voldemort = 伏地魔&#10;Hogwarts: 霍格沃茨"
@@ -1598,6 +1601,7 @@
               ></textarea>
               <div id="glossaryError" style="display:none; margin-top:4px; font-size:12px; color:var(--error);"></div>
             </div>
+</details>
           </div>
       </div>
 
@@ -1607,8 +1611,10 @@
         <div class="pricing-notice" style="margin-bottom:12px;">
           <span data-i18n="ui_72">支付前请确认文体、翻译策略、术语和角色。只有点击“确认并生成支付订单”后才会创建订单。</span>
         </div>
-        <div id="preflightSummary" style="font-size:14px; line-height:1.8;"></div>
-        <div id="preflightPricing" class="hint" style="margin-top:8px; white-space:pre-line;"></div>
+        <p id="preflightDirection" class="pricing-notice" role="status"></p>
+        <details id="preflightAdvanced"><summary data-i18n="tx_advanced">高级翻译设置（可选）</summary>
+        <div id="preflightSummary" style="font-size:14px; line-height:1.8;white-space:pre-line;"></div>
+
         <details style="margin:10px 0;">
           <summary style="cursor:pointer;"><span data-i18n="ui_73">查看判断依据与抽样范围</span></summary>
           <div id="preflightEvidence" class="hint" style="white-space:pre-wrap; margin-top:8px;"></div>
@@ -1645,6 +1651,8 @@
         <label style="display:flex;gap:8px;align-items:center;margin:10px 0;">
           <input id="preflightTermHighlights" type="checkbox" /> <span data-i18n="ui_82">在译文中标记已确认术语（默认关闭）</span>
         </label>
+        </details>
+        <div id="preflightPricing" class="pricing-notice" style="white-space:pre-line;"></div>
         <div id="preflightError" style="display:none;color:var(--error);font-size:13px;margin:8px 0;"></div>
         <button id="confirmPreflightBtn" class="submit-btn" type="button"><span data-i18n="ui_83">确认并生成支付订单</span></button>
       </div>
@@ -1663,7 +1671,7 @@
       <details class="quote-notes" open style="margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:8px;">
         <summary data-i18n="g_quote">付款前请确认</summary>
         <p data-i18n="g_total"></p><p data-i18n="g_deliver"></p><p data-i18n="g_wait"></p><p data-i18n="g_failure"></p>
-        <a href="/examples.html" data-i18n="g_examples">查看处理效果</a> · <a href="/refund.html" data-i18n="g_refund">退款政策</a>
+        <a id="translationExamplesLink" href="/examples.html" data-i18n="g_examples">查看处理效果</a> · <a href="/refund.html" data-i18n="g_refund">退款政策</a>
       </details>
       <button class="submit-btn" id="submitBtn" disabled><span data-i18n="ui_91">开始转换</span></button>
 
@@ -1678,6 +1686,7 @@
 
       <!-- 翻译跳转支付区 -->
       <div id="translationPayArea" style="display:none; margin-top:16px; padding:20px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center;">
+        <p id="translationPaymentDirection" class="pricing-notice"></p>
         <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:6px;"><span data-i18n="ui_95">应付金额</span></div>
         <div style="font-size:26px; font-weight:700; color:var(--text); margin-bottom:4px;" id="translationPriceDisplay">¥—</div>
         <div style="font-size:12px; color:var(--muted); margin-bottom:14px; white-space:pre-line;" id="translationCharDisplay"></div>
@@ -1690,6 +1699,7 @@
     </div>
 
     <!-- Only the server capability can reveal this independent PDF entry. -->
+    <section id="returnLaterPanel" aria-label="稍后下载与邮件通知"></section>
     <section class="card" id="pdfUploadCard" style="display:none;" hidden aria-label="PDF 保留原文转换">
       <h2><span class="icon">📄</span> <span data-i18n="ui_99">PDF → EPUB · 保留原文</span></h2>
       <p class="hint"><span data-i18n="ui_241">仅支持可可靠处理的文字型 PDF。保留原文和原图，不翻译、不 OCR、不做 用词精校，也不删除原书内容。复杂版式或不支持的图片会明确拒绝，不会强行生成。</span></p>
@@ -1743,6 +1753,7 @@
         <span id="statusMessage" style="font-size: 14px; color: var(--muted);"></span>
         <span class="job-timer" id="jobTimer"><span data-i18n="ui_111">已耗时 00:00</span></span>
       </div>
+      <details id="translationRawDetails" hidden><summary data-i18n="tx_details">查看原始详情</summary><p id="translationRawText" style="white-space:pre-wrap;overflow-wrap:anywhere"></p></details>
 
       <div class="progress-bar-wrapper">
         <div class="progress-bar pending" id="progressBar"></div>
@@ -1900,10 +1911,11 @@
   <script src="pdf-conversion.js?v=20261018-paypal"></script>
   <script src="return-later.js?v=20261019-multilingual"></script>
   <script src="book-preview.js?v=20260917-review-preview"></script>
-  <script src="/growth-analytics.js?v=20261026" defer></script>
+  <script src="/growth-analytics.js?v=20261026-r2" defer></script>
   <script src="/txt-preview.js?v=20261020"></script>
   <script src="tool-entry.js?v=20261001-r11"></script>
   <script>
+    const tx = (key, values) => window.FixEpubTranslationUX.text(key, values);
     const API = window.EPUB_FACTORY_API || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "http://127.0.0.1:8000" : "");
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -2057,6 +2069,9 @@
     let translationTimingCopyTimer = null;
     let alipayPopup = null;
     let currentTranslationPreflight = null;
+    let uploadInFlight = false;
+    let currentPreflightQuote = {};
+    let latestTranslationQuote = {};
     let continuePaymentGeneration = 0;
     let continuePaymentInFlight = false;
     let continuePaymentTarget = null;
@@ -2237,53 +2252,56 @@
       const chars = number(data.estimated_chars ?? pricing.total_chars);
       const symbol = data.currency === "USD" || pricing.currency === "USD" ? "US$" : "¥";
       const amountText = amount === undefined ? `${symbol}—` : `${symbol}${amount.toFixed(2)}`;
-      const charText = Number.isSafeInteger(chars) && chars > 0 ? `约 ${(chars / 1000).toFixed(1)}K 字符` : "";
-      let note = "以订单已确认金额为准；缓存复用以执行统计为准";
+      const charText = Number.isSafeInteger(chars) && chars > 0 ? tx("tx_chars", {count:(chars / 1000).toFixed(1)}) : "";
+      let note = tx("tx_frozen");
       if (pricing.schema_version === 2 && pricing.cache_discount_status === "disabled") {
-        note = "不复用旧译文缓存，本次不计缓存优惠";
+        note = tx("tx_no_cache");
       } else if (pricing.schema_version === 2 && pricing.cache_discount_status === "deferred") {
-        note = "缓存复用以执行统计为准，本次报价未预扣缓存优惠";
+        note = tx("tx_cache");
       }
       return { amountText, detailText: [charText, note].filter(Boolean).join("\n"),
-        summaryText: [`翻译服务价：${amountText}${charText ? " · " + charText : ""}`, note].join("\n") };
+        summaryText: [tx("tx_price",{amount:amountText})+(charText ? " · " + charText : ""), note].join("\n") };
     }
 
     function renderTranslationPricing(data) {
+      latestTranslationQuote = data;
       const view = translationPricingView(data);
       $("translationPriceDisplay").textContent = view.amountText;
       $("translationCharDisplay").textContent = view.detailText;
     }
 
     function renderTranslationQuoteSummary(data = {}) {
+      latestTranslationQuote = data;
       const node = $("translationQuoteSummary");
       const visible = Boolean(data.enable_translation && (data.amount || data.expected_amount || data.pricing));
       node.textContent = visible ? translationPricingView(data).summaryText : "";
       node.style.display = visible ? "block" : "none";
     }
 
+    function refreshPreflightCopy() {
+      const preflight = currentTranslationPreflight;
+      if(!preflight) return;
+      const profile=preflight.profile||{}, sampling=profile.sampling||{};
+      $("preflightPricing").textContent=translationPricingView(currentPreflightQuote).summaryText;
+      $("preflightDirection").textContent=window.FixEpubTranslationUX.direction(currentPreflightQuote.source_lang, currentPreflightQuote.target_lang);
+      $("preflightSummary").textContent=[
+        tx("tx_analysis")+": "+(profile.genre||tx("tx_unknown")),
+        tx("tx_strategy")+": "+window.FixEpubI18n.text(TRANSLATION_STRATEGY_LABELS[preflight.resolved_strategy]||tx("tx_unknown")),
+        tx("tx_confidence")+": "+Math.round(Number(profile.confidence||0)*100)+"%",
+      ].join("\n");
+      $("preflightEvidence").textContent=[tx("tx_sampling",{toc:sampling.toc_entries||0,samples:sampling.sample_count||0,chars:sampling.sample_chars||0}),tx("tx_original"),
+        ...(profile.evidence||[]).map(item=>(item.source||"sample")+": "+(item.reason||"")),...(preflight.confirmation_reasons||[])].join("\n");
+      document.querySelectorAll('.chapter-strategy-override option').forEach(option=>{option.textContent=option.value?window.FixEpubI18n.text(TRANSLATION_STRATEGY_LABELS[option.value]||option.value):tx('tx_inherit');});
+    }
+
     function renderTranslationPreflight(preflight, jobId, bilingual = false, quoteData = {}) {
       if (!preflight || !jobId) return;
       currentTranslationPreflight = preflight;
+      currentPreflightQuote = quoteData;
       currentJobId = jobId;
-      $("preflightPricing").textContent = translationPricingView(quoteData).summaryText;
-      const profile = preflight.profile || {};
-      const confidence = Math.round(Number(profile.confidence || 0) * 100);
       const strategy = preflight.resolved_strategy || "neutral_faithful";
-      $("preflightSummary").innerHTML = [
-        `<strong>自动分析：</strong>${escapeHtml(profile.genre || "类型未知")}`,
-        `<strong>建议策略：</strong>${escapeHtml(TRANSLATION_STRATEGY_LABELS[strategy] || strategy)}`,
-        `<strong>判断置信度：</strong>${confidence}%`,
-        `<strong>语言复杂度：</strong>${escapeHtml((profile.complexity || {}).source_level || "unknown")} / ${escapeHtml((profile.complexity || {}).syntax || "unknown")}`,
-      ].join("<br>");
-      const evidence = (profile.evidence || [])
-        .map(item => `• ${item.source || "sample"}：${item.reason || ""}`)
-        .join("\n");
-      const sampling = profile.sampling || {};
-      $("preflightEvidence").textContent = [
-        evidence || "暂无分析依据，已采用默认策略。",
-        `抽样：目录 ${sampling.toc_entries || 0} 项，正文 ${sampling.sample_count || 0} 处，共 ${sampling.sample_chars || 0} 字符。`,
-        ...(preflight.confirmation_reasons || []).map(item => `需注意：${item}`),
-      ].join("\n");
+      refreshPreflightCopy();
+      reportCheckoutEvent("quote_shown");
       $("preflightStrategy").value = strategy;
       $("preflightGlossary").value = Object.entries(preflight.glossary || {})
         .map(([source, translated]) => `${source} = ${translated}`)
@@ -2297,13 +2315,13 @@
       $("preflightBilingual").checked = Boolean(bilingual);
       $("preflightTermHighlights").checked = Boolean(preflight.enable_term_highlights);
       const strategyOptions = Object.entries(TRANSLATION_STRATEGY_LABELS)
-        .map(([value, label]) => `<option value="${value}">${label}</option>`)
+        .map(([value, label]) => `<option value="${value}">${escapeHtml(window.FixEpubI18n.text(label))}</option>`)
         .join("");
       $("preflightChapters").innerHTML = (preflight.chapters || []).map(chapter => `
         <label style="display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center;margin:6px 0;">
-          <span title="${escapeHtml(chapter.file_path || "")}">${escapeHtml(chapter.file_path || chapter.chapter_id || "章节")} <small class="hint">(${Number(chapter.chunk_count || 0)} 段)</small></span>
+          <span title="${escapeHtml(chapter.file_path || "")}">${escapeHtml(chapter.file_path || chapter.chapter_id || "章节")} <small class="hint">(${escapeHtml(tx("tx_chunks",{count:Number(chapter.chunk_count || 0)}))})</small></span>
           <select class="chapter-strategy-override" data-chapter-id="${escapeHtml(chapter.chapter_id || "")}">
-            <option value="">继承全书策略</option>
+            <option value="">${escapeHtml(tx("tx_inherit"))}</option>
             ${strategyOptions}
           </select>
         </label>
@@ -2332,7 +2350,7 @@
         const parsed = parseGlossaryInput(mapping);
         const entries = Object.entries(parsed.glossary || {});
         if (parsed.errors.length || entries.length !== 1) {
-          errors.push(`角色第 ${index + 1} 行格式错误`);
+          errors.push(tx("tx_role_error",{line:index+1}));
           return;
         }
         const [sourceName, translatedName] = entries[0];
@@ -2355,7 +2373,7 @@
       const beforePayment = ["awaiting_confirmation", "confirming", "pending_payment"].includes(data.status);
       for (const [id, visible] of [["sourceWarningsBeforePay", beforePayment], ["sourceWarningsResult", !beforePayment]]) {
         const node = $(id);
-        node.textContent = messages.length ? `原书资源提示（其余内容将继续处理）\n${messages.join("\n")}` : "";
+        node.textContent = messages.length ? `${tx("tx_original")}\n${messages.join("\n")}` : "";
         node.style.display = messages.length && visible ? "block" : "none";
       }
     }
@@ -2364,7 +2382,8 @@
       renderSourceWarnings(data);
       renderTranslationPricing(data);
       $("translationPayLink").href = data.pay_url || "#";
-      $("translationPayLink").textContent = data.payment_method === "paypal" ? "前往 PayPal 付款" : "前往支付宝付款";
+      $("translationPayLink").textContent = window.FixEpubI18n.text(data.payment_method === "paypal" ? "前往 PayPal 付款" : "前往支付宝付款");
+      $("translationPaymentDirection").textContent=window.FixEpubTranslationUX.direction(data.source_lang||currentPreflightQuote.source_lang,data.target_lang||currentPreflightQuote.target_lang);
       $("translationPayArea").style.display = data.pay_url ? "block" : "none";
       if (data.pay_url) reportCheckoutEvent("quote_shown");
     }
@@ -2375,7 +2394,7 @@
       const characterResult = parsePreflightCharacters($("preflightCharacters").value);
       const errors = [...glossaryResult.errors, ...characterResult.errors];
       if (errors.length) {
-        $("preflightError").textContent = errors.join("；");
+        $("preflightError").textContent = tx("tx_settings_error")+"\n"+tx("tx_original")+"\n"+errors.join("；");
         $("preflightError").style.display = "block";
         return;
       }
@@ -2385,7 +2404,7 @@
       });
       const button = $("confirmPreflightBtn");
       button.disabled = true;
-      button.textContent = "正在创建订单...";
+      button.textContent = tx("tx_creating");
       $("preflightError").style.display = "none";
       try {
         const headers = {
@@ -2412,17 +2431,17 @@
         currentTranslationPreflight = data.translation_preflight || currentTranslationPreflight;
         $("translationPreflightPanel").style.display = "none";
         setStatus("pending", data.message || "画像已确认");
-        if (data.status === "pending_payment") showTranslationPayment(data);
+        if (data.status === "pending_payment") { reportCheckoutEvent("profile_confirmed"); showTranslationPayment(data); }
         startJobTimer();
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(() => pollJobV2(currentJobId), 2000);
         pollJobV2(currentJobId);
       } catch (error) {
-        $("preflightError").textContent = error.message;
+        $("preflightError").textContent = tx("tx_confirm_error")+"\n"+tx("tx_original")+"\n"+error.message;
         $("preflightError").style.display = "block";
       } finally {
         button.disabled = false;
-        button.textContent = "确认并生成支付订单";
+        button.textContent = window.FixEpubI18n.t("ui_83");
       }
     }
 
@@ -3057,8 +3076,8 @@
       const queueNotice = $("queueNotice");
       if (queueNotice && queueNotice.querySelector("#goToTasksBtn")) {
         queueNotice.innerHTML = `
-          付款成功后的任务会在后台处理。您可以关闭本页，稍后用同一浏览器在「任务中心」查看${verb}结果与下载。
-          <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
+          ${escapeHtml(window.FixEpubI18n.t("ui_114"))}
+          <a href="#" class="btn-link" id="goToTasksBtn">${escapeHtml(window.FixEpubI18n.t("ui_115"))}</a>
         `;
         $("goToTasksBtn").addEventListener("click", (e) => {
           e.preventDefault();
@@ -3101,6 +3120,7 @@
       syncPrecisionPolishAvailability();
       updateSubmitButton();
       _updatePriceHint();
+      refreshTranslationEntry();
     }
 
     function refreshTaskModeAvailability() {
@@ -3357,7 +3377,7 @@
             if (pollTimer) clearInterval(pollTimer);
             stopJobTimer();
             submitBtn.disabled = true;
-            setStatus("pending", "图书分析完成，请确认翻译设定");
+            setStatus("pending", tx("tx_ready"));
             showView("upload");
             renderTranslationPreflight(
               data.translation_preflight,
@@ -3409,6 +3429,12 @@
             statusLineMessage = "[" + data.error_code + "] " + (statusLineMessage || "任务失败");
           }
           setStatus(legacy, statusLineMessage);
+          if(data.enable_translation && window.FixEpubI18n.locale!=='zh-CN'){
+            const label=isFailed?tx('tx_failed'):s==='completed'?tx('tx_completed'):s==='pending_payment'?tx('tx_payment'):s==='awaiting_confirmation'?tx('tx_ready'):tx('tx_processing');
+            statusMessage.textContent=label;
+            $('translationRawDetails').hidden=!statusLineMessage;
+            $('translationRawText').textContent=statusLineMessage;
+          } else $('translationRawDetails').hidden=true;
           statusBadge.textContent = typeof mapV2StatusText === "function" ? mapV2StatusText(s, data.enable_translation, !!data.pdf_conversion) : s;
           setRunningActionsVisible(
             !!data.enable_translation && (s === "queued" || s === "running"),
@@ -3449,8 +3475,8 @@
           if (s !== "pending_payment" && !isTerminalFailureStatus(s)) {
             if (!$("queueNotice").querySelector("#goToTasksBtn")) {
               $("queueNotice").innerHTML = `
-                付款成功后的任务会在后台处理。您可以关闭本页，稍后用同一浏览器在「任务中心」查看${taskVerb(data.enable_translation)}结果与下载。
-                <a href="#" class="btn-link" id="goToTasksBtn">前往任务中心</a>
+                ${escapeHtml(window.FixEpubI18n.t("ui_114"))}
+          <a href="#" class="btn-link" id="goToTasksBtn">${escapeHtml(window.FixEpubI18n.t("ui_115"))}</a>
               `;
               $("goToTasksBtn").addEventListener("click", (e) => {
                 e.preventDefault();
@@ -3870,6 +3896,7 @@
     const DEV_MODE = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
     function updateSubmitButton() {
+      if(uploadInFlight){submitBtn.disabled=true;return;}
       refreshPaymentMethod();
       if (!selectedFiles.length) {
         submitBtn.disabled = true;
@@ -3877,6 +3904,9 @@
         return;
       }
       
+      if(getTaskMode()==='translate' && !window.FixEpubTranslationUX.validDirection($("sourceLang").value,$("targetLang").value)) {
+        submitBtn.disabled=true;submitBtn.textContent=tx($("targetLang").value?'tx_same':'tx_target');return;
+      }
       submitBtn.disabled = false;
       const verb = getTaskMode() === "translate" ? "翻译" : "转换";
       const _isAdminTest = !!(localStorage.getItem("admin_key") || sessionStorage.getItem("admin_key"));
@@ -3885,7 +3915,7 @@
       } else if (selectedFiles.length > 1) {
         submitBtn.textContent = `批量转换 ${selectedFiles.length} 个文件`;
       } else {
-        submitBtn.textContent = `开始${verb}`;
+        submitBtn.textContent = getTaskMode()==="translate"?tx("tx_quote"):`开始${verb}`;
       }
     }
 
@@ -3907,6 +3937,7 @@
         alert(invalid.name.toLowerCase().endsWith(".pdf") ? "普通入口暂不支持 PDF；若页面显示独立 PDF → EPUB 入口，请从该入口上传单个文件。PDF 不支持翻译、精校、批量或文件夹。" : "仅支持 .epub, .mobi, .azw3, .docx 、.md 或 .txt 文件");
         return;
       }
+      if(getTaskMode()==='translate' && (nextFiles.length!==1 || /\.(mobi|azw3)$/i.test(nextFiles[0].name))) { alert(tx('tx_single'));return; }
       returnLater.setTask(null, true);
       selectedFiles = nextFiles;
       selectedFile = nextFiles[0];
@@ -3959,6 +3990,17 @@
     ["dragleave", "drop"].forEach(e => dropzone.addEventListener(e, (ev) => { ev.preventDefault(); dropzone.classList.remove("active"); }));
     dropzone.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) selectFiles(e.dataTransfer.files); });
 
+    function refreshTranslationEntry() {
+      const params=new URLSearchParams();params.set('source',$('sourceLang').value);params.set('target',$('targetLang').value);
+      $('translationExamplesLink').href='/examples.html'+window.FixEpubTranslationUX.entry(params.toString(),window.FixEpubI18n.locale,getTaskMode()==='translate'?'translate':null).slice(1);
+    }
+    for(const id of ['sourceLang','targetLang'])$(id).addEventListener('change',()=>{updateSubmitButton();refreshTranslationEntry();});
+    window.addEventListener('fixepub:locale',()=>{refreshTranslationEntry();if(!submitBtn.disabled)updateSubmitButton();refreshPreflightCopy();if(latestTranslationQuote.enable_translation){renderTranslationQuoteSummary(latestTranslationQuote);renderTranslationPricing(latestTranslationQuote);}});
+    const translationQuery=new URLSearchParams(location.search);
+    if(!translationQuery.has('job_id')&&!translationQuery.has('batch_id'))for(const [param,id] of [['source','sourceLang'],['target','targetLang']]){
+      const value=translationQuery.get(param);if(value&&Array.from($(id).options).some(o=>o.value===value))$(id).value=value;
+    }
+    refreshTranslationEntry();
     taskModeRadios.forEach(radio => {
       radio.addEventListener("change", () => setTaskMode(radio.value));
     });
@@ -4239,12 +4281,14 @@
 
     // ─── 统一提交逻辑：创建任务后按后端状态进入确认、支付或处理 ───────────────
     async function submitJob() {
+      if(uploadInFlight)return;
       if (!selectedFiles.length) return;
       resetPdfConfirmation();
       resetContinuePayment();
       renderSourceWarnings();
       const isBatchMode = selectedFiles.length > 1;
       const isTranslationMode = getTaskMode() === "translate";
+      if(isTranslationMode && !window.FixEpubTranslationUX.validDirection($("sourceLang").value,$("targetLang").value)) {updateSubmitButton();return;}
 
       setTaskUiMode(isTranslationMode);
       submitBtn.disabled = true;
@@ -4281,7 +4325,7 @@
         if (rawGlossary.trim()) {
           const { glossary, errors } = parseGlossaryInput(rawGlossary);
           if (errors.length > 0) {
-            $("glossaryError").textContent = errors.join("；");
+            $("glossaryError").textContent = tx("tx_settings_error")+"\n"+tx("tx_original")+"\n"+errors.join("；");
             $("glossaryError").style.display = "block";
             submitBtn.disabled = false;
             return;
@@ -4298,6 +4342,8 @@
 
       // (后端会自己判断是否需要进行支付并返回链接)
       try {
+        uploadInFlight=true;
+        if(isTranslationMode)statusMessage.textContent=tx("tx_uploading");
         startJobTimer();
         const endpoint = isBatchMode ? `${API}/api/v2/batches` : `${API}/api/v2/jobs`;
         const res = await fetch(endpoint, { method: "POST", headers: clientHeaders(), body: form });
@@ -4332,7 +4378,7 @@
 
         renderSourceWarnings(data);
         if (data.status === "awaiting_confirmation") {
-          setStatus("pending", "图书分析完成，请确认翻译设定");
+          setStatus("pending", tx("tx_ready"));
           stopJobTimer();
           renderTranslationPreflight(
             data.translation_preflight,
@@ -4364,7 +4410,7 @@
             const chars = data.estimated_chars || 0;
             $("translationPriceDisplay").textContent = `${paymentCurrency(data)}${amt}`;
 
-            let charInfo = chars > 0 ? `约 ${(chars / 1000).toFixed(1)}K 字符` : "";
+            let charInfo = chars > 0 ? tx("tx_chars", {count:(chars / 1000).toFixed(1)}) : "";
             if (!isTranslationMode) {
               const baseAmount = data.base_amount || data.amount || "0.99";
               const polishAmount = parseFloat(data.precision_polish_amount || "0");
@@ -4394,12 +4440,12 @@
           pollJobV2(data.job_id);
         }
       } catch (err) {
-        setStatus("failed", err.message);
-        errorMsg.textContent = err.message;
+        setStatus("failed", isTranslationMode?tx("tx_upload_error"):err.message);
+        errorMsg.textContent = isTranslationMode?tx("tx_original")+"\n"+err.message:err.message;
         errorMsg.style.display = "block";
         stopJobTimer();
         submitBtn.disabled = false;
-      }
+      } finally { uploadInFlight=false; }
     }
 
     submitBtn.addEventListener("click", submitJob);

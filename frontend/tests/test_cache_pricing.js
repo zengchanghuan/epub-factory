@@ -8,14 +8,15 @@ const rendering = html.slice(html.indexOf("    function translationPricingView(d
 const payment = html.slice(html.indexOf("    function showTranslationPayment(data)"),
   html.indexOf("    async function confirmTranslationPreflight()"));
 
-function setup() {
+function setup(locale="zh-CN") {
   const nodes = new Map();
   const $ = id => {
     if (!nodes.has(id)) nodes.set(id, { textContent: "", innerHTML: "", style: {},
       value: "", checked: false, href: "", scrollIntoView() {} });
     return nodes.get(id);
   };
-  const context = { $, document: { querySelectorAll: () => [] },
+  const ux=require('../translation-ux');
+  const context = { tx:(key,values)=>ux.text(key,values,locale), currentTranslationPreflight:null,currentPreflightQuote:{},latestTranslationQuote:{},window:{FixEpubTranslationUX:ux,FixEpubI18n:{text:v=>v}}, $, document: { querySelectorAll: () => [] },
     TRANSLATION_STRATEGY_LABELS: { neutral_faithful: "中性忠实" },
     escapeHtml: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;"),
     renderSourceWarnings() {}, reportCheckoutEvent() {},
@@ -161,7 +162,7 @@ test("上传、确认和刷新全部接入同一报价展示，移除旧比例�
   assert(/renderTranslationPreflight\(\s*data\.translation_preflight,\s*data\.job_id,\s*data\.bilingual,\s*data,/.test(poll));
   assert(/renderTranslationPreflight\(\s*data\.translation_preflight,\s*data\.job_id,\s*\$\("enableBilingual"\)\.checked,\s*data,/.test(html));
   assert(html.includes("if (isTranslationMode) renderTranslationPricing(data)"));
-  assert(html.includes('if (data.status === "pending_payment") showTranslationPayment(data)'));
+  assert(/if \(data.status === "pending_payment"\) \{[^}]*showTranslationPayment\(data\)/.test(html));
 });
 
 test("所有普通内联脚本语法可解析", () => {
@@ -183,3 +184,5 @@ test("画像确认后的 PayPal 付款按钮不误标支付宝", () => {
   assert.equal($("translationPayLink").textContent,"前往 PayPal 付款");
   assert.equal($("translationPriceDisplay").textContent,"US$0.99");
 });
+
+test("All localized quote views preserve saved USD amounts and direction",()=>{for(const locale of ["zh-CN","zh-TW","en","ja","ko"]){const {context,$}=setup(locale);const data={amount:"2.41",currency:"USD",enable_translation:true,source_lang:"en",target_lang:"ko",pricing:{price_cny:"14.01"}};const before=JSON.stringify(data);context.renderTranslationPreflight({profile:{},chapters:[]},"synthetic",false,data);assert($("preflightPricing").textContent.includes("US$2.41"));assert($("preflightDirection").textContent.includes("English"));assert($("preflightDirection").textContent.includes("한국어"));assert.equal(JSON.stringify(data),before);context.renderTranslationQuoteSummary({enable_translation:false});assert.equal($("translationQuoteSummary").style.display,"none");assert.equal(context.latestTranslationQuote.enable_translation,false);}});

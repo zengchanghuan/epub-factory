@@ -20,6 +20,8 @@ LANGS = ('zh-CN', 'zh-TW', 'en', 'ja', 'ko')
 class Visit(BaseModel):
     model_config = ConfigDict(extra='forbid')
     session: str = Field(pattern=r'^[a-f0-9]{32}$')
+    landing: Literal['home','translation','repair','examples','guide','other','unknown'] = 'unknown'
+    metrics_version: Literal[1, 2] = 1
     service: Literal['conversion','translation','proofreading','repair','pdf'] | None = None
     event: Literal['visit', 'file_selected','service_exposed','service_clicked','upload_succeeded']
     language: Literal['zh-CN','zh-TW','en','ja','ko'] = 'zh-CN'
@@ -50,7 +52,8 @@ def write(callback):
     try:
         with sqlite3.connect(path(), timeout=.2) as db:
             db.executescript('''CREATE TABLE IF NOT EXISTS visits(session TEXT PRIMARY KEY, started REAL NOT NULL, language TEXT NOT NULL, device TEXT NOT NULL, source TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS service_steps(session TEXT NOT NULL, service TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY(session,service,event));
+CREATE TABLE IF NOT EXISTS service_steps_v2(session TEXT NOT NULL, service TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY(session,service,event));
+CREATE TABLE IF NOT EXISTS visit_landings(session TEXT PRIMARY KEY, category TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS bindings(order_no TEXT PRIMARY KEY, session TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS downloads(order_no TEXT PRIMARY KEY, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS visit_regions(session TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -66,8 +69,11 @@ CREATE INDEX IF NOT EXISTS bindings_session ON bindings(session);''')
 def record_visit(body, address=None):
     def save(db):
         cutoff=time.time()-90*86400
-        db.execute('DELETE FROM service_steps WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_steps'").fetchone():
+            db.execute('DELETE FROM service_steps WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
+        db.execute('DELETE FROM service_steps_v2 WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
         db.execute('DELETE FROM bindings WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
+        db.execute('DELETE FROM visit_landings WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
         db.execute('DELETE FROM visit_regions WHERE session IN (SELECT session FROM visits WHERE started < ?)',(cutoff,))
         db.execute('DELETE FROM visits WHERE started < ?',(cutoff,))
         db.execute('DELETE FROM downloads WHERE at < ?',(cutoff,))
@@ -75,9 +81,10 @@ def record_visit(body, address=None):
             raise ValueError('Analytics capacity reached')
         inserted = db.execute('INSERT OR IGNORE INTO visits VALUES(?,?,?,?,?,0)', (body.session,time.time(),body.language,body.device,body.source)).rowcount
         if inserted:
+            db.execute('INSERT OR IGNORE INTO visit_landings VALUES(?,?)',(body.session,body.landing))
             db.execute('INSERT OR IGNORE INTO visit_regions VALUES(?,?)', (body.session, json.dumps(geo_location.lookup(address), ensure_ascii=False)))
-        if body.service and body.event in ('service_exposed','service_clicked','file_selected','upload_succeeded'):
-            db.execute('INSERT OR IGNORE INTO service_steps VALUES(?,?,?)',(body.session,body.service,body.event))
+        if body.metrics_version == 2 and body.service and body.event in ('service_exposed','service_clicked','file_selected','upload_succeeded'):
+            db.execute('INSERT OR IGNORE INTO service_steps_v2 VALUES(?,?,?)',(body.session,body.service,body.event))
         if body.event == 'file_selected':
             db.execute('UPDATE visits SET selected=1 WHERE session=?', (body.session,))
     return write(save)
@@ -100,8 +107,8 @@ def downloaded_order(number):
 
 def report(store, days=7, language='all', source='all', device='all', repair_lookup=None):
     counts=dict(visits=0,selected=0,quoted=0,clicked=0,paid=0,downloaded=0)
-    breakdown={k:dict(exposed=0,clicked=0,selected=0,uploaded=0,quoted=0,paid=0) for k in ('conversion','translation','proofreading','repair','pdf','batch')}
-    result={'days':days,'counts':counts,'services':breakdown,'quote_to_paid':None,'paid_to_download':None,'scope':'attributed_orders','started_at':None,'geography':[],'geo_database':geo_location.status()}
+    breakdown={k:dict(exposed=0,clicked=0,selected=0,uploaded=0,quoted=0,confirmed=0,paid=0) for k in ('conversion','translation','proofreading','repair','pdf','batch')}
+    result={'days':days,'counts':counts,'services':breakdown,'quote_to_paid':None,'paid_to_download':None,'scope':'attributed_orders','started_at':None,'geography':[],'landings':[],'entry_metrics_version':2,'geo_database':geo_location.status()}
     if not path().exists(): return result
     with sqlite3.connect('file:'+str(path())+'?mode=ro',uri=True,timeout=.2) as db:
         args=[time.time()-days*86400];where='started>=?'
@@ -111,14 +118,17 @@ def report(store, days=7, language='all', source='all', device='all', repair_loo
         bindings=dict(db.execute('SELECT order_no,session FROM bindings'))
         downloads={r[0] for r in db.execute('SELECT order_no FROM downloads')}
         region_rows = dict(db.execute('SELECT session,data FROM visit_regions')) if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='visit_regions'").fetchone() else {}
+        landing_rows=dict(db.execute('SELECT session,category FROM visit_landings')) if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='visit_landings'").fetchone() else {}
         result['started_at']=db.execute('SELECT MIN(started) FROM visits').fetchone()[0]
     sessions={row[0] for row in visits}
     with sqlite3.connect('file:'+str(path())+'?mode=ro',uri=True,timeout=.2) as db:
-        steps=db.execute('SELECT session,service,event FROM service_steps').fetchall() if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_steps'").fetchone() else []
+        steps=db.execute('SELECT session,service,event FROM service_steps_v2').fetchall() if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='service_steps_v2'").fetchone() else []
     for sid,service,event in steps:
         if sid in sessions and service in breakdown:
             key={'service_exposed':'exposed','service_clicked':'clicked','file_selected':'selected','upload_succeeded':'uploaded'}.get(event)
             if key:breakdown[service][key]+=1
+    landing_counts={key:dict(category=key,sessions=count,quoted=0,paid=0) for key,count in Counter(landing_rows.get(sid,'unknown') for sid in sessions).items()}
+    result['landings']=list(landing_counts.values())
     regions = Counter(region_rows.get(sid, '{}') for sid in sessions)
     result['geography'] = [dict(json.loads(data), sessions=count) for data,count in regions.most_common()]
     counts['visits']=len(sessions);counts['selected']=sum(row[1] for row in visits)
@@ -152,6 +162,10 @@ def report(store, days=7, language='all', source='all', device='all', repair_loo
                 counts['paid']+=quoted and paid
                 counts['downloaded']+=quoted and paid and number in downloads
                 breakdown[kind]['quoted']+=quoted;breakdown[kind]['paid']+=quoted and paid
+                breakdown[kind]['confirmed']+=quoted and 'profile_confirmed' in e
+                landing=landing_counts.get(landing_rows.get(bindings.get(number),'unknown'))
+                if landing:
+                    landing['quoted']+=quoted;landing['paid']+=quoted and paid
     result['quote_to_paid']=round(counts['paid']/counts['quoted'],4) if counts['quoted'] else None
     result['paid_to_download']=round(counts['downloaded']/counts['paid'],4) if counts['paid'] else None
     return result

@@ -145,12 +145,14 @@ def render_page(page, template):
     rendered = Template(template).substitute(values)
     if page['tool'] == 'translate':
         from generate_translation_pages import alternates, navigation
-        rendered = rendered.replace('</head>', alternates() + '\n<script src="/growth-analytics.js?v=20261026-seo" defer></script>\n</head>')
+        from translation_sample import render_sample
+        rendered = rendered.replace('<section class="panel" aria-labelledby="features-title">', render_sample("zh-CN")+'<section class="panel" aria-labelledby="features-title">')
+        rendered = rendered.replace('</head>', alternates() + '\n<script src="/growth-analytics.js?v=20261026-r2" defer></script>\n</head>')
         rendered = rendered.replace('<main>', '<main><nav aria-label="Language">'+navigation()+'</nav>')
         rendered = rendered.replace('data-entry-link="upload"', 'data-entry-link="upload" data-growth-service="translation"')
         rendered = rendered.replace('tool-entry.js?v=20261001-r11', 'tool-entry.js?v=20261026-seo')
         rendered = rendered.replace('本页不收款，也不创建任务。', 'PayPal AI 订单最低 US$1.49，显示的美元总额包含支付手续费；这不是固定每本翻译价。本页不收款，也不创建任务。')
-        rendered = rendered.replace('<h2 id="features-title">', '<p><a href="/examples.html?lang=zh-CN">查看五语言翻译效果示例</a></p><h2 id="features-title">')
+        rendered = rendered.replace('<h2 id="features-title">', '<p><a href="/examples.html?tool=translate&amp;lang=zh-CN">查看五语言翻译效果示例</a></p><h2 id="features-title">')
     return rendered
 
 

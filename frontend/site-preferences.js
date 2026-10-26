@@ -41,6 +41,8 @@
   const save = (key,value) => { try { root.localStorage.setItem(key,value); } catch (_) {} };
   const requestedLocale = new URLSearchParams(root.location.search).get('lang');
   let locale = normalizeLocale((locales.includes(requestedLocale) && requestedLocale) || read('fixepub_ui_locale') || root.navigator.language);
+  // A localized entry is an explicit preference; retain it on same-site links.
+  if(locales.includes(requestedLocale)) save('fixepub_ui_locale',locale);
   const payments=paymentPreferences(()=>locale);
   let theme = read('fixepub_theme') || 'system';
   if (!['light','dark','system'].includes(theme)) theme = 'system';
@@ -51,7 +53,7 @@
   function applyTheme() { doc.documentElement.dataset.theme=effectiveTheme(theme,media.matches); doc.documentElement.style.colorScheme=doc.documentElement.dataset.theme; }
   applyTheme();
   media.addEventListener?.('change',applyTheme);
-  const dynamicIds = ['submitBtn','translationPayLink','continuePaymentLink','payButtonLabel','alipayLink','diagStatus','fixStatus','status','recover','return','preflightConfirmBtn','feedbackState','conversionStatus','notificationEmailHint','notificationTaskLabel','saveNotificationEmail','statusBadge','statusCardTitle','downloadBtn','paymentWaitText','cancelJobBtn','restartTranslationBtn','retryTranslationBtn','continuePaymentBtn','pdfUploadBtn','pdfConfirmBtn'];
+  const dynamicIds = ['submitBtn','translationPayLink','continuePaymentLink','payButtonLabel','alipayLink','diagStatus','fixStatus','status','recover','return','confirmPreflightBtn','feedbackState','conversionStatus','notificationEmailHint','notificationTaskLabel','saveNotificationEmail','statusBadge','statusCardTitle','downloadBtn','paymentWaitText','cancelJobBtn','restartTranslationBtn','retryTranslationBtn','continuePaymentBtn','pdfUploadBtn','pdfConfirmBtn'];
   function translateSlot(node) {
     if (!node || node.children.length || !node.textContent) return;
     const value = node.textContent.trim();

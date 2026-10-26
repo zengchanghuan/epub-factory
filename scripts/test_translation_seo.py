@@ -12,6 +12,15 @@ class Tags(HTMLParser):
     def handle_starttag(self,tag,attrs):self.tags.append((tag,dict(attrs)))
 
 class TranslationSeoTests(unittest.TestCase):
+    def test_all_landing_samples_match_published_outputs_and_keep_translation_entry(self):
+        from html import unescape
+        samples=json.loads((pages.ROOT/'frontend/examples-data.json').read_text())
+        for lang,name in pages.PAGES.items():
+            text=(pages.ROOT/'frontend'/name).read_text()
+            self.assertIn('id="translation-sample"',text)
+            self.assertIn(samples[lang]['translation']['before'],unescape(text))
+            self.assertIn(samples[lang]['translation']['after'],unescape(text))
+            self.assertIn('/examples.html?tool=translate&amp;lang='+lang,text)
     def test_languages_have_self_canonical_reciprocal_alternates_and_sitemap(self):
         sitemap=(pages.ROOT/'frontend/sitemap.xml').read_text()
         for lang,name in pages.PAGES.items():

@@ -1663,6 +1663,8 @@ async def create_job_v2(
     source_lang = source_lang if isinstance(source_lang, str) else "auto"
     if enable_translation and (target_lang not in LANGUAGES or source_lang not in {"auto", *LANGUAGES}):
         raise HTTPException(400, "请选择支持的源语言和目标语言")
+    if enable_translation and source_lang == target_lang:
+        raise HTTPException(400, "原文和目标语言不能相同，请确认翻译方向")
     payment_method = ppcheckout.select_method(payment_method, translation=enable_translation,
                                                polish=enable_precision_polish, store=job_store)
     import os as _os

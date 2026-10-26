@@ -3,6 +3,7 @@ import argparse
 from html import escape
 import json
 from pathlib import Path
+from translation_sample import render_sample
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = {'zh-CN': 'epub-translator.html', 'en': 'epub-translator-en.html',
@@ -83,10 +84,10 @@ def render(lang):
 <link rel="canonical" href="{url}">{alternates()}
 <meta property="og:type" content="website"><meta property="og:title" content="{escape(d['title'],quote=True)}"><meta property="og:description" content="{escape(d['description'],quote=True)}"><meta property="og:url" content="{url}">
 <script type="application/ld+json">{schema}</script><style>{css}</style>
-<script src="/tool-entry.js?v=20261026-seo" defer></script><script src="/growth-analytics.js?v=20261026-seo" defer></script></head>
+<script src="/tool-entry.js?v=20261026-seo" defer></script><script src="/growth-analytics.js?v=20261026-r2" defer></script></head>
 <body data-tool-entry="translate"><header class="topbar"><a class="brand" href="/?lang={lang}">FixEpub</a><nav aria-label="Language">{navigation()}</nav></header>
-<main><section class="hero"><h1>{escape(d['heading'])}</h1><p class="lead">{escape(d['description'])}</p><div class="actions">{action}<a class="button" href="/examples.html?lang={lang}">{escape(d['examples'])}</a></div></section>
-{sections}<div class="actions">{action}<a href="/?view=tasks&amp;lang={lang}" data-entry-link="tasks">{escape(d['tasks'])}</a></div></main>
+<main><section class="hero"><h1>{escape(d['heading'])}</h1><p class="lead">{escape(d['description'])}</p><div class="actions">{action}<a class="button" href="/examples.html?tool=translate&amp;lang={lang}">{escape(d['examples'])}</a></div></section>
+{render_sample(lang)}{sections}<div class="actions">{action}<a href="/?view=tasks&amp;lang={lang}" data-entry-link="tasks">{escape(d['tasks'])}</a></div></main>
 <footer><a href="/contact-en.html">{escape(d['contact'])}</a> · <a href="/privacy-en.html">Privacy</a> · <a href="/terms-en.html">Terms</a> · © 2026 FixEpub</footer></body></html>\n'''
 
 def generate(check=False):

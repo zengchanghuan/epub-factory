@@ -45,7 +45,7 @@ class MultilingualTests(unittest.TestCase):
 
     def test_invalid_language_is_rejected_before_quote_or_payment(self):
         with patch.object(main,'_prepare_translation_request') as prepare:
-            for fields in ({'target_lang':'arbitrary prompt'}, {'source_lang':'invalid'}):
+            for fields in ({'target_lang':'arbitrary prompt'}, {'source_lang':'invalid'}, {'source_lang':'en','target_lang':'en'}):
                 self.assertEqual(self.create(enable_translation='true',**fields).status_code,400)
             prepare.assert_not_called()
         self.pay.assert_not_called()

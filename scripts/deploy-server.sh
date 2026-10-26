@@ -402,6 +402,8 @@ with zipfile.ZipFile(archive) as z:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(z.read(name))
+        if Path(name).parts[0] == 'frontend':
+            path.chmod(0o644)  # Public source assets must remain readable by nginx.
 print(f'Code backup: {backup}')
 PY
 cd "$PROJECT_DIR/backend"

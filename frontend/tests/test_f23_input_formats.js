@@ -14,7 +14,7 @@ for (const page of ['index.html', 'epub-translator.html', 'vertical-to-horizonta
       assert(!/<input\b[^>]*type=["']file["']/i.test(html));
       assert(!/\b(?:fetch\s*\(|FormData\s*\(|paypal\.Buttons)/i.test(html));
       assert(!html.includes('paypal.com/sdk'));
-      assert(html.includes('tool-entry.js?v=20261001-r11'));
+      assert(/tool-entry\.js\?v=[\w-]+/.test(html));
       assert(html.includes('data-entry-link="upload"'));
       assert(html.includes('data-entry-link="tasks"'));
     }

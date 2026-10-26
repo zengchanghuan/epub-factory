@@ -21,7 +21,7 @@ function harness(extra={}){
 test('真实选文件事件仅发送分类和随机标识，不发送文件名或内容',()=>{
  const h=harness();h.listeners['fixepub:files-selected']({detail:[{name:'private-book.txt',content:'SECRET'}]});
  assert.equal(h.sent.length,2);assert.equal(h.sent[1].body.event,'file_selected');
- assert.deepEqual(Object.keys(h.sent[1].body).sort(),['device','event','language','service','session','source']);assert(!JSON.stringify(h.sent).includes('private-book'));assert(!JSON.stringify(h.sent).includes('SECRET'));
+ assert.deepEqual(Object.keys(h.sent[1].body).sort(),['device','event','landing','language','metrics_version','service','session','source']);assert(!JSON.stringify(h.sent).includes('private-book'));assert(!JSON.stringify(h.sent).includes('SECRET'));
 });
 test('DNT 和本机测试不记录事件',()=>{
  assert.equal(harness({navigator:{doNotTrack:'1'}}).sent.length,0);
@@ -61,3 +61,6 @@ test('Exposure waits for half-visible entry; clicks retain service attribution',
  callback([{target:node,isIntersecting:true,intersectionRatio:0.5}]);assert.equal(h.sent.at(-1).body.event,'service_exposed');assert.equal(h.sent.at(-1).body.service,'translation');
  events.click();assert.equal(h.sent.at(-1).body.event,'service_clicked');
 });
+
+test('Homepage dropzone is not repair; repair page dropzone is repair',()=>{for(const pathname of ['/', '/epub-repair.html']){const events={},node={dataset:{},addEventListener:(n,f)=>events[n]=f};const h=harness({location:{hostname:'fixepub.test',pathname},document:{readyState:'complete',referrer:'',querySelectorAll:s=>s==='#dropzone'?[node]:[]}});if(pathname==='/'){assert(!events.click);}else{events.click();assert.equal(h.sent.at(-1).body.service,'repair');}assert.equal(h.sent[0].body.metrics_version,2);}});
+test('Landing attribution is a fixed category, never a URL',()=>{assert.equal(analytics.landing('/epub-translator-en.html'),'translation');assert.equal(analytics.landing('/'),'home');assert.equal(analytics.landing('/private/book'),'other');});

@@ -1,6 +1,6 @@
 const fs=require('fs'),path=require('path');
 const preferences=require('../site-preferences');
-const messages={...require('../locales/ui'),...require('../growth-locales')};
+const messages={...require('../locales/ui'),...require('../growth-locales'),...require('../translation-ux').messages};
 test('五种界面语言覆盖所有已标记文案',()=>{
   for(const file of ['index.html','epub-repair.html','paypal-checkout.html','examples.html','funnel-admin.html','analytics-preferences.html']){
     const html=fs.readFileSync(path.join(__dirname,'..',file),'utf8');

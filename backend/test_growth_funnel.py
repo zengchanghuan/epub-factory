@@ -28,9 +28,9 @@ class FunnelTests(unittest.TestCase):
     def test_service_steps_dedup_filter_and_no_payment_authority(self):
         for event in ('service_exposed','service_clicked','file_selected','upload_succeeded'):
             for _ in range(2):
-                self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':event,'service':'translation','language':'ja'})
+                self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':event,'service':'translation','language':'ja','metrics_version':2})
         r=growth.report(self.store)
-        self.assertEqual(r['services']['translation'],dict(exposed=1,clicked=1,selected=1,uploaded=1,quoted=0,paid=0))
+        self.assertEqual(r['services']['translation'],dict(exposed=1,clicked=1,selected=1,uploaded=1,quoted=0,confirmed=0,paid=0))
         self.assertEqual(growth.report(self.store,language='en')['services']['translation']['uploaded'],0)
         self.assertEqual(self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':'payment_succeeded','service':'translation'}).status_code,422)
         self.assertEqual(self.client.post('/api/v2/analytics/events',json={'session':'b'*32,'event':'service_clicked','service':'translation'},headers={'origin':'https://tv.fixepub.com'}).json(),{'recorded':False})
@@ -52,6 +52,31 @@ class FunnelTests(unittest.TestCase):
         self.assertEqual(growth.report(self.store,language='ja')['counts']['quoted'],0)
         self.assertEqual(growth.report(self.store,source='search',device='mobile')['counts']['paid'],1)
         self.trade.assert_not_called();self.assertFalse(self.queued)
+
+    def test_landing_first_touch_and_profile_confirmation_are_not_payment(self):
+        self.visit(landing='translation');self.visit(landing='home')
+        job=self.linked('translate')
+        headers={'X-Job-Token':job.access_token}
+        for event in ('quote_shown','profile_confirmed','profile_confirmed'):
+            self.assertEqual(self.client.post('/api/v2/jobs/translate/checkout-events',json={'event':event,'funnel_session':'a'*32},headers=headers).status_code,200)
+        r=growth.report(self.store)
+        self.assertEqual(r['landings'],[dict(category='translation',sessions=1,quoted=1,paid=0)])
+        self.assertEqual(r['services']['translation']['confirmed'],1)
+        self.assertEqual(r['counts']['paid'],0)
+        self.trade.assert_not_called();self.assertFalse(self.queued)
+
+    def test_old_instrumentation_is_not_mixed_with_corrected_service_steps(self):
+        self.visit()
+        import sqlite3
+        with sqlite3.connect(growth.path()) as db:
+            db.execute('CREATE TABLE service_steps(session TEXT,service TEXT,event TEXT)')
+            db.execute('INSERT INTO service_steps VALUES(?,?,?)',('a'*32,'repair','service_clicked'))
+        self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':'service_clicked','service':'repair'})
+        r=growth.report(self.store)
+        self.assertEqual(r['services']['repair']['clicked'],0)
+        self.assertEqual(r['counts']['visits'],1)
+        self.client.post('/api/v2/analytics/events',json={'session':'a'*32,'event':'service_clicked','service':'translation','metrics_version':2})
+        self.assertEqual(growth.report(self.store)['services']['translation']['clicked'],1)
     def test_batch_repair_pdf_are_separate_orders(self):
         self.visit()
         for id in ('child1','child2'):
@@ -68,7 +93,7 @@ class FunnelTests(unittest.TestCase):
         self.assertEqual(r['counts']['paid'],3)
         self.assertEqual(r['counts']['downloaded'],3)
         for key in ('batch','pdf','repair'):
-            self.assertEqual(r['services'][key],dict(exposed=0,clicked=0,selected=0,uploaded=0,quoted=1,paid=1))
+            self.assertEqual(r['services'][key],dict(exposed=0,clicked=0,selected=0,uploaded=0,quoted=1,confirmed=0,paid=1))
         self.trade.assert_not_called();self.assertFalse(self.queued)
 
     def test_expired_sessions_are_removed_and_first_attribution_wins(self):

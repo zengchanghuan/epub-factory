@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-26",
+  "scope": "Translation entry preservation, explicit language direction, localized confirmation and quote UI, static samples, corrected service/landing attribution",
+  "frontend": {"suites": 44, "passed": 373, "failed": 0},
+  "backend": {
+    "isolated_temporary_directory": true,
+    "passed": 93,
+    "suites": {"growth_funnel":15,"multilingual_checkout":9,"translation_quote":18,"paypal_checkout":28,"order_admin":22,"checkout_webhook":1},
+    "payment_provider": "mocked",
+    "live_model_calls": false
+  },
+  "seo_tests_passed": 10,
+  "deployment_tests_passed": 21,
+  "generators_deterministic": true,
+  "browser_checks": [
+    "Fresh English translation entry requires target language",
+    "English to Korean survives example-page round trip with translation mode",
+    "Japanese UI and dark theme keep selected source/target",
+    "Advanced options collapsed and email notification below upload"
+  ],
+  "production_preflight": "No queued/running jobs or persisted active repairs",
+  "limitations": [
+    "No real payment or new paid-model evaluation",
+    "Published samples are synthetic short passages; chapter/layout illustration is not whole-book acceptance",
+    "Main-site Search Console access pending; current Google account only exposes latex.fixepub.com"
+  ]
+}

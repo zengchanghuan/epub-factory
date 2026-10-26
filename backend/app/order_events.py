@@ -30,11 +30,11 @@ def milestones(store, number):
     with store._Session() as session:
         rows=session.query(OrderEventRecord).filter_by(order_no=number).all()
         result={r.event:{'at':r.occurred_at.isoformat(), 'source':r.source} for r in rows}
-    return {name:result.get(name) for name in ('quote_shown','payment_clicked','payment_succeeded')}
+    return {name:result.get(name) for name in ('quote_shown','profile_confirmed','payment_clicked','payment_succeeded')}
 
 
 class BrowserEvent(BaseModel):
-    event: Literal['quote_shown','payment_clicked']
+    event: Literal['quote_shown','profile_confirmed','payment_clicked']
     funnel_session: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
