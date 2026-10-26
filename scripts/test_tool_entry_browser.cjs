@@ -158,7 +158,9 @@ async function main() {
     '--disable-background-networking', '--disable-component-update', '--disable-sync', '--no-first-run', '--no-default-browser-check',
     '--disable-default-apps', '--metrics-recording-only', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
-    let stderr = ''; const timer = setTimeout(() => reject(new Error('Chrome startup timeout: ' + stderr)), 15000);
+    // Hosted runners can cold-start Chrome slowly; still require its actual
+    // debugging endpoint before any page assertions, with a bounded deadline.
+    let stderr = ''; const timer = setTimeout(() => reject(new Error('Chrome startup timeout: ' + stderr)), 45000);
     chrome.on('error', error => { clearTimeout(timer); reject(error); });
     chrome.on('exit', code => { clearTimeout(timer); reject(new Error('Chrome exited: ' + code + '\n' + stderr)); });
     chrome.stderr.on('data', chunk => { stderr += chunk; const found = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (found) { clearTimeout(timer); resolve(found[1]); } });
