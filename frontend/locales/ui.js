@@ -1163,11 +1163,11 @@
     "ko": "EPUB 전용, 최대 60MB"
   },
   "ui_166": {
-    "zh-CN": "支付宝 · ¥0.99",
-    "zh-TW": "支付寶 · ¥0.99",
-    "en": "Alipay · CNY 0.99",
-    "ja": "Alipay · CNY 0.99",
-    "ko": "Alipay · CNY 0.99"
+    "zh-CN": "支付宝 · ¥5.99",
+    "zh-TW": "支付寶 · ¥5.99",
+    "en": "Alipay · CNY 5.99",
+    "ja": "Alipay · CNY 5.99",
+    "ko": "Alipay · CNY 5.99"
   },
   "ui_167": {
     "zh-CN": "请在上传前选择支付方式，诊断后锁定本次报价。",

@@ -242,8 +242,11 @@ class PayPalTests(unittest.TestCase):
         return response.json()
 
     def test_repair_capture_is_idempotent_and_cannot_use_alipay_proof(self):
+        self.assertEqual(main.REPAIR_PRICE_CNY, '5.99')
         data = self.repair()
         self.assertEqual(data["currency"], "USD")
+        self.assertEqual(data['price_cny'], '0.99')
+        self.assertEqual(self.client.get('/api/v2/paypal/config').json()['repair_amount'], '0.99')
         pay = self.client.post(f"/api/v2/repair/{self.job_id}/pay")
         self.assertEqual(pay.status_code, 200, pay.text)
         self.assertEqual(pay.json()["amount"], "0.99")

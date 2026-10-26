@@ -68,7 +68,7 @@
       clearPayment();
       el.payBtn.disabled = true;
       text(el.payButtonLabel, '🔧 一键修复');
-      setPrice('0.99');
+      setPrice('5.99');
       el.reportBlock.classList.remove('visible');
       el.okBanner.style.display = 'none';
       el.issueArea.style.display = 'none';

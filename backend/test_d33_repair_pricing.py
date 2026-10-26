@@ -65,7 +65,7 @@ class RepairPricingTests(unittest.TestCase):
     def test_translation_minimum_uses_new_standard_floor_and_polish_is_unchanged(self):
         from app.engine.cleaners.llm_polish import calculate_polish_price
         self.assertEqual(main.CONVERSION_PRICE_CNY, '0.99')
-        self.assertEqual(main.REPAIR_PRICE_CNY, '0.99')
+        self.assertEqual(main.REPAIR_PRICE_CNY, '5.99')
         self.assertEqual(main._calc_translation_price(10), '3.99')
         self.assertEqual(main.TRANSLATION_PRICE_CNY, '5.99')
         self.assertEqual(calculate_polish_price(200000), 5.99)
@@ -150,8 +150,8 @@ class RepairPricingTests(unittest.TestCase):
         response = self.client.post('/api/v2/repair/diagnose',
             files={'file': ('fixture.epub', minimal_epub_bytes(), 'application/epub+zip')})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()['price_cny'], '0.99')
-        self.assertEqual(main._repair_job_get(response.json()['job_id'])['quoted_amount'], '0.99')
+        self.assertEqual(response.json()['price_cny'], '5.99')
+        self.assertEqual(main._repair_job_get(response.json()['job_id'])['quoted_amount'], '5.99')
 
     def test_old_batch_keeps_original_aggregate_price(self):
         batch_id = uuid.uuid4().hex[:12]
@@ -186,39 +186,44 @@ class RepairPricingTests(unittest.TestCase):
         self.thread.assert_not_called()
 
     def test_repair_new_payment_amount_is_frozen_before_gateway(self):
-        job_id = self.repair_job(quoted_amount='0.99')
+        diagnosed = self.client.post('/api/v2/repair/diagnose',
+            files={'file': ('fixture.epub', repairable_epub_bytes(), 'application/epub+zip')})
+        self.assertEqual(diagnosed.status_code, 200, diagnosed.text)
+        self.assertEqual(diagnosed.json()['price_cny'], '5.99')
+        job_id = diagnosed.json()['job_id']
         def gateway(**kwargs):
-            self.assertEqual(main._repair_job_get(job_id)['expected_amount'], '0.99')
+            self.assertEqual(main._repair_job_get(job_id)['expected_amount'], '5.99')
             self.assertTrue((Path(self.runtime.name) / job_id / 'order.json').is_file())
             return 'alipay://offline'
         with patch('app.infra.alipay.create_alipay_precreate', side_effect=gateway):
             response = self.client.post(f'/api/v2/repair/{job_id}/pay')
-        self.assertEqual(response.json()['price_cny'], '0.99')
-        with patch.object(main, 'REPAIR_PRICE_CNY', '2.99'), patch(
+        self.assertEqual(response.json()['price_cny'], '5.99')
+        with patch.object(main, 'REPAIR_PRICE_CNY', '9.99'), patch(
                 'app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
             response = self.client.post(f'/api/v2/repair/{job_id}/pay')
-        self.assertEqual(response.json()['price_cny'], '0.99')
-        self.assertEqual(create.call_args.kwargs['total_amount'], '0.99')
-        self.assertEqual(self.webhook(f'repair_{job_id}', '2.99').text, 'fail')
-        self.assertEqual(self.webhook(f'repair_{job_id}', '0.99').text, 'success')
+        self.assertEqual(response.json()['price_cny'], '5.99')
+        self.assertEqual(create.call_args.kwargs['total_amount'], '5.99')
+        self.assertEqual(self.webhook(f'repair_{job_id}', '0.99').text, 'fail')
+        self.assertEqual(self.webhook(f'repair_{job_id}', '5.99').text, 'success')
         self.assertEqual(self.thread.call_count, 1)
         self.assertEqual(main._repair_job_get(job_id)['status'], 'paid')
-        self.assertEqual(self.webhook(f'repair_{job_id}', '0.99').text, 'success')
+        self.assertEqual(self.webhook(f'repair_{job_id}', '5.99').text, 'success')
         self.assertEqual(self.thread.call_count, 1)
 
     def test_old_repair_amounts_survive_restart_and_reject_new_price(self):
-        for amount in ('5.99', '1.99', '0.99'):
+        for amount in ('5.99', '2.99', '1.99', '0.99'):
             with self.subTest(amount=amount):
                 job_id = self.repair_job(expected_amount=amount)
                 with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:
                     self.assertEqual(self.client.post(f'/api/v2/repair/{job_id}/pay').json()['price_cny'], amount)
                 self.assertEqual(create.call_args.kwargs['total_amount'], amount)
-                self.assertEqual(self.webhook(f'repair_{job_id}', '2.99').text, 'fail')
+                wrong_amount = '0.99' if amount == '5.99' else '5.99'
+                self.assertEqual(self.webhook(f'repair_{job_id}', wrong_amount).text, 'fail')
                 self.assertEqual(main._repair_job_get(job_id)['status'], 'pending_payment')
                 self.assertEqual(self.webhook(f'repair_{job_id}', amount).text, 'success')
 
     def test_existing_unpaid_quote_keeps_price_after_restart(self):
-        for amount in ('5.99', '1.99', '0.99'):
+        for amount in ('5.99', '2.99', '1.99', '0.99'):
             with self.subTest(amount=amount):
                 job_id = self.repair_job(quoted_amount=amount)
                 with patch('app.infra.alipay.create_alipay_precreate', return_value='alipay://offline') as create:

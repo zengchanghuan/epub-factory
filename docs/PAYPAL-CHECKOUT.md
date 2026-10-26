@@ -1,6 +1,6 @@
 # PayPal service checkout
 
-PayPal ordinary conversion, text-layer PDF original-language conversion and repair remain USD 0.99 per book. Batch conversion remains USD 0.99 times book count. Alipay prices are unchanged.
+PayPal ordinary conversion, text-layer PDF original-language conversion and repair remain USD 0.99 per book. Batch conversion remains USD 0.99 times book count. As of 2026-10-26, new Alipay EPUB repair quotes are CNY 5.99; basic conversion remains CNY 0.99. This repair change does not alter PayPal amounts or reprice existing orders.
 
 New AI orders use `usd-v2-net-div7-fee044-fixed030-min149`:
 

@@ -5,6 +5,20 @@ const traditional = fs.readFileSync(path.join(__dirname, '..', 'traditional-to-s
 const horizontal = fs.readFileSync(path.join(__dirname, '..', 'vertical-to-horizontal.html'), 'utf8');
 const translator = fs.readFileSync(path.join(__dirname, '..', 'epub-translator.html'), 'utf8');
 
+test('修复人民币价 ¥5.99 与基础转换及 PayPal 价格分开显示，五语一致', () => {
+  const repair = fs.readFileSync(path.join(__dirname, '..', 'epub-repair.html'), 'utf8');
+  assert(repair.includes('支付宝 · ¥5.99'));
+  assert(repair.includes('PayPal · US$0.99'));
+  const labels = require('../locales/ui').ui_166;
+  for (const language of ['zh-CN', 'zh-TW', 'en', 'ja', 'ko']) assert(labels[language].includes('5.99'));
+  for (const file of ['ebook-tools.html', 'zh-tw.html', 'en.html', 'ja.html', 'ko.html']) {
+    const guide = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    assert(guide.includes('5.99'), file);
+    assert(guide.includes('US$0.99'), file);
+  }
+  assert(html.includes('EPUB 格式修复为 ¥5.99 / 本'));
+});
+
 test('繁简转换和竖排改横排展示 0.99 元基础价', () => {
   assert(html.includes('基础转换：<strong style="color:var(--text);">¥0.99 / 本</strong>'));
   assert(html.includes('¥0.99 × ${selectedFiles.length}'));

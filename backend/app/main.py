@@ -4440,7 +4440,7 @@ _REPAIR_UPLOAD_DIR = Path(os.environ.get("REPAIR_UPLOAD_DIR", "/tmp/epub-repair"
 _REPAIR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 修复单价（元）
-REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "0.99").strip() or "0.99"
+REPAIR_PRICE_CNY: str = os.environ.get("REPAIR_PRICE_CNY", "5.99").strip() or "5.99"
 
 # order.json is authoritative across API processes, never a process-local cache.
 # Paid records form the durable waiting queue; admission is globally bounded.

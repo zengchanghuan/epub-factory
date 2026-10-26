@@ -82,6 +82,17 @@ function harness(config = {}) {
 const upload = (h, id = 'new') => h.controller.handleFile({ name: id + '.epub', size: 1000, id });
 const eventNames = h => h.calls.filter(call => call.url.endsWith('/checkout-events')).map(call => JSON.parse(call.body).event);
 
+test('修复初始价为 ¥5.99，恢复旧订单仍使用服务端冻结报价', async () => {
+  const h = harness();
+  h.controller.reset();
+  assert.equal(h.el('priceLabel').textContent, '¥5.99');
+  for (const price of ['5.99', '2.99', '1.99', '0.99']) {
+    h.states.set('saved', pending(price));
+    await h.controller.resume('saved');
+    assert.equal(h.el('priceLabel').textContent, '¥' + price);
+  }
+});
+
 test('F25-1 发起支付失败后按钮恢复且原 priceLabel 节点始终保留', async () => {
   let fail = true;
   const h = harness({ fetch: call => call.url.endsWith('/pay') ? response(fail ? { detail: '临时失败' } : { pay_url: 'https://openapi.alipay.com/pay', price_cny: '5.99' }, fail ? 503 : 200) : undefined });
