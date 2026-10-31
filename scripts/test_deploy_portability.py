@@ -33,7 +33,7 @@ class PortableDeploymentTests(unittest.TestCase):
                 self.assertEqual(args[args.index('-i') + 1], str(key))
                 self.assertIn('StrictHostKeyChecking=yes', args)
                 self.assertIn('BatchMode=yes', args)
-                self.assertIn('ubuntu@81.71.22.79', args)
+                self.assertIn('fixepub@8.153.158.141', args)
 
     def test_server_has_one_shared_lock_before_any_service_stop(self):
         source = (ROOT / 'scripts/deploy-server.sh').read_text()

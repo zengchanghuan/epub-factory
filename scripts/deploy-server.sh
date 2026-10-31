@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Also usable directly from Tencent Cloud OrcaTerm after uploading the package.
+# Also usable directly from Alibaba Cloud Workbench after uploading the package.
 set -euo pipefail
 ACTION=${1:?Usage: deploy-server.sh ARCHIVE_OR_--check [PROJECT_DIR]}
-PROJECT_DIR=${2:-/home/ubuntu/epub-factory}
+PROJECT_DIR=${2:-/home/fixepub/epub-factory}
 LEGACY_REPAIR_ID=${3:-}
 [[ -z "$LEGACY_REPAIR_ID" || "$LEGACY_REPAIR_ID" =~ ^[0-9a-f]{32}$ ]] || { echo 'Invalid legacy repair job ID.' >&2; exit 2; }
 SERVICES=(epub-factory epub-factory-worker epub-factory-housekeeping epub-factory-beat)

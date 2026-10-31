@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time setup. Only the public key is sent to the authorized server.
 set -euo pipefail
-HOST=${DEPLOY_HOST:-ubuntu@81.71.22.79}
+HOST=${DEPLOY_HOST:-fixepub@8.153.158.141}
 PORT=${DEPLOY_PORT:-22}
 KEY=${DEPLOY_KEY:-$HOME/.ssh/id_ed25519_fixepub}
 MODE=${1:-install}

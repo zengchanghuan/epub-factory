@@ -2,9 +2,9 @@
 # Run from any directory using SSH public-key authentication only.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-HOST=${DEPLOY_HOST:-ubuntu@81.71.22.79}
+HOST=${DEPLOY_HOST:-fixepub@8.153.158.141}
 PORT=${DEPLOY_PORT:-22}
-REMOTE_DIR=${DEPLOY_REMOTE_DIR:-/home/ubuntu/epub-factory}
+REMOTE_DIR=${DEPLOY_REMOTE_DIR:-/home/fixepub/epub-factory}
 PYTHON=${PYTHON:-python3}
 PACKAGE="$ROOT/epub-factory-deploy.zip"
 MODE=${1:-deploy}
@@ -19,9 +19,9 @@ Usage: bash deploy.sh [--package-only | --check | --preserve-legacy-repair JOB_I
   --preserve-legacy-repair JOB_ID
                   Preserve a confirmed normal 5.99 legacy repair before restart.
 Environment:
-  DEPLOY_HOST        ubuntu@81.71.22.79 (or an SSH config alias)
+  DEPLOY_HOST        fixepub@8.153.158.141 (or an SSH config alias)
   DEPLOY_PORT        22
-  DEPLOY_REMOTE_DIR  /home/ubuntu/epub-factory
+  DEPLOY_REMOTE_DIR  /home/fixepub/epub-factory
   DEPLOY_KEY         SSH key path (default: ~/.ssh/id_ed25519_fixepub).
   DEPLOY_PUBLIC_URL  https://fixepub.com (public health check after deployment)
   PYTHON             Local Python 3 executable
@@ -45,7 +45,7 @@ if [[ "$MODE" != --check ]]; then
   "$PYTHON" "$ROOT/scripts/deploy-package.py" "$ROOT" "$PACKAGE"
   if [[ "$MODE" == --package-only ]]; then
     echo "Package ready: $PACKAGE"
-    echo 'See docs/DEPLOY.md for deployment through the Tencent Cloud terminal.'
+    echo 'See docs/DEPLOY.md for deployment through the Alibaba Cloud Workbench.'
     exit 0
   fi
   "$PYTHON" "$ROOT/scripts/check-deploy-ci.py" --root "$ROOT" --package "$PACKAGE" --revision "$REVISION"
